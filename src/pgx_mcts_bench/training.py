@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -19,7 +20,12 @@ from pgx_mcts_bench.search import NeuralMCTS
 
 def _observations(items: list[Position], device: torch.device) -> Tensor:
     array = np.stack([item.observation for item in items])
-    return torch.from_numpy(array).permute(0, 3, 1, 2).float().to(device)
+    return (
+        torch.from_numpy(array)
+        .permute(0, 3, 1, 2)
+        .contiguous()
+        .to(device=device, dtype=torch.float32)
+    )
 
 
 def _policies(items: list[Position], device: torch.device) -> Tensor:
@@ -79,9 +85,7 @@ def play_selfplay_games(
             observations=[transitions[index].observation for index in active],
             legal_actions=[transitions[index].legal_actions for index in active],
             rngs=[rngs[index] for index in active],
-            temperatures=[
-                1.0 if moves[index] < temperature_moves else 0.0 for index in active
-            ],
+            temperatures=[1.0 if moves[index] < temperature_moves else 0.0 for index in active],
             add_root_noise=True,
         )
         for index, result in zip(active, results, strict=True):
@@ -178,9 +182,7 @@ def train_muzero_step(
             hidden, predicted_reward = network.dynamics(hidden, action)
             _, _, _, next_terminal_logits = network.prediction(hidden)
             assert next_terminal_logits is not None
-            reward_target = torch.tensor(
-                [position.reward], dtype=torch.float32, device=device
-            )
+            reward_target = torch.tensor([position.reward], dtype=torch.float32, device=device)
             terminal_target = torch.tensor(
                 [position.next_terminated],
                 dtype=torch.float32,
@@ -226,19 +228,129 @@ class TrainedAgent:
     name: str
     network: AlphaZeroNet | MuZeroNet
     history: list[dict[str, float]]
+    config: ExperimentConfig
 
 
-def train_agent(kind: str, config: ExperimentConfig) -> TrainedAgent:
+def _new_network(kind: str, config: ExperimentConfig) -> AlphaZeroNet | MuZeroNet:
+    if kind == "alphazero":
+        return AlphaZeroNet(config.game, config.model)
+    if kind == "muzero":
+        return MuZeroNet(config.game, config.model)
+    raise ValueError(f"Unknown agent: {kind}")
+
+
+def _limit_records(records: list[GameRecord], positions: int) -> list[GameRecord]:
+    """Keep exactly ``positions`` completed-game positions, preserving sequences."""
+    if positions <= 0:
+        return records
+    limited: list[GameRecord] = []
+    remaining = positions
+    for record in records:
+        if remaining <= 0:
+            break
+        kept = record[:remaining]
+        if kept:
+            limited.append(kept)
+            remaining -= len(kept)
+    if remaining:
+        raise ValueError(f"Requested {positions} positions but only found {positions - remaining}")
+    return limited
+
+
+def _checkpoint_path(checkpoint_dir: Path, kind: str, iteration: int) -> Path:
+    return checkpoint_dir / f"{kind}-iteration-{iteration:04d}.pt"
+
+
+def _latest_checkpoint(checkpoint_dir: Path, kind: str) -> Path | None:
+    paths = sorted(checkpoint_dir.glob(f"{kind}-iteration-*.pt"))
+    return paths[-1] if paths else None
+
+
+def _save_checkpoint(
+    path: Path,
+    *,
+    kind: str,
+    iteration: int,
+    config: ExperimentConfig,
+    network: AlphaZeroNet | MuZeroNet,
+    optimizer: torch.optim.Optimizer,
+    replay: ReplayBuffer,
+    rng: np.random.Generator,
+    history: list[dict[str, float]],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    torch.save(
+        {
+            "version": 1,
+            "kind": kind,
+            "iteration": iteration,
+            "config": config.to_dict(),
+            "network": network.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "replay_games": replay.games,
+            "rng_state": rng.bit_generator.state,
+            "torch_rng_state": torch.get_rng_state(),
+            "history": history,
+        },
+        temporary,
+    )
+    temporary.replace(path)
+
+
+def _load_checkpoint(
+    path: Path,
+    *,
+    kind: str,
+    config: ExperimentConfig,
+    network: AlphaZeroNet | MuZeroNet,
+    optimizer: torch.optim.Optimizer,
+    replay: ReplayBuffer,
+    rng: np.random.Generator,
+    device: torch.device,
+) -> tuple[int, list[dict[str, float]]]:
+    payload = torch.load(path, map_location=device, weights_only=False)
+    if payload.get("version") != 1 or payload.get("kind") != kind:
+        raise ValueError(f"Incompatible checkpoint: {path}")
+    saved_config = ExperimentConfig.from_dict(payload["config"])
+    saved_train = asdict(saved_config.train)
+    current_train = asdict(config.train)
+    for runtime_field in (
+        "iterations",
+        "device",
+        "checkpoint_iterations",
+        "learning_curve_games",
+    ):
+        saved_train.pop(runtime_field)
+        current_train.pop(runtime_field)
+    if (
+        saved_config.game != config.game
+        or saved_config.search != config.search
+        or saved_config.model != config.model
+        or saved_train != current_train
+    ):
+        raise ValueError(f"Checkpoint configuration does not match this run: {path}")
+    network.load_state_dict(payload["network"])
+    optimizer.load_state_dict(payload["optimizer"])
+    replay.games = payload["replay_games"]
+    replay.position_count = sum(len(game) for game in replay.games)
+    rng.bit_generator.state = payload["rng_state"]
+    torch.set_rng_state(payload["torch_rng_state"].cpu())
+    return int(payload["iteration"]), list(payload["history"])
+
+
+def train_agent(
+    kind: str,
+    config: ExperimentConfig,
+    *,
+    checkpoint_dir: Path | None = None,
+    resume: bool = False,
+) -> TrainedAgent:
     torch.manual_seed(config.train.seed)
     np_rng = np.random.default_rng(config.train.seed)
     device = torch.device(config.train.device)
     game = Go6x6(config.game)
-    if kind == "alphazero":
-        network: AlphaZeroNet | MuZeroNet = AlphaZeroNet(config.game, config.model)
-    elif kind == "muzero":
-        network = MuZeroNet(config.game, config.model)
-    else:
-        raise ValueError(f"Unknown agent: {kind}")
+    network = _new_network(kind, config)
     network.to(device)
     optimizer = torch.optim.AdamW(
         network.parameters(),
@@ -248,29 +360,38 @@ def train_agent(kind: str, config: ExperimentConfig) -> TrainedAgent:
     replay = ReplayBuffer(config.train.replay_capacity, np_rng)
     search = NeuralMCTS(game, network, config.search, config.train.device)
     history: list[dict[str, float]] = []
+    start_iteration = 0
+    if resume and checkpoint_dir is not None:
+        latest = _latest_checkpoint(checkpoint_dir, kind)
+        if latest is not None:
+            start_iteration, history = _load_checkpoint(
+                latest,
+                kind=kind,
+                config=config,
+                network=network,
+                optimizer=optimizer,
+                replay=replay,
+                rng=np_rng,
+                device=device,
+            )
+            print(f"{kind} resumed from iteration {start_iteration}: {latest}")
 
-    for iteration in range(config.train.iterations):
+    checkpoint_iterations = set(config.train.checkpoint_iterations)
+    checkpoint_iterations.add(config.train.iterations)
+    for iteration in range(start_iteration, config.train.iterations):
         started = time.perf_counter()
         records: list[GameRecord] = []
-        generated_positions = 0
+        simulated_positions = 0
         round_index = 0
         target_positions = config.train.selfplay_positions_per_iteration
-        while round_index == 0 or (
-            target_positions > 0 and generated_positions < target_positions
-        ):
+        while round_index == 0 or (target_positions > 0 and simulated_positions < target_positions):
             base_seed = (
                 config.train.seed
                 + iteration * 1_000_000
                 + round_index * config.train.selfplay_games
             )
-            seeds = [
-                base_seed + game_index
-                for game_index in range(config.train.selfplay_games)
-            ]
-            game_rngs = [
-                np.random.default_rng(seed + 1_000_003)
-                for seed in seeds
-            ]
+            seeds = [base_seed + game_index for game_index in range(config.train.selfplay_games)]
+            game_rngs = [np.random.default_rng(seed + 1_000_003) for seed in seeds]
             batch_records = play_selfplay_games(
                 game,
                 search,
@@ -279,12 +400,17 @@ def train_agent(kind: str, config: ExperimentConfig) -> TrainedAgent:
                 config.train.temperature_moves,
             )
             records.extend(batch_records)
-            generated_positions += sum(len(record) for record in batch_records)
+            simulated_positions += sum(len(record) for record in batch_records)
             round_index += 1
-        lengths = []
+        simulated_game_count = len(records)
+        simulated_lengths = [len(record) for record in records]
+        if target_positions > 0 and config.train.exact_position_budget:
+            records = _limit_records(records, target_positions)
+        generated_positions = sum(len(record) for record in records)
+        kept_lengths = []
         for record in records:
             replay.add(record)
-            lengths.append(len(record))
+            kept_lengths.append(len(record))
         metrics: dict[str, float] = {}
         for _ in range(config.train.train_steps):
             if kind == "alphazero":
@@ -305,27 +431,44 @@ def train_agent(kind: str, config: ExperimentConfig) -> TrainedAgent:
             "iteration": float(iteration + 1),
             "positions": float(replay.position_count),
             "positions_generated": float(generated_positions),
-            "games_generated": float(len(records)),
-            "mean_game_length": float(np.mean(lengths)),
+            "positions_simulated": float(simulated_positions),
+            "games_generated": float(simulated_game_count),
+            "records_kept": float(len(records)),
+            "mean_game_length": float(np.mean(simulated_lengths)),
+            "mean_kept_record_length": float(np.mean(kept_lengths)),
             "seconds": time.perf_counter() - started,
             **metrics,
         }
         history.append(row)
         print(f"{kind} iteration {iteration + 1}/{config.train.iterations}: {row}")
-    return TrainedAgent(kind, network, history)
+        completed_iteration = iteration + 1
+        if checkpoint_dir is not None and completed_iteration in checkpoint_iterations:
+            _save_checkpoint(
+                _checkpoint_path(checkpoint_dir, kind, completed_iteration),
+                kind=kind,
+                iteration=completed_iteration,
+                config=config,
+                network=network,
+                optimizer=optimizer,
+                replay=replay,
+                rng=np_rng,
+                history=history,
+            )
+    return TrainedAgent(kind, network, history, config)
 
 
 def play_arena_game(
     first: TrainedAgent,
     second: TrainedAgent,
-    config: ExperimentConfig,
     seed: int,
     *,
     first_is_black: bool | None = None,
     opening_moves: int = 6,
 ) -> float:
     """Return +1 first-agent win, -1 second-agent win, or 0 draw."""
-    game = Go6x6(config.game)
+    if first.config.game != second.config.game:
+        raise ValueError("Cross-play agents must use the same game configuration")
+    game = Go6x6(first.config.game)
     rng = np.random.default_rng(seed)
     transition = game.reset(seed)
     for _ in range(opening_moves):
@@ -341,8 +484,18 @@ def play_arena_game(
         first_is_black = seed % 2 == 0
     first_player = black_player if first_is_black else 1 - black_player
     searches = {
-        first_player: NeuralMCTS(game, first.network, config.search, config.train.device),
-        1 - first_player: NeuralMCTS(game, second.network, config.search, config.train.device),
+        first_player: NeuralMCTS(
+            game,
+            first.network,
+            first.config.search,
+            first.config.train.device,
+        ),
+        1 - first_player: NeuralMCTS(
+            game,
+            second.network,
+            second.config.search,
+            second.config.train.device,
+        ),
     }
     while not transition.terminated:
         result = searches[transition.player].run(
@@ -358,24 +511,24 @@ def play_arena_game(
     return float(rewards[first_player])
 
 
-def compare_agents(
-    alphazero: TrainedAgent,
-    muzero: TrainedAgent,
-    config: ExperimentConfig,
+def compare_pair(
+    first: TrainedAgent,
+    second: TrainedAgent,
     games: int,
+    *,
+    seed: int,
 ) -> dict[str, float | int]:
     games = games if games % 2 == 0 else games + 1
     paired: list[tuple[bool, float]] = []
     for pair_index in range(games // 2):
-        seed = config.train.seed + 100_000 + pair_index
+        opening_seed = seed + pair_index
         paired.append(
             (
                 True,
                 play_arena_game(
-                    alphazero,
-                    muzero,
-                    config,
-                    seed,
+                    first,
+                    second,
+                    opening_seed,
                     first_is_black=True,
                 ),
             )
@@ -384,10 +537,9 @@ def compare_agents(
             (
                 False,
                 play_arena_game(
-                    alphazero,
-                    muzero,
-                    config,
-                    seed,
+                    first,
+                    second,
+                    opening_seed,
                     first_is_black=False,
                 ),
             )
@@ -397,15 +549,106 @@ def compare_agents(
     white_outcomes = [outcome for is_black, outcome in paired if not is_black]
     return {
         "games": games,
-        "alphazero_wins": sum(value > 0 for value in outcomes),
-        "muzero_wins": sum(value < 0 for value in outcomes),
+        "first_wins": sum(value > 0 for value in outcomes),
+        "second_wins": sum(value < 0 for value in outcomes),
         "draws": sum(value == 0 for value in outcomes),
-        "alphazero_score": float(np.mean([(value + 1.0) / 2.0 for value in outcomes])),
-        "alphazero_as_black_wins": sum(value > 0 for value in black_outcomes),
-        "alphazero_as_black_games": len(black_outcomes),
-        "alphazero_as_white_wins": sum(value > 0 for value in white_outcomes),
-        "alphazero_as_white_games": len(white_outcomes),
+        "first_score": float(np.mean([(value + 1.0) / 2.0 for value in outcomes])),
+        "first_as_black_wins": sum(value > 0 for value in black_outcomes),
+        "first_as_black_games": len(black_outcomes),
+        "first_as_white_wins": sum(value > 0 for value in white_outcomes),
+        "first_as_white_games": len(white_outcomes),
     }
+
+
+def compare_agents(
+    alphazero: TrainedAgent,
+    muzero: TrainedAgent,
+    config: ExperimentConfig,
+    games: int,
+) -> dict[str, float | int]:
+    result = compare_pair(
+        alphazero,
+        muzero,
+        games,
+        seed=config.train.seed + 100_000,
+    )
+    return {
+        "games": result["games"],
+        "alphazero_wins": result["first_wins"],
+        "muzero_wins": result["second_wins"],
+        "draws": result["draws"],
+        "alphazero_score": result["first_score"],
+        "alphazero_as_black_wins": result["first_as_black_wins"],
+        "alphazero_as_black_games": result["first_as_black_games"],
+        "alphazero_as_white_wins": result["first_as_white_wins"],
+        "alphazero_as_white_games": result["first_as_white_games"],
+    }
+
+
+def load_agent(
+    artifact: Path,
+    kind: str,
+    *,
+    device: str = "cpu",
+    checkpoint: Path | None = None,
+) -> TrainedAgent:
+    results_path = artifact / "results.json"
+    payload = json.loads(results_path.read_text())
+    config_payload = payload["config"]
+    config_payload["train"]["device"] = device
+    config = ExperimentConfig.from_dict(config_payload)
+    network = _new_network(kind, config).to(torch.device(device))
+    weights_path = checkpoint or artifact / f"{kind}.pt"
+    weights = torch.load(weights_path, map_location=device, weights_only=False)
+    if isinstance(weights, dict) and "network" in weights:
+        history = list(weights.get("history", []))
+        weights = weights["network"]
+    else:
+        history = list(payload.get("training", {}).get(kind, []))
+    network.load_state_dict(weights)
+    return TrainedAgent(kind, network, history, config)
+
+
+def evaluate_learning_curve(
+    out: Path,
+    config: ExperimentConfig,
+    games: int,
+) -> list[dict[str, Any]]:
+    if games <= 0:
+        return []
+    rows: list[dict[str, Any]] = []
+    checkpoint_dir = out / "checkpoints"
+    iterations = sorted(
+        {
+            *config.train.checkpoint_iterations,
+            config.train.iterations,
+        }
+    )
+    for iteration in iterations:
+        if iteration > config.train.iterations:
+            continue
+        alphazero_path = _checkpoint_path(checkpoint_dir, "alphazero", iteration)
+        muzero_path = _checkpoint_path(checkpoint_dir, "muzero", iteration)
+        if not alphazero_path.exists() or not muzero_path.exists():
+            continue
+        alphazero = load_agent(
+            out,
+            "alphazero",
+            device=config.train.device,
+            checkpoint=alphazero_path,
+        )
+        muzero = load_agent(
+            out,
+            "muzero",
+            device=config.train.device,
+            checkpoint=muzero_path,
+        )
+        arena = compare_agents(alphazero, muzero, config, games)
+        row = {"iteration": iteration, "arena": arena}
+        rows.append(row)
+        print(f"learning curve iteration {iteration}: {arena}")
+    (out / "learning_curve.json").write_text(json.dumps(rows, indent=2) + "\n")
+    return rows
 
 
 def parameter_count(network: nn.Module) -> int:
@@ -418,6 +661,7 @@ def save_experiment(
     alphazero: TrainedAgent,
     muzero: TrainedAgent,
     arena: dict[str, float | int],
+    learning_curve: list[dict[str, Any]] | None = None,
 ) -> None:
     out.mkdir(parents=True, exist_ok=True)
     torch.save(alphazero.network.state_dict(), out / "alphazero.pt")
@@ -433,5 +677,6 @@ def save_experiment(
             "muzero": muzero.history,
         },
         "arena": arena,
+        "learning_curve": learning_curve or [],
     }
     (out / "results.json").write_text(json.dumps(payload, indent=2) + "\n")

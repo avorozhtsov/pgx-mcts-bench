@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 AgentKind = Literal["alphazero", "muzero"]
 ExplorationKind = Literal["u1", "u2", "u3", "u4", "u5"]
@@ -61,6 +61,9 @@ class TrainConfig:
     temperature_moves: int = 12
     seed: int = 0
     device: str = "cpu"
+    exact_position_budget: bool = True
+    checkpoint_iterations: tuple[int, ...] = ()
+    learning_curve_games: int = 0
 
 
 @dataclass(frozen=True)
@@ -72,6 +75,17 @@ class ExperimentConfig:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> ExperimentConfig:
+        train = dict(payload["train"])
+        train["checkpoint_iterations"] = tuple(train.get("checkpoint_iterations", ()))
+        return cls(
+            game=GameConfig(**payload["game"]),
+            search=SearchConfig(**payload["search"]),
+            model=ModelConfig(**payload["model"]),
+            train=TrainConfig(**train),
+        )
 
 
 def artifact_dir(root: Path, label: str) -> Path:

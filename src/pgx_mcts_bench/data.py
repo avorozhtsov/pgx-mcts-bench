@@ -28,6 +28,8 @@ class ReplayBuffer:
         self.position_count = 0
 
     def add(self, game: GameRecord) -> None:
+        if not game:
+            return
         self.games.append(game)
         self.position_count += len(game)
         while self.games and self.position_count > self.capacity:
@@ -56,10 +58,13 @@ class ReplayBuffer:
         if not self.games:
             raise RuntimeError("Cannot sample an empty replay buffer")
         sequences: list[GameRecord] = []
+        terminal_games = [game for game in self.games if game and game[-1].next_terminated]
         terminal_samples = round(batch_size * terminal_fraction)
         for index in range(batch_size):
-            game = self.games[int(self.rng.integers(0, len(self.games)))]
-            if index < terminal_samples:
+            use_terminal = index < terminal_samples and terminal_games
+            source = terminal_games if use_terminal else self.games
+            game = source[int(self.rng.integers(0, len(source)))]
+            if use_terminal:
                 start = max(0, len(game) - unroll_steps - 1)
             else:
                 start = int(self.rng.integers(0, len(game)))

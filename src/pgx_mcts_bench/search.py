@@ -13,13 +13,16 @@ from pgx_mcts_bench.game import Go6x6
 from pgx_mcts_bench.networks import AlphaZeroNet, MuZeroNet
 
 
-def _observation_batch(
-    observations: list[np.ndarray], device: torch.device
-) -> Tensor:
+def _observation_batch(observations: list[np.ndarray], device: torch.device) -> Tensor:
     array = np.stack(observations)
-    return torch.from_numpy(array).permute(0, 3, 1, 2).to(
-        device=device,
-        dtype=torch.float32,
+    return (
+        torch.from_numpy(array)
+        .permute(0, 3, 1, 2)
+        .contiguous()
+        .to(
+            device=device,
+            dtype=torch.float32,
+        )
     )
 
 
@@ -28,7 +31,8 @@ def _masked_softmax(logits: np.ndarray, legal: np.ndarray) -> np.ndarray:
     if not legal.any():
         legal[-1] = True
     shifted = logits - np.max(logits[legal])
-    weights = np.where(legal, np.exp(shifted), 0.0)
+    weights = np.zeros_like(shifted, dtype=np.float64)
+    weights[legal] = np.exp(shifted[legal])
     return weights / weights.sum()
 
 
@@ -105,11 +109,7 @@ class NeuralMCTS:
         """Search several independent roots with batched network inference."""
         batch_size = len(states)
         if not (
-            batch_size
-            == len(observations)
-            == len(legal_actions)
-            == len(rngs)
-            == len(temperatures)
+            batch_size == len(observations) == len(legal_actions) == len(rngs) == len(temperatures)
         ):
             raise ValueError("All batched search inputs must have the same length")
         if batch_size == 0:
@@ -225,8 +225,7 @@ class NeuralMCTS:
     def _expand_children(self, node: Node, logits: np.ndarray, legal: np.ndarray) -> None:
         priors = _masked_softmax(logits, legal)
         node.children = {
-            int(action): Node(prior=float(priors[action]))
-            for action in np.flatnonzero(legal)
+            int(action): Node(prior=float(priors[action])) for action in np.flatnonzero(legal)
         }
 
     def _expand_alphazero_batch(
@@ -285,9 +284,7 @@ class NeuralMCTS:
             node.state = transition.state
             node.reward = transition.reward
             node.terminated = transition.terminated
-            node.consecutive_passes = int(
-                np.asarray(transition.state._x.consecutive_pass_count)
-            )
+            node.consecutive_passes = int(np.asarray(transition.state._x.consecutive_pass_count))
             node.move_count = int(np.asarray(transition.state._x.step_count))
             if node.terminated:
                 leaf_values[index] = 0.0
@@ -355,18 +352,13 @@ class NeuralMCTS:
                 node.reward = float(rewards[batch_index].item())
                 action = actions[index]
                 node.consecutive_passes = (
-                    parent.consecutive_passes + 1
-                    if action == self.game.config.board_size**2
-                    else 0
+                    parent.consecutive_passes + 1 if action == self.game.config.board_size**2 else 0
                 )
                 node.move_count = parent.move_count + 1
                 known_terminal = (
-                    node.consecutive_passes >= 2
-                    or node.move_count >= self.game.config.max_moves
+                    node.consecutive_passes >= 2 or node.move_count >= self.game.config.max_moves
                 )
-                node.terminated = known_terminal or bool(
-                    terminal_np[batch_index] >= 0.5
-                )
+                node.terminated = known_terminal or bool(terminal_np[batch_index] >= 0.5)
                 legal = legal_np[batch_index] >= 0.0
                 legal[-1] = True
             if node.terminated:
@@ -395,9 +387,7 @@ class NeuralMCTS:
             child.prior = (1.0 - fraction) * child.prior + fraction * float(sample)
 
     @staticmethod
-    def _visit_policy(
-        visits: np.ndarray, legal: np.ndarray, temperature: float
-    ) -> np.ndarray:
+    def _visit_policy(visits: np.ndarray, legal: np.ndarray, temperature: float) -> np.ndarray:
         visits = visits.astype(np.float64)
         if temperature <= 1e-8:
             policy = np.zeros_like(visits)

@@ -131,39 +131,72 @@ one of them.
 Arena games use paired random six-ply openings. Each opening is played twice,
 with the agents swapping colors, and results include color-conditioned wins.
 
-## First local U1 gate
+## Final exact-budget results
 
-The first corrected U1 experiment used three seeds, 32 simulations, ten
-iterations, at least 256 new positions per iteration, and 40 paired-opening
-arena games per seed. AlphaZero scored 97/120 (80.8%, Wilson 95% interval
-72.9%–86.9%) against rules-aware MuZero. It scored 52/60 as Black and 45/60
-as White. This is a baseline result, not yet a comparison of U1 through U5.
-See [`docs/first_u1_study.md`](docs/first_u1_study.md).
+The benchmark retains exactly 256 positions per iteration, uses three seeds,
+saves learning checkpoints at iterations 1, 3, and 10, and evaluates
+same-family and cross-family paired-color matches.
 
-## Local U2–U4 screening
+The direct AlphaZero scores against MuZero were 71.7% for U1, 59.2% for U2,
+68.3% for U3, 73.3% for U4, and 62.5% for U5 over 120 games per rule. These
+percentages do not rank the rules. Cross-play provided the more informative
+result:
 
-On 2026-07-26, U2 through U4 were screened locally using the same seed-0
-configuration as the U1 gate: 32 simulations, ten iterations, at least 256 new
-positions per iteration, 32 optimizer steps per iteration, 32 channels, and 40
-paired-opening arena games. The U1 seed-0 result is included as a reference.
+| Family | U1 vs U2 | U1 vs U3 | U1 vs U4 | U1 vs U5 |
+|---|---:|---:|---:|---:|
+| AlphaZero | 51–9 | 20–40 | 36–24 | 38–22 |
+| MuZero | 36–24 | 18–42 | 26–34 | 18–42 |
 
-| Rule | AlphaZero–MuZero | AlphaZero score | Mean game length, AZ / MZ | Final positions, AZ / MZ | Training seconds, AZ / MZ |
-|---|---:|---:|---:|---:|---:|
-| U1 | 29–11 | 72.5% | 40.3 / 38.4 | 3,220 / 3,835 | 31.5 / 128.3 |
-| U2 | 30–10 | 75.0% | 34.3 / 29.9 | 3,654 / 4,467 | 39.0 / 135.0 |
-| U3 | 24–16 | 60.0% | 63.5 / 59.4 | 5,080 / 4,748 | 50.9 / 142.8 |
-| U4 | 35–5 | 87.5% | 42.0 / 38.8 | 3,360 / 3,585 | 37.7 / 124.7 |
+U3 beat U1 in every seed for both agent families. The checkpoint arenas did
+not show consistent evidence that MuZero overtakes AlphaZero under U1–U4. U5
+did show a possible stayer trajectory: AlphaZero's checkpoint score fell from
+27/30 at iteration 1 to 17/30 at iteration 10, and MuZero-U5 beat MuZero-U1
+42–18. See
+[`docs/exact_budget_u1_u5_study.md`](docs/exact_budget_u1_u5_study.md) for the
+full configuration, learning curves, color split, compute measurements, device
+benchmark, caveats, and next experiment.
 
-This is a one-seed screening experiment, not a ranking of the exploration
-rules. U3 gave MuZero its best relative result, but it also produced much
-longer games and more training positions. A same-rule AlphaZero–MuZero match
-cannot determine whether U3 strengthened MuZero, weakened AlphaZero, or both.
-The next study should use multiple seeds, exact rather than minimum position
-budgets, checkpoint learning curves, and same-family cross-play such as
-AZ-U1 versus AZ-U3 and MZ-U1 versus MZ-U3.
+The provisional top-two cross-family tournament selected MuZero-U3/U5 and
+AlphaZero-U3/U1. AlphaZero-U3 was the clear winner: it beat AlphaZero-U1
+40–20, MuZero-U3 40–20, and MuZero-U5 46–14. AlphaZero-U1 placed second by
+beating both MuZero finalists. No winner cycle exists within this four-agent
+set, although the complete U1–U5 rule round robin is still unfinished.
 
-U2 also has a qualitatively different asymptotic behavior. If
-\(n \approx \rho N\), then
-\(cP\sqrt{N}/\sqrt{1+n} \to cP/\sqrt{\rho}\): its exploration bonus does not
-vanish. It should therefore be treated as persistent exploration rather than
-only a slower-decaying version of U1.
+The Apple M2 MPS path now runs correctly, but the representative workload was
+1.6× slower for AlphaZero and 2.8× slower for MuZero than CPU. Because the
+predeclared GPU gate failed, no Nebius GPU VM was created.
+
+## Resumable experiments and cross-play
+
+`compare` and `sweep` save atomic checkpoints at requested iterations. An
+interrupted run can continue from the latest compatible checkpoint:
+
+```bash
+uv run pgx-mcts-bench compare \
+  --exploration u3 \
+  --simulations 32 \
+  --iterations 10 \
+  --selfplay-games 8 \
+  --selfplay-positions 256 \
+  --train-steps 32 \
+  --batch-size 32 \
+  --arena-games 40 \
+  --channels 32 \
+  --checkpoint-iterations 1,3,10 \
+  --curve-games 10 \
+  --exact-positions \
+  --output artifacts/u3-seed-0 \
+  --resume
+```
+
+Compare two trained agents from the same family while preserving each
+artifact's own exploration rule:
+
+```bash
+uv run pgx-mcts-bench crossplay \
+  --first artifacts/u1-seed-0 \
+  --second artifacts/u3-seed-0 \
+  --kind alphazero \
+  --games 40 \
+  --output artifacts/crossplay/alphazero-u1-vs-u3.json
+```

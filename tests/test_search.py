@@ -3,7 +3,7 @@ import numpy as np
 from pgx_mcts_bench.config import GameConfig, ModelConfig, SearchConfig
 from pgx_mcts_bench.game import Go6x6
 from pgx_mcts_bench.networks import AlphaZeroNet, MuZeroNet
-from pgx_mcts_bench.search import NeuralMCTS
+from pgx_mcts_bench.search import NeuralMCTS, _masked_softmax
 
 
 def _assert_search_returns_legal(network) -> None:
@@ -81,3 +81,11 @@ def test_batched_search_returns_one_result_per_root() -> None:
     for root, result in zip(roots, results, strict=True):
         assert root.legal_actions[result.action]
         assert result.visits.sum() == 3
+
+
+def test_masked_softmax_does_not_exponentiate_illegal_logits() -> None:
+    probabilities = _masked_softmax(
+        np.array([0.0, 1_000.0]),
+        np.array([True, False]),
+    )
+    np.testing.assert_array_equal(probabilities, [1.0, 0.0])
