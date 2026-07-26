@@ -38,7 +38,14 @@ class Representation(nn.Module):
 
 
 class PredictionHead(nn.Module):
-    def __init__(self, channels: int, game: GameConfig, include_legal: bool):
+    def __init__(
+        self,
+        channels: int,
+        game: GameConfig,
+        *,
+        include_legal: bool,
+        include_terminal: bool,
+    ):
         super().__init__()
         cells = game.board_size**2
         self.include_legal = include_legal
@@ -66,20 +73,49 @@ class PredictionHead(nn.Module):
             if include_legal
             else None
         )
+        self.terminal = (
+            nn.Sequential(
+                nn.Conv2d(channels, 1, 1),
+                nn.ReLU(),
+                nn.Flatten(),
+                nn.Linear(cells, 1),
+            )
+            if include_terminal
+            else None
+        )
+        if self.terminal is not None:
+            # At initialization imagined states should continue unless the
+            # model has evidence for termination.
+            nn.init.constant_(self.terminal[-1].bias, -3.0)
 
-    def forward(self, hidden: Tensor) -> tuple[Tensor, Tensor, Tensor | None]:
+    def forward(
+        self, hidden: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor | None, Tensor | None]:
         legal_logits = self.legal(hidden) if self.legal is not None else None
-        return self.policy(hidden), self.value(hidden).squeeze(-1), legal_logits
+        terminal_logits = (
+            self.terminal(hidden).squeeze(-1) if self.terminal is not None else None
+        )
+        return (
+            self.policy(hidden),
+            self.value(hidden).squeeze(-1),
+            legal_logits,
+            terminal_logits,
+        )
 
 
 class AlphaZeroNet(nn.Module):
     def __init__(self, game: GameConfig, model: ModelConfig):
         super().__init__()
         self.representation = Representation(game, model, model.channels)
-        self.prediction = PredictionHead(model.channels, game, include_legal=False)
+        self.prediction = PredictionHead(
+            model.channels,
+            game,
+            include_legal=False,
+            include_terminal=False,
+        )
 
     def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
-        policy, value, _ = self.prediction(self.representation(observation))
+        policy, value, _, _ = self.prediction(self.representation(observation))
         return policy, value
 
 
@@ -128,19 +164,26 @@ class MuZeroNet(nn.Module):
     def __init__(self, game: GameConfig, model: ModelConfig):
         super().__init__()
         self.representation = Representation(game, model, model.latent_channels)
-        self.prediction = PredictionHead(model.latent_channels, game, include_legal=True)
+        self.prediction = PredictionHead(
+            model.latent_channels,
+            game,
+            include_legal=True,
+            include_terminal=True,
+        )
         self.dynamics = Dynamics(game, model)
 
-    def initial_inference(self, observation: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    def initial_inference(
+        self, observation: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
         hidden = self.representation(observation)
-        policy, value, legal = self.prediction(hidden)
-        assert legal is not None
-        return hidden, policy, value, legal
+        policy, value, legal, terminal = self.prediction(hidden)
+        assert legal is not None and terminal is not None
+        return hidden, policy, value, legal, terminal
 
     def recurrent_inference(
         self, hidden: Tensor, action: Tensor
-    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         next_hidden, reward = self.dynamics(hidden, action)
-        policy, value, legal = self.prediction(next_hidden)
-        assert legal is not None
-        return next_hidden, reward, policy, value, legal
+        policy, value, legal, terminal = self.prediction(next_hidden)
+        assert legal is not None and terminal is not None
+        return next_hidden, reward, policy, value, legal, terminal
