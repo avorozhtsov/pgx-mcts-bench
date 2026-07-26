@@ -14,6 +14,7 @@ class GameConfig:
     komi: float = 3.5
     history_length: int = 4
     max_moves: int = 72
+    min_moves_before_pass: int = 24
 
     @property
     def action_size(self) -> int:
@@ -21,7 +22,9 @@ class GameConfig:
 
     @property
     def observation_channels(self) -> int:
-        return self.history_length * 2 + 1
+        # Pgx planes plus consecutive-pass and normalized move-count metadata.
+        # The latter two are required by learned dynamics to model termination.
+        return self.history_length * 2 + 3
 
 
 @dataclass(frozen=True)
@@ -34,6 +37,7 @@ class SearchConfig:
     discount: float = 1.0
     root_dirichlet_alpha: float = 0.3
     root_exploration_fraction: float = 0.25
+    muzero_exact_rules: bool = True
 
 
 @dataclass(frozen=True)
@@ -47,6 +51,7 @@ class ModelConfig:
 class TrainConfig:
     iterations: int = 3
     selfplay_games: int = 2
+    selfplay_positions_per_iteration: int = 0
     train_steps: int = 16
     batch_size: int = 32
     replay_capacity: int = 10_000

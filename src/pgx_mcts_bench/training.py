@@ -45,34 +45,66 @@ def play_selfplay_game(
     seed: int,
     temperature_moves: int,
 ) -> GameRecord:
-    transition = game.reset(seed)
-    record: GameRecord = []
-    move = 0
-    while not transition.terminated:
-        result = search.run(
-            transition.state,
-            transition.observation,
-            transition.legal_actions,
-            rng,
-            temperature=1.0 if move < temperature_moves else 0.0,
+    return play_selfplay_games(
+        game,
+        search,
+        [rng],
+        [seed],
+        temperature_moves,
+    )[0]
+
+
+def play_selfplay_games(
+    game: Go6x6,
+    search: NeuralMCTS,
+    rngs: list[np.random.Generator],
+    seeds: list[int],
+    temperature_moves: int,
+) -> list[GameRecord]:
+    """Play independent games while batching every neural search evaluation."""
+    if len(rngs) != len(seeds):
+        raise ValueError("One RNG is required per self-play game")
+    transitions = [game.reset(seed) for seed in seeds]
+    records: list[GameRecord] = [[] for _ in seeds]
+    moves = [0 for _ in seeds]
+
+    while True:
+        active = [
+            index for index, transition in enumerate(transitions) if not transition.terminated
+        ]
+        if not active:
+            break
+        results = search.run_batch(
+            states=[transitions[index].state for index in active],
+            observations=[transitions[index].observation for index in active],
+            legal_actions=[transitions[index].legal_actions for index in active],
+            rngs=[rngs[index] for index in active],
+            temperatures=[
+                1.0 if moves[index] < temperature_moves else 0.0 for index in active
+            ],
             add_root_noise=True,
         )
-        position = Position(
-            observation=transition.observation,
-            legal_actions=transition.legal_actions,
-            policy=result.policy.astype(np.float32),
-            action=result.action,
-            player=transition.player,
-        )
-        transition = game.step(transition.state, result.action)
-        position.reward = transition.reward
-        record.append(position)
-        move += 1
+        for index, result in zip(active, results, strict=True):
+            transition = transitions[index]
+            position = Position(
+                observation=transition.observation,
+                legal_actions=transition.legal_actions,
+                policy=result.policy.astype(np.float32),
+                action=result.action,
+                player=transition.player,
+            )
+            next_transition = game.step(transition.state, result.action)
+            position.reward = next_transition.reward
+            position.next_terminated = next_transition.terminated
+            records[index].append(position)
+            transitions[index] = next_transition
+            moves[index] += 1
 
-    rewards = game.final_rewards(transition.state)
-    for position in record:
-        position.outcome = float(rewards[position.player])
-    return record
+    for record, transition in zip(records, transitions, strict=True):
+        rewards = game.final_rewards(transition.state)
+        for position in record:
+            position.outcome = float(rewards[position.player])
+    return records
 
 
 def train_alphazero_step(
@@ -114,38 +146,63 @@ def train_muzero_step(
     v_total = torch.zeros((), device=device)
     r_total = torch.zeros((), device=device)
     l_total = torch.zeros((), device=device)
+    t_total = torch.zeros((), device=device)
     predictions = 0
     transitions = 0
 
     for sequence in sequences:
         first = sequence[0]
-        hidden, logits, value, legal_logits = network.initial_inference(
+        hidden, logits, value, legal_logits, terminal_logits = network.initial_inference(
             _observations([first], device)
         )
         for index, position in enumerate(sequence):
             if index > 0:
-                logits, value, legal_logits = network.prediction(hidden)
-                assert legal_logits is not None
+                logits, value, legal_logits, terminal_logits = network.prediction(hidden)
+                assert legal_logits is not None and terminal_logits is not None
             p_loss = policy_loss(logits, _policies([position], device))
             v_loss = F.mse_loss(value, _outcomes([position], device))
             legal_loss = F.binary_cross_entropy_with_logits(
                 legal_logits, _legal([position], device)
             )
+            state_terminal_loss = F.binary_cross_entropy_with_logits(
+                terminal_logits,
+                torch.zeros_like(terminal_logits),
+            )
             p_total = p_total + p_loss
             v_total = v_total + v_loss
             l_total = l_total + legal_loss
-            total = total + p_loss + v_loss + 0.25 * legal_loss
+            t_total = t_total + state_terminal_loss
+            total = total + p_loss + v_loss + 0.25 * legal_loss + 0.25 * state_terminal_loss
             predictions += 1
+            action = torch.tensor([position.action], dtype=torch.long, device=device)
+            hidden, predicted_reward = network.dynamics(hidden, action)
+            _, _, _, next_terminal_logits = network.prediction(hidden)
+            assert next_terminal_logits is not None
+            reward_target = torch.tensor(
+                [position.reward], dtype=torch.float32, device=device
+            )
+            terminal_target = torch.tensor(
+                [position.next_terminated],
+                dtype=torch.float32,
+                device=device,
+            )
+            reward_loss = F.mse_loss(predicted_reward, reward_target)
+            terminal_weight = torch.where(
+                terminal_target > 0,
+                torch.full_like(terminal_target, 20.0),
+                torch.ones_like(terminal_target),
+            )
+            terminal_loss = F.binary_cross_entropy_with_logits(
+                next_terminal_logits,
+                terminal_target,
+                weight=terminal_weight,
+            )
+            reward_weight = 10.0 if position.next_terminated else 1.0
+            r_total = r_total + reward_weight * reward_loss
+            t_total = t_total + terminal_loss
+            total = total + reward_weight * reward_loss + terminal_loss
+            transitions += 1
             if index + 1 < len(sequence):
-                action = torch.tensor([position.action], dtype=torch.long, device=device)
-                hidden, predicted_reward = network.dynamics(hidden, action)
-                reward_target = torch.tensor(
-                    [position.reward], dtype=torch.float32, device=device
-                )
-                reward_loss = F.mse_loss(predicted_reward, reward_target)
-                r_total = r_total + reward_loss
-                total = total + reward_loss
-                transitions += 1
                 # Prevent gradients through arbitrarily long sampled histories.
                 hidden.register_hook(lambda gradient: gradient * 0.5)
 
@@ -160,6 +217,7 @@ def train_muzero_step(
         "value": float((v_total / predictions).item()),
         "reward": float((r_total / max(transitions, 1)).item()),
         "legal": float((l_total / predictions).item()),
+        "terminal": float((t_total / (predictions + transitions)).item()),
     }
 
 
@@ -193,12 +251,38 @@ def train_agent(kind: str, config: ExperimentConfig) -> TrainedAgent:
 
     for iteration in range(config.train.iterations):
         started = time.perf_counter()
-        lengths = []
-        for game_index in range(config.train.selfplay_games):
-            seed = config.train.seed + iteration * config.train.selfplay_games + game_index
-            record = play_selfplay_game(
-                game, search, np_rng, seed, config.train.temperature_moves
+        records: list[GameRecord] = []
+        generated_positions = 0
+        round_index = 0
+        target_positions = config.train.selfplay_positions_per_iteration
+        while round_index == 0 or (
+            target_positions > 0 and generated_positions < target_positions
+        ):
+            base_seed = (
+                config.train.seed
+                + iteration * 1_000_000
+                + round_index * config.train.selfplay_games
             )
+            seeds = [
+                base_seed + game_index
+                for game_index in range(config.train.selfplay_games)
+            ]
+            game_rngs = [
+                np.random.default_rng(seed + 1_000_003)
+                for seed in seeds
+            ]
+            batch_records = play_selfplay_games(
+                game,
+                search,
+                game_rngs,
+                seeds,
+                config.train.temperature_moves,
+            )
+            records.extend(batch_records)
+            generated_positions += sum(len(record) for record in batch_records)
+            round_index += 1
+        lengths = []
+        for record in records:
             replay.add(record)
             lengths.append(len(record))
         metrics: dict[str, float] = {}
@@ -220,6 +304,8 @@ def train_agent(kind: str, config: ExperimentConfig) -> TrainedAgent:
         row = {
             "iteration": float(iteration + 1),
             "positions": float(replay.position_count),
+            "positions_generated": float(generated_positions),
+            "games_generated": float(len(records)),
             "mean_game_length": float(np.mean(lengths)),
             "seconds": time.perf_counter() - started,
             **metrics,
@@ -234,16 +320,26 @@ def play_arena_game(
     second: TrainedAgent,
     config: ExperimentConfig,
     seed: int,
+    *,
+    first_is_black: bool | None = None,
+    opening_moves: int = 6,
 ) -> float:
     """Return +1 first-agent win, -1 second-agent win, or 0 draw."""
     game = Go6x6(config.game)
     rng = np.random.default_rng(seed)
     transition = game.reset(seed)
+    for _ in range(opening_moves):
+        if transition.terminated:
+            break
+        actions = np.flatnonzero(transition.legal_actions)
+        action = int(rng.choice(actions))
+        transition = game.step(transition.state, action)
     # Pgx randomizes the external player-id order. current_player at reset is
-    # Black, so alternate the agents relative to that id rather than assuming
-    # player 0 is always Black.
-    black_player = transition.player
-    first_player = black_player if seed % 2 == 0 else 1 - black_player
+    # Black, so use the preserved mapping rather than assuming player 0 is Black.
+    black_player = int(np.asarray(transition.state._player_order[0]))
+    if first_is_black is None:
+        first_is_black = seed % 2 == 0
+    first_player = black_player if first_is_black else 1 - black_player
     searches = {
         first_player: NeuralMCTS(game, first.network, config.search, config.train.device),
         1 - first_player: NeuralMCTS(game, second.network, config.search, config.train.device),
@@ -268,16 +364,47 @@ def compare_agents(
     config: ExperimentConfig,
     games: int,
 ) -> dict[str, float | int]:
-    outcomes = [
-        play_arena_game(alphazero, muzero, config, config.train.seed + 100_000 + index)
-        for index in range(games)
-    ]
+    games = games if games % 2 == 0 else games + 1
+    paired: list[tuple[bool, float]] = []
+    for pair_index in range(games // 2):
+        seed = config.train.seed + 100_000 + pair_index
+        paired.append(
+            (
+                True,
+                play_arena_game(
+                    alphazero,
+                    muzero,
+                    config,
+                    seed,
+                    first_is_black=True,
+                ),
+            )
+        )
+        paired.append(
+            (
+                False,
+                play_arena_game(
+                    alphazero,
+                    muzero,
+                    config,
+                    seed,
+                    first_is_black=False,
+                ),
+            )
+        )
+    outcomes = [outcome for _, outcome in paired]
+    black_outcomes = [outcome for is_black, outcome in paired if is_black]
+    white_outcomes = [outcome for is_black, outcome in paired if not is_black]
     return {
         "games": games,
         "alphazero_wins": sum(value > 0 for value in outcomes),
         "muzero_wins": sum(value < 0 for value in outcomes),
         "draws": sum(value == 0 for value in outcomes),
         "alphazero_score": float(np.mean([(value + 1.0) / 2.0 for value in outcomes])),
+        "alphazero_as_black_wins": sum(value > 0 for value in black_outcomes),
+        "alphazero_as_black_games": len(black_outcomes),
+        "alphazero_as_white_wins": sum(value > 0 for value in white_outcomes),
+        "alphazero_as_white_games": len(white_outcomes),
     }
 
 
