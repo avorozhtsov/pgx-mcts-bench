@@ -139,3 +139,31 @@ arena games per seed. AlphaZero scored 97/120 (80.8%, Wilson 95% interval
 72.9%–86.9%) against rules-aware MuZero. It scored 52/60 as Black and 45/60
 as White. This is a baseline result, not yet a comparison of U1 through U5.
 See [`docs/first_u1_study.md`](docs/first_u1_study.md).
+
+## Local U2–U4 screening
+
+On 2026-07-26, U2 through U4 were screened locally using the same seed-0
+configuration as the U1 gate: 32 simulations, ten iterations, at least 256 new
+positions per iteration, 32 optimizer steps per iteration, 32 channels, and 40
+paired-opening arena games. The U1 seed-0 result is included as a reference.
+
+| Rule | AlphaZero–MuZero | AlphaZero score | Mean game length, AZ / MZ | Final positions, AZ / MZ | Training seconds, AZ / MZ |
+|---|---:|---:|---:|---:|---:|
+| U1 | 29–11 | 72.5% | 40.3 / 38.4 | 3,220 / 3,835 | 31.5 / 128.3 |
+| U2 | 30–10 | 75.0% | 34.3 / 29.9 | 3,654 / 4,467 | 39.0 / 135.0 |
+| U3 | 24–16 | 60.0% | 63.5 / 59.4 | 5,080 / 4,748 | 50.9 / 142.8 |
+| U4 | 35–5 | 87.5% | 42.0 / 38.8 | 3,360 / 3,585 | 37.7 / 124.7 |
+
+This is a one-seed screening experiment, not a ranking of the exploration
+rules. U3 gave MuZero its best relative result, but it also produced much
+longer games and more training positions. A same-rule AlphaZero–MuZero match
+cannot determine whether U3 strengthened MuZero, weakened AlphaZero, or both.
+The next study should use multiple seeds, exact rather than minimum position
+budgets, checkpoint learning curves, and same-family cross-play such as
+AZ-U1 versus AZ-U3 and MZ-U1 versus MZ-U3.
+
+U2 also has a qualitatively different asymptotic behavior. If
+\(n \approx \rho N\), then
+\(cP\sqrt{N}/\sqrt{1+n} \to cP/\sqrt{\rho}\): its exploration bonus does not
+vanish. It should therefore be treated as persistent exploration rather than
+only a slower-decaying version of U1.
