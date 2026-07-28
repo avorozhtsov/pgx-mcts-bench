@@ -9,8 +9,8 @@ from torch import Tensor
 
 from pgx_mcts_bench.config import SearchConfig
 from pgx_mcts_bench.exploration import exploration_bonus
-from pgx_mcts_bench.game import Go6x6
-from pgx_mcts_bench.networks import AlphaZeroNet, MuZeroNet
+from pgx_mcts_bench.game import GameAdapter
+from pgx_mcts_bench.networks import MuZeroNet, PolicyValueNet
 
 
 def _observation_batch(observations: list[np.ndarray], device: torch.device) -> Tensor:
@@ -26,10 +26,10 @@ def _observation_batch(observations: list[np.ndarray], device: torch.device) -> 
     )
 
 
-def _masked_softmax(logits: np.ndarray, legal: np.ndarray) -> np.ndarray:
+def _masked_softmax(logits: np.ndarray, legal: np.ndarray, fallback: int = -1) -> np.ndarray:
     legal = np.asarray(legal, dtype=bool)
     if not legal.any():
-        legal[-1] = True
+        legal[fallback] = True
     shifted = logits - np.max(logits[legal])
     weights = np.zeros_like(shifted, dtype=np.float64)
     weights[legal] = np.exp(shifted[legal])
@@ -48,6 +48,9 @@ class Node:
     terminated: bool = False
     consecutive_passes: int = 0
     move_count: int = 0
+    # Player to move at this node. -1 means "not yet evaluated"; the value backup
+    # then falls back to assuming the players alternate, which is exact for Go.
+    player: int = -1
 
     @property
     def value(self) -> float:
@@ -65,8 +68,8 @@ class SearchResult:
 class NeuralMCTS:
     def __init__(
         self,
-        game: Go6x6,
-        network: AlphaZeroNet | MuZeroNet,
+        game: GameAdapter,
+        network: PolicyValueNet | MuZeroNet,
         config: SearchConfig,
         device: str = "cpu",
     ):
@@ -104,9 +107,13 @@ class NeuralMCTS:
         rngs: list[np.random.Generator],
         *,
         temperatures: list[float],
-        add_root_noise: bool,
+        add_root_noise: bool | list[bool],
     ) -> list[SearchResult]:
-        """Search several independent roots with batched network inference."""
+        """Search several independent roots with batched network inference.
+
+        `add_root_noise` may be a single flag or one flag per root, so that
+        exploration noise can be applied to one role and not the other.
+        """
         batch_size = len(states)
         if not (
             batch_size == len(observations) == len(legal_actions) == len(rngs) == len(temperatures)
@@ -117,15 +124,9 @@ class NeuralMCTS:
 
         self.network.eval()
         roots = [
-            Node(
-                prior=1.0,
-                state=state,
-                consecutive_passes=int(np.asarray(state._x.consecutive_pass_count)),
-                move_count=int(np.asarray(state._x.step_count)),
-            )
-            for state in states
+            Node(prior=1.0, state=state, **self.game.state_info(state)) for state in states
         ]
-        if isinstance(self.network, AlphaZeroNet):
+        if isinstance(self.network, PolicyValueNet):
             root_values = self._expand_alphazero_batch(
                 roots,
                 observations,
@@ -138,8 +139,15 @@ class NeuralMCTS:
                 legal_actions,
             )
 
-        if add_root_noise:
-            for root, rng in zip(roots, rngs, strict=True):
+        noise_flags = (
+            list(add_root_noise)
+            if isinstance(add_root_noise, (list, tuple))
+            else [bool(add_root_noise)] * batch_size
+        )
+        if len(noise_flags) != batch_size:
+            raise ValueError("add_root_noise must be a single flag or one per root")
+        for root, rng, wants_noise in zip(roots, rngs, noise_flags, strict=True):
+            if wants_noise:
                 self._add_root_noise(root, rng)
 
         for _ in range(self.config.simulations):
@@ -165,7 +173,7 @@ class NeuralMCTS:
                 else:
                     pending.append(index)
 
-            if isinstance(self.network, AlphaZeroNet):
+            if isinstance(self.network, PolicyValueNet):
                 self._evaluate_alphazero_leaves_batch(
                     pending,
                     paths,
@@ -206,13 +214,31 @@ class NeuralMCTS:
             )
         return results
 
+    @staticmethod
+    def _perspective(parent: Node, child: Node) -> float:
+        """+1 if parent and child hold the same player's value, -1 otherwise.
+
+        Go alternates every ply, so this is always -1 there and the behaviour is
+        unchanged. The braid game does not alternate -- the Scrambler moves K
+        times in a row -- so negating on every ply would make a node's own moves
+        look like an opponent's. An unevaluated child (player < 0) has value 0,
+        so the sign is immaterial; -1 keeps the historical path exact.
+        """
+        if parent.player < 0 or child.player < 0:
+            return -1.0
+        return -1.0 if parent.player != child.player else 1.0
+
     def _select_child(self, parent: Node) -> tuple[int, Node]:
         actions = np.fromiter(parent.children.keys(), dtype=np.int64)
         children = [parent.children[int(a)] for a in actions]
         priors = np.array([child.prior for child in children], dtype=np.float64)
         visits = np.array([child.visit_count for child in children], dtype=np.float64)
         q = np.array(
-            [child.reward - self.config.discount * child.value for child in children],
+            [
+                child.reward
+                + self._perspective(parent, child) * self.config.discount * child.value
+                for child in children
+            ],
             dtype=np.float64,
         )
         u = exploration_bonus(
@@ -223,10 +249,21 @@ class NeuralMCTS:
         return int(actions[index]), children[index]
 
     def _expand_children(self, node: Node, logits: np.ndarray, legal: np.ndarray) -> None:
-        priors = _masked_softmax(logits, legal)
-        node.children = {
-            int(action): Node(prior=float(priors[action])) for action in np.flatnonzero(legal)
-        }
+        priors = _masked_softmax(logits, legal, self.game.config.terminal_action)
+        actions = np.flatnonzero(legal)
+        limit = self.config.max_children
+        if limit > 0 and len(actions) > limit:
+            # Keep the highest-prior actions and renormalise over them, so the
+            # PUCT constant keeps its meaning. Discarded actions are unreachable
+            # from this node -- acceptable when the simulation budget could never
+            # have visited them anyway, and the point of the learned prior is to
+            # decide which ones those are.
+            keep = np.argpartition(priors[actions], -limit)[-limit:]
+            actions = actions[keep]
+            total = float(priors[actions].sum())
+            if total > 0:
+                priors = priors / total
+        node.children = {int(action): Node(prior=float(priors[action])) for action in actions}
 
     def _expand_alphazero_batch(
         self,
@@ -234,7 +271,7 @@ class NeuralMCTS:
         observations: list[np.ndarray],
         legal_actions: list[np.ndarray],
     ) -> list[float]:
-        assert isinstance(self.network, AlphaZeroNet)
+        assert isinstance(self.network, PolicyValueNet)
         logits, values = self.network(_observation_batch(observations, self.device))
         logits_np = logits.cpu().numpy()
         for index, node in enumerate(nodes):
@@ -284,8 +321,9 @@ class NeuralMCTS:
             node.state = transition.state
             node.reward = transition.reward
             node.terminated = transition.terminated
-            node.consecutive_passes = int(np.asarray(transition.state._x.consecutive_pass_count))
-            node.move_count = int(np.asarray(transition.state._x.step_count))
+            node.consecutive_passes = transition.consecutive_passes
+            node.move_count = transition.move_count
+            node.player = transition.player
             if node.terminated:
                 leaf_values[index] = 0.0
             else:
@@ -343,16 +381,17 @@ class NeuralMCTS:
                 node.state = transition.state
                 node.reward = transition.reward
                 node.terminated = transition.terminated
-                node.consecutive_passes = int(
-                    np.asarray(transition.state._x.consecutive_pass_count)
-                )
-                node.move_count = int(np.asarray(transition.state._x.step_count))
+                node.consecutive_passes = transition.consecutive_passes
+                node.move_count = transition.move_count
+                node.player = transition.player
                 legal = transition.legal_actions
             else:
                 node.reward = float(rewards[batch_index].item())
                 action = actions[index]
                 node.consecutive_passes = (
-                    parent.consecutive_passes + 1 if action == self.game.config.board_size**2 else 0
+                    parent.consecutive_passes + 1
+                    if action == self.game.config.terminal_action
+                    else 0
                 )
                 node.move_count = parent.move_count + 1
                 known_terminal = (
@@ -360,7 +399,9 @@ class NeuralMCTS:
                 )
                 node.terminated = known_terminal or bool(terminal_np[batch_index] >= 0.5)
                 legal = legal_np[batch_index] >= 0.0
-                legal[-1] = True
+                # Without exact rules the player is unknown; `_perspective` then
+                # falls back to strict alternation, which is exact for Go.
+                legal[self.game.config.terminal_action] = True
             if node.terminated:
                 leaf_values[index] = 0.0
                 continue
@@ -374,13 +415,18 @@ class NeuralMCTS:
             node.visit_count += 1
             node.value_sum += value
             if index > 0:
-                value = node.reward - self.config.discount * value
+                parent = path[index - 1]
+                sign = self._perspective(parent, node)
+                value = node.reward + sign * self.config.discount * value
 
     def _add_root_noise(self, root: Node, rng: np.random.Generator) -> None:
         if not root.children or self.config.root_exploration_fraction <= 0:
             return
         actions = list(root.children)
-        noise = rng.dirichlet(np.full(len(actions), self.config.root_dirichlet_alpha))
+        alpha = self.config.root_dirichlet_alpha
+        if self.config.root_dirichlet_scale > 0:
+            alpha = self.config.root_dirichlet_scale / max(1, len(actions))
+        noise = rng.dirichlet(np.full(len(actions), alpha))
         fraction = self.config.root_exploration_fraction
         for action, sample in zip(actions, noise, strict=True):
             child = root.children[action]

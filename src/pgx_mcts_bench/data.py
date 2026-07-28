@@ -12,6 +12,8 @@ class Position:
     policy: np.ndarray
     action: int
     player: int
+    # 0 if the mover held the game's first role (Black / Scrambler), else 1.
+    role: int = 0
     reward: float = 0.0
     next_terminated: bool = False
     outcome: float = 0.0
@@ -36,12 +38,28 @@ class ReplayBuffer:
             removed = self.games.pop(0)
             self.position_count -= len(removed)
 
-    def sample_positions(self, batch_size: int) -> list[Position]:
+    def sample_positions(self, batch_size: int, balanced: bool = False) -> list[Position]:
         positions = [position for game in self.games for position in game]
         if not positions:
             raise RuntimeError("Cannot sample an empty replay buffer")
-        indexes = self.rng.integers(0, len(positions), size=batch_size)
-        return [positions[int(index)] for index in indexes]
+        if not balanced:
+            indexes = self.rng.integers(0, len(positions), size=batch_size)
+            return [positions[int(index)] for index in indexes]
+        by_role: dict[int, list[Position]] = {}
+        for position in positions:
+            by_role.setdefault(position.role, []).append(position)
+        roles = sorted(by_role)
+        if len(roles) < 2:
+            indexes = self.rng.integers(0, len(positions), size=batch_size)
+            return [positions[int(index)] for index in indexes]
+        share = batch_size // len(roles)
+        batch: list[Position] = []
+        for index, role in enumerate(roles):
+            pool = by_role[role]
+            count = share if index else batch_size - share * (len(roles) - 1)
+            picks = self.rng.integers(0, len(pool), size=count)
+            batch.extend(pool[int(pick)] for pick in picks)
+        return batch
 
     def sample_sequences(
         self,

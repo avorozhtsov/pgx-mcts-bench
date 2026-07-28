@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
+from pgx_mcts_bench.braid_progress import BraidProgress
+from pgx_mcts_bench.braid_sweep import default_variants, run_sweep
 from pgx_mcts_bench.config import (
+    BraidGameConfig,
     ExperimentConfig,
     GameConfig,
     ModelConfig,
@@ -19,8 +23,10 @@ from pgx_mcts_bench.exploration import describe_rules
 from pgx_mcts_bench.training import (
     compare_agents,
     compare_pair,
+    evaluate_against_random,
     evaluate_learning_curve,
     load_agent,
+    save_braid_experiment,
     save_experiment,
     train_agent,
 )
@@ -188,6 +194,180 @@ def smoke(output: Path | None = None) -> None:
         curve_games=0,
         exact_positions=True,
     )
+
+
+BRAID_TIERS: dict[str, BraidGameConfig] = {
+    "tier0": BraidGameConfig(
+        max_len=32, max_strands=5, scramble_budget=6, simplify_budget=24
+    ),
+    "tier1": BraidGameConfig(
+        max_len=64, max_strands=8, scramble_budget=12, simplify_budget=48
+    ),
+}
+
+
+@app.command()
+def braid(
+    tier: Annotated[str, typer.Option(help="tier0 (small) or tier1")] = "tier0",
+    scramble_budget: Annotated[
+        int, typer.Option(min=1, help="K, the difficulty dial; 0 keeps the tier default")
+    ] = 0,
+    exploration: Annotated[str, typer.Option(help="One of u1, u2, u3, u4, u5")] = "u1",
+    simulations: Annotated[int, typer.Option(min=1)] = 32,
+    iterations: Annotated[int, typer.Option(min=1)] = 10,
+    selfplay_games: Annotated[int, typer.Option(min=1)] = 8,
+    selfplay_positions: Annotated[int, typer.Option(min=0)] = 0,
+    train_steps: Annotated[int, typer.Option(min=1)] = 32,
+    batch_size: Annotated[int, typer.Option(min=1)] = 32,
+    channels: Annotated[int, typer.Option(min=4)] = 32,
+    baseline_games: Annotated[
+        int, typer.Option(min=1, help="Games per role against a uniform-random opponent")
+    ] = 20,
+    anchors: Annotated[
+        int,
+        typer.Option(min=0, help="Frozen instances evaluated after each iteration; 0 disables"),
+    ] = 16,
+    seed: Annotated[int, typer.Option()] = 0,
+    device: Annotated[str, typer.Option()] = "cpu",
+    output: Annotated[Path | None, typer.Option()] = None,
+    resume: Annotated[bool, typer.Option()] = False,
+) -> None:
+    """Train AlphaZero on Scrambler vs. Simplifier over braid words.
+
+    Reports each role's win rate against a uniform-random opponent, which is the
+    only measurement with a known baseline: an agent that learns nothing scores
+    about 0.016 as Simplifier at tier-0 K=6.
+    """
+    if tier not in BRAID_TIERS:
+        raise typer.BadParameter(f"tier must be one of {', '.join(BRAID_TIERS)}")
+    if exploration not in describe_rules():
+        raise typer.BadParameter(f"exploration must be one of {', '.join(describe_rules())}")
+    game_config = BRAID_TIERS[tier]
+    if scramble_budget:
+        game_config = replace(game_config, scramble_budget=scramble_budget)
+
+    config = ExperimentConfig(
+        game=game_config,
+        search=SearchConfig(simulations=simulations, exploration=exploration),  # type: ignore[arg-type]
+        model=ModelConfig(channels=channels, latent_channels=channels),
+        train=TrainConfig(
+            iterations=iterations,
+            selfplay_games=selfplay_games,
+            selfplay_positions_per_iteration=selfplay_positions,
+            train_steps=train_steps,
+            batch_size=batch_size,
+            seed=seed,
+            device=device,
+            checkpoint_iterations=(iterations,),
+        ),
+    )
+    typer.echo(
+        f"braid {tier}: L={game_config.max_len}, N={game_config.max_strands}, "
+        f"K={game_config.scramble_budget}, M={game_config.simplify_budget}, "
+        f"{game_config.action_size} actions, {simulations} simulations, rule={exploration}"
+    )
+    if resume and output is None:
+        raise typer.BadParameter("--resume requires --output")
+    label = datetime.now().strftime("%Y%m%d-%H%M%S")
+    out = output or artifact_dir(Path.cwd(), f"braid-{label}")
+    progress = BraidProgress(config, out, anchors=anchors, seed=seed + 10_000) if anchors else None
+
+    def hook(iteration: int, network) -> str | None:
+        if progress is None:
+            return None
+        return progress.summary_line(progress.evaluate(iteration, network))
+
+    agent = train_agent(
+        "alphazero",
+        config,
+        checkpoint_dir=out / "checkpoints",
+        resume=resume,
+        iteration_hook=hook,
+    )
+    baseline = evaluate_against_random(agent, baseline_games, seed=seed + 500_000)
+    save_braid_experiment(out, config, agent, baseline)
+    typer.echo(
+        f"vs random -- as Scrambler: {baseline['first_role_win_rate']:.3f}, "
+        f"as Simplifier: {baseline['second_role_win_rate']:.3f}"
+    )
+    typer.echo(f"Saved: {out / 'results.json'}")
+    if progress is not None:
+        typer.echo(f"Progress report: {out / 'progress.md'}")
+
+
+@app.command()
+def braid_smoke(output: Path | None = None) -> None:
+    """Fast end-to-end braid check; its numbers are not statistically meaningful."""
+    braid(
+        tier="tier0",
+        scramble_budget=3,
+        exploration="u1",
+        simulations=2,
+        iterations=1,
+        selfplay_games=2,
+        selfplay_positions=0,
+        train_steps=1,
+        batch_size=2,
+        channels=4,
+        baseline_games=2,
+        anchors=3,
+        seed=0,
+        device="cpu",
+        output=output,
+        resume=False,
+    )
+
+
+@app.command()
+def braid_screen(
+    tier: Annotated[str, typer.Option(help="tier0 (small) or tier1")] = "tier0",
+    scramble_budget: Annotated[int, typer.Option(min=1, help="K, the difficulty dial")] = 3,
+    iterations: Annotated[int, typer.Option(min=1)] = 8,
+    anchors: Annotated[int, typer.Option(min=1)] = 12,
+    baseline_games: Annotated[int, typer.Option(min=1)] = 10,
+    seed: Annotated[int, typer.Option()] = 0,
+    seeds: Annotated[int, typer.Option(min=1, help="Independent runs per variant")] = 1,
+    workers: Annotated[
+        int, typer.Option(min=1, help="Parallel runs; the sweep is embarrassingly parallel")
+    ] = 1,
+    only: Annotated[str, typer.Option(help="Comma-separated variant names to run")] = "",
+    device: Annotated[str, typer.Option()] = "cpu",
+    output: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Screen ~10 approaches on small instances and rank them on a shared anchor set.
+
+    Includes a `no-training` control, because search alone already solves a
+    majority of small anchors -- any learning claim has to beat that, not zero.
+    """
+    if tier not in BRAID_TIERS:
+        raise typer.BadParameter(f"tier must be one of {', '.join(BRAID_TIERS)}")
+    label = datetime.now().strftime("%Y%m%d-%H%M%S")
+    out = output or artifact_dir(Path.cwd(), f"braid-screen-{label}")
+    variants = default_variants(iterations, scramble_budget)
+    if only:
+        wanted = {name.strip() for name in only.split(",") if name.strip()}
+        unknown = wanted - {v.name for v in variants}
+        if unknown:
+            raise typer.BadParameter(f"unknown variants: {', '.join(sorted(unknown))}")
+        variants = [v for v in variants if v.name in wanted]
+    typer.echo(
+        f"screening {len(variants)} variants x {seeds} seed(s), "
+        f"K={scramble_budget}, {anchors} anchors"
+    )
+    results = run_sweep(
+        variants,
+        BRAID_TIERS[tier],
+        out,
+        anchors=anchors,
+        baseline_games=baseline_games,
+        seed=seed,
+        seeds=seeds,
+        device=device,
+        workers=workers,
+        log=typer.echo,
+    )
+    typer.echo(f"Summary: {out / 'summary.md'}")
+    del results
 
 
 @app.command()

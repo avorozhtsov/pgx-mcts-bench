@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -11,10 +12,15 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from pgx_mcts_bench.config import ExperimentConfig
+from pgx_mcts_bench.config import BraidGameConfig, ExperimentConfig
 from pgx_mcts_bench.data import GameRecord, Position, ReplayBuffer
-from pgx_mcts_bench.game import Go6x6
-from pgx_mcts_bench.networks import AlphaZeroNet, MuZeroNet
+from pgx_mcts_bench.game import GameAdapter, make_game
+from pgx_mcts_bench.networks import (
+    AlphaZeroNet,
+    BraidAlphaZeroNet,
+    MuZeroNet,
+    PolicyValueNet,
+)
 from pgx_mcts_bench.search import NeuralMCTS
 
 
@@ -45,7 +51,7 @@ def policy_loss(logits: Tensor, target: Tensor) -> Tensor:
 
 
 def play_selfplay_game(
-    game: Go6x6,
+    game: GameAdapter,
     search: NeuralMCTS,
     rng: np.random.Generator,
     seed: int,
@@ -61,11 +67,12 @@ def play_selfplay_game(
 
 
 def play_selfplay_games(
-    game: Go6x6,
+    game: GameAdapter,
     search: NeuralMCTS,
     rngs: list[np.random.Generator],
     seeds: list[int],
     temperature_moves: int,
+    first_role_exploration_only: bool = False,
 ) -> list[GameRecord]:
     """Play independent games while batching every neural search evaluation."""
     if len(rngs) != len(seeds):
@@ -73,6 +80,7 @@ def play_selfplay_games(
     transitions = [game.reset(seed) for seed in seeds]
     records: list[GameRecord] = [[] for _ in seeds]
     moves = [0 for _ in seeds]
+    first_role = [game.first_role_player(t.state) for t in transitions]
 
     while True:
         active = [
@@ -85,8 +93,22 @@ def play_selfplay_games(
             observations=[transitions[index].observation for index in active],
             legal_actions=[transitions[index].legal_actions for index in active],
             rngs=[rngs[index] for index in active],
-            temperatures=[1.0 if moves[index] < temperature_moves else 0.0 for index in active],
-            add_root_noise=True,
+            temperatures=[
+                1.0
+                if (
+                    transitions[index].player == first_role[index]
+                    if first_role_exploration_only
+                    else moves[index] < temperature_moves
+                )
+                else 0.0
+                for index in active
+            ],
+            add_root_noise=[
+                (transitions[index].player == first_role[index])
+                if first_role_exploration_only
+                else True
+                for index in active
+            ],
         )
         for index, result in zip(active, results, strict=True):
             transition = transitions[index]
@@ -96,6 +118,7 @@ def play_selfplay_games(
                 policy=result.policy.astype(np.float32),
                 action=result.action,
                 player=transition.player,
+                role=0 if transition.player == first_role[index] else 1,
             )
             next_transition = game.step(transition.state, result.action)
             position.reward = next_transition.reward
@@ -117,9 +140,10 @@ def train_alphazero_step(
     replay: ReplayBuffer,
     batch_size: int,
     device: torch.device,
+    balanced: bool = False,
 ) -> dict[str, float]:
     network.train()
-    batch = replay.sample_positions(batch_size)
+    batch = replay.sample_positions(batch_size, balanced=balanced)
     logits, values = network(_observations(batch, device))
     p_loss = policy_loss(logits, _policies(batch, device))
     v_loss = F.mse_loss(values, _outcomes(batch, device))
@@ -226,13 +250,15 @@ def train_muzero_step(
 @dataclass
 class TrainedAgent:
     name: str
-    network: AlphaZeroNet | MuZeroNet
+    network: PolicyValueNet | MuZeroNet
     history: list[dict[str, float]]
     config: ExperimentConfig
 
 
-def _new_network(kind: str, config: ExperimentConfig) -> AlphaZeroNet | MuZeroNet:
+def _new_network(kind: str, config: ExperimentConfig) -> PolicyValueNet | MuZeroNet:
     if kind == "alphazero":
+        if isinstance(config.game, BraidGameConfig):
+            return BraidAlphaZeroNet(config.game, config.model)
         return AlphaZeroNet(config.game, config.model)
     if kind == "muzero":
         return MuZeroNet(config.game, config.model)
@@ -272,7 +298,7 @@ def _save_checkpoint(
     kind: str,
     iteration: int,
     config: ExperimentConfig,
-    network: AlphaZeroNet | MuZeroNet,
+    network: PolicyValueNet | MuZeroNet,
     optimizer: torch.optim.Optimizer,
     replay: ReplayBuffer,
     rng: np.random.Generator,
@@ -303,7 +329,7 @@ def _load_checkpoint(
     *,
     kind: str,
     config: ExperimentConfig,
-    network: AlphaZeroNet | MuZeroNet,
+    network: PolicyValueNet | MuZeroNet,
     optimizer: torch.optim.Optimizer,
     replay: ReplayBuffer,
     rng: np.random.Generator,
@@ -345,11 +371,16 @@ def train_agent(
     *,
     checkpoint_dir: Path | None = None,
     resume: bool = False,
+    iteration_hook: Callable[[int, PolicyValueNet | MuZeroNet], str | None] | None = None,
 ) -> TrainedAgent:
+    """`iteration_hook(iteration, network)` runs after each iteration; whatever
+    string it returns is appended to that iteration's log line. Used to evaluate
+    against a frozen anchor set without threading game-specific code through the
+    training loop."""
     torch.manual_seed(config.train.seed)
     np_rng = np.random.default_rng(config.train.seed)
     device = torch.device(config.train.device)
-    game = Go6x6(config.game)
+    game = make_game(config.game)
     network = _new_network(kind, config)
     network.to(device)
     optimizer = torch.optim.AdamW(
@@ -398,6 +429,7 @@ def train_agent(
                 game_rngs,
                 seeds,
                 config.train.temperature_moves,
+                config.train.first_role_exploration_only,
             )
             records.extend(batch_records)
             simulated_positions += sum(len(record) for record in batch_records)
@@ -415,7 +447,12 @@ def train_agent(
         for _ in range(config.train.train_steps):
             if kind == "alphazero":
                 metrics = train_alphazero_step(
-                    network, optimizer, replay, config.train.batch_size, device
+                    network,
+                    optimizer,
+                    replay,
+                    config.train.batch_size,
+                    device,
+                    balanced=config.train.role_balanced_batches,
                 )
             else:
                 assert isinstance(network, MuZeroNet)
@@ -440,7 +477,9 @@ def train_agent(
             **metrics,
         }
         history.append(row)
-        print(f"{kind} iteration {iteration + 1}/{config.train.iterations}: {row}")
+        note = iteration_hook(iteration + 1, network) if iteration_hook is not None else None
+        suffix = f" | {note}" if note else ""
+        print(f"{kind} iteration {iteration + 1}/{config.train.iterations}: {row}{suffix}")
         completed_iteration = iteration + 1
         if checkpoint_dir is not None and completed_iteration in checkpoint_iterations:
             _save_checkpoint(
@@ -463,12 +502,19 @@ def play_arena_game(
     seed: int,
     *,
     first_is_black: bool | None = None,
-    opening_moves: int = 6,
+    opening_moves: int | None = None,
 ) -> float:
-    """Return +1 first-agent win, -1 second-agent win, or 0 draw."""
+    """Return +1 first-agent win, -1 second-agent win, or 0 draw.
+
+    `first_is_black` selects which side the first agent takes: Black in Go, the
+    Scrambler in the braid game. Random opening plies keep temperature-0 arena
+    games from all being identical; how many is a property of the game.
+    """
     if first.config.game != second.config.game:
         raise ValueError("Cross-play agents must use the same game configuration")
-    game = Go6x6(first.config.game)
+    game = make_game(first.config.game)
+    if opening_moves is None:
+        opening_moves = first.config.game.opening_moves
     rng = np.random.default_rng(seed)
     transition = game.reset(seed)
     for _ in range(opening_moves):
@@ -477,9 +523,9 @@ def play_arena_game(
         actions = np.flatnonzero(transition.legal_actions)
         action = int(rng.choice(actions))
         transition = game.step(transition.state, action)
-    # Pgx randomizes the external player-id order. current_player at reset is
-    # Black, so use the preserved mapping rather than assuming player 0 is Black.
-    black_player = int(np.asarray(transition.state._player_order[0]))
+    # Pgx randomizes the external player-id order, so ask the adapter which id
+    # holds the first role rather than assuming it is player 0.
+    black_player = game.first_role_player(transition.state)
     if first_is_black is None:
         first_is_black = seed % 2 == 0
     first_player = black_player if first_is_black else 1 - black_player
@@ -557,6 +603,64 @@ def compare_pair(
         "first_as_black_games": len(black_outcomes),
         "first_as_white_wins": sum(value > 0 for value in white_outcomes),
         "first_as_white_games": len(white_outcomes),
+    }
+
+
+def play_baseline_game(
+    agent: TrainedAgent,
+    seed: int,
+    *,
+    agent_takes_first_role: bool,
+) -> float:
+    """Agent against a uniform-random opponent. Returns +1 if the agent wins.
+
+    This is the measurement the braid game actually needs. An arena between two
+    trained agents says which is stronger; it does not say whether either has
+    learned anything, because a Scrambler that produces trivial instances and a
+    Simplifier that cannot solve them look the same as a hard pairing. Playing
+    each role against random gives an absolute number with a known baseline:
+    a uniform-random Simplifier undoes ~1.6% of K=6 tier-0 scrambles.
+    """
+    game = make_game(agent.config.game)
+    rng = np.random.default_rng(seed)
+    transition = game.reset(seed)
+    role_player = game.first_role_player(transition.state)
+    agent_player = role_player if agent_takes_first_role else 1 - role_player
+    search = NeuralMCTS(game, agent.network, agent.config.search, agent.config.train.device)
+    while not transition.terminated:
+        if transition.player == agent_player:
+            result = search.run(
+                transition.state,
+                transition.observation,
+                transition.legal_actions,
+                rng,
+                temperature=0.0,
+                add_root_noise=False,
+            )
+            action = result.action
+        else:
+            action = int(rng.choice(np.flatnonzero(transition.legal_actions)))
+        transition = game.step(transition.state, action)
+    return float(game.final_rewards(transition.state)[agent_player])
+
+
+def evaluate_against_random(
+    agent: TrainedAgent,
+    games: int,
+    *,
+    seed: int,
+) -> dict[str, float | int]:
+    """Win rate of the agent in each role against a uniform-random opponent."""
+    scores: dict[bool, list[float]] = {True: [], False: []}
+    for role in (True, False):
+        for index in range(games):
+            scores[role].append(
+                play_baseline_game(agent, seed + index, agent_takes_first_role=role)
+            )
+    return {
+        "games_per_role": games,
+        "first_role_win_rate": float(np.mean([s > 0 for s in scores[True]])),
+        "second_role_win_rate": float(np.mean([s > 0 for s in scores[False]])),
     }
 
 
@@ -653,6 +757,27 @@ def evaluate_learning_curve(
 
 def parameter_count(network: nn.Module) -> int:
     return sum(parameter.numel() for parameter in network.parameters())
+
+
+def save_braid_experiment(
+    out: Path,
+    config: ExperimentConfig,
+    agent: TrainedAgent,
+    baseline: dict[str, float | int],
+    selfplay_arena: dict[str, float | int] | None = None,
+) -> None:
+    """Single-agent results file for the braid game (no MuZero counterpart yet)."""
+    out.mkdir(parents=True, exist_ok=True)
+    torch.save(agent.network.state_dict(), out / "alphazero.pt")
+    payload = {
+        "config": config.to_dict(),
+        "parameters": {"alphazero": parameter_count(agent.network)},
+        "history": {"alphazero": agent.history},
+        "baseline_vs_random": baseline,
+    }
+    if selfplay_arena is not None:
+        payload["selfplay_arena"] = selfplay_arena
+    (out / "results.json").write_text(json.dumps(payload, indent=2) + "\n")
 
 
 def save_experiment(

@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor, nn
 
-from pgx_mcts_bench.config import GameConfig, ModelConfig
+from pgx_mcts_bench.config import AnyGameConfig, BraidGameConfig, ModelConfig
 
 
 class ResidualBlock(nn.Module):
@@ -23,7 +23,7 @@ class ResidualBlock(nn.Module):
 
 
 class Representation(nn.Module):
-    def __init__(self, game: GameConfig, model: ModelConfig, output_channels: int):
+    def __init__(self, game: AnyGameConfig, model: ModelConfig, output_channels: int):
         super().__init__()
         blocks = [ResidualBlock(output_channels) for _ in range(model.residual_blocks)]
         self.net = nn.Sequential(
@@ -41,13 +41,13 @@ class PredictionHead(nn.Module):
     def __init__(
         self,
         channels: int,
-        game: GameConfig,
+        game: AnyGameConfig,
         *,
         include_legal: bool,
         include_terminal: bool,
     ):
         super().__init__()
-        cells = game.board_size**2
+        cells = game.cells
         self.include_legal = include_legal
         self.policy = nn.Sequential(
             nn.Conv2d(channels, 2, 1),
@@ -103,8 +103,19 @@ class PredictionHead(nn.Module):
         )
 
 
-class AlphaZeroNet(nn.Module):
-    def __init__(self, game: GameConfig, model: ModelConfig):
+class PolicyValueNet(nn.Module):
+    """Anything the AlphaZero search path accepts: observation -> (policy, value).
+
+    `NeuralMCTS` dispatches on this rather than on `AlphaZeroNet` so that a game
+    can supply its own head shape without being mistaken for a MuZero network.
+    """
+
+    def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
+        raise NotImplementedError
+
+
+class AlphaZeroNet(PolicyValueNet):
+    def __init__(self, game: AnyGameConfig, model: ModelConfig):
         super().__init__()
         self.representation = Representation(game, model, model.channels)
         self.prediction = PredictionHead(
@@ -119,9 +130,118 @@ class AlphaZeroNet(nn.Module):
         return policy, value
 
 
-class Dynamics(nn.Module):
-    def __init__(self, game: GameConfig, model: ModelConfig):
+class BraidPolicyHead(nn.Module):
+    """Positional policy head matching the braid action-space layout exactly.
+
+    The action space is blocked as::
+
+        [REDUCE L][COMMUTE L][BRAID L][INSERT 2(N-1)L][singletons][CROSSING L]
+
+    and a `Conv2d(channels, k, 1)` on a `1 x L` latent, flattened channel-major,
+    reproduces `k` consecutive per-position blocks in exactly that order. So the
+    head is three pieces: one convolution for the blocks that come before the
+    singletons, a pooled linear for the six singleton actions, and one more
+    convolution for the crossing-change block that comes after them.
+
+    The convolutions carry no dependence on `L`, so widening the word length is a
+    data change rather than an architecture change -- which is the property the
+    curriculum needs.
+    """
+
+    def __init__(self, channels: int, game: BraidGameConfig):
         super().__init__()
+        self.action_size = game.action_size
+        self.leading_blocks = 3 + 2 * (game.max_strands - 1)
+        # Derived, never assumed: the singleton block shrank from 6 to 4 when the
+        # word became cyclic and the two rotation moves were deleted.
+        self.singleton_actions = game.action_size - (self.leading_blocks + 1) * game.max_len
+        if self.singleton_actions < 1:
+            raise ValueError(f"action space {game.action_size} too small for the head")
+        self.positional = nn.Conv2d(channels, self.leading_blocks, 1)
+        self.singletons = nn.Linear(channels, self.singleton_actions)
+        self.crossing = nn.Conv2d(channels, 1, 1)
+
+    def forward(self, hidden: Tensor) -> Tensor:
+        positional = self.positional(hidden).flatten(1)
+        singletons = self.singletons(hidden.mean(dim=(2, 3)))
+        crossing = self.crossing(hidden).flatten(1)
+        logits = torch.cat([positional, singletons, crossing], dim=1)
+        assert logits.shape[1] == self.action_size
+        return logits
+
+
+class BraidAlphaZeroNet(PolicyValueNet):
+    """AlphaZero network for the braid environment.
+
+    The observation is a `1 x L` one-row image, so the shared residual stack
+    applies unchanged; only the policy head differs.
+    """
+
+    def __init__(self, game: BraidGameConfig, model: ModelConfig):
+        super().__init__()
+        self.representation = Representation(game, model, model.channels)
+        self.policy_head = BraidPolicyHead(model.channels, game)
+        # Pooled, not flattened. `Flatten -> Linear(L, ...)` would tie the value
+        # head to one word capacity, defeating the point: every other parameter
+        # here depends on the receptive field (11 letters), not on L, so weights
+        # trained at one capacity load and run at any other. Mean pooling keeps
+        # the scalar planes exact -- they are constant along the word -- and max
+        # pooling preserves "does any position have this feature", which mean
+        # alone washes out on a mostly padded array.
+        self.value_mode = model.braid_value_head
+        if self.value_mode not in ("flat", "pooled", "masked"):
+            raise ValueError(f"unknown braid_value_head: {self.value_mode}")
+        # The padding plane is the last of the letter one-hots.
+        self.padding_channel = 2 * (game.max_strands - 1)
+        if self.value_mode != "flat":
+            self.value_project = nn.Conv2d(model.channels, model.channels, 1)
+            self.value_head = nn.Sequential(
+                nn.Linear(2 * model.channels, 32),
+                nn.ReLU(),
+                nn.Linear(32, 1),
+                nn.Tanh(),
+            )
+        else:
+            self.value_project = nn.Conv2d(model.channels, 1, 1)
+            self.value_head = nn.Sequential(
+                nn.Linear(game.cells, 32),
+                nn.ReLU(),
+                nn.Linear(32, 1),
+                nn.Tanh(),
+            )
+
+    def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
+        hidden = self.representation(observation)
+        projected = torch.relu(self.value_project(hidden))
+        if self.value_mode == "flat":
+            summary = projected.flatten(1)
+        elif self.value_mode == "pooled":
+            summary = torch.cat(
+                [projected.mean(dim=(2, 3)), projected.amax(dim=(2, 3))], dim=1
+            )
+        else:
+            # Average over occupied positions only. Averaging over all L slots
+            # dilutes a 5-letter word by ~6x at tier 0, and the A/B showed that
+            # dilution is enough to make runs collapse.
+            occupied = 1.0 - observation[:, self.padding_channel : self.padding_channel + 1]
+            count = occupied.sum(dim=(2, 3), keepdim=True).clamp(min=1.0)
+            masked_mean = (projected * occupied).sum(dim=(2, 3), keepdim=True) / count
+            masked_max = (projected + (occupied - 1.0) * 1e4).amax(dim=(2, 3))
+            summary = torch.cat([masked_mean.flatten(1), masked_max], dim=1)
+        return self.policy_head(hidden), self.value_head(summary).squeeze(-1)
+
+
+class Dynamics(nn.Module):
+    """Learned latent transition. Go-specific: the action is encoded as a board
+    point plus a pass plane, which has no analogue in a 1158-action braid space."""
+
+    def __init__(self, game: AnyGameConfig, model: ModelConfig):
+        super().__init__()
+        if isinstance(game, BraidGameConfig):
+            raise NotImplementedError(
+                "MuZero's learned dynamics are Go-specific; the braid environment "
+                "needs an action-embedding transition instead (roadmap M2 ablation)"
+            )
         channels = model.latent_channels
         self.board_size = game.board_size
         self.action_size = game.action_size
@@ -135,7 +255,7 @@ class Dynamics(nn.Module):
             nn.Conv2d(channels, 1, 1),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(game.board_size**2, 1),
+            nn.Linear(game.cells, 1),
             nn.Tanh(),
         )
 
@@ -161,7 +281,7 @@ class Dynamics(nn.Module):
 class MuZeroNet(nn.Module):
     """Compact MuZero with learned latent dynamics and an auxiliary legality head."""
 
-    def __init__(self, game: GameConfig, model: ModelConfig):
+    def __init__(self, game: AnyGameConfig, model: ModelConfig):
         super().__init__()
         self.representation = Representation(game, model, model.latent_channels)
         self.prediction = PredictionHead(

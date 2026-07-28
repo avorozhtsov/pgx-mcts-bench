@@ -643,6 +643,7 @@ dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pgx" },
+    { name = "rf-knots" },
     { name = "torch" },
     { name = "typer" },
 ]
@@ -659,6 +660,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "pgx", specifier = ">=2.6.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.2" },
+    { name = "rf-knots", editable = "../rf-knots" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "torch", specifier = ">=2.3" },
     { name = "typer", specifier = ">=0.12" },
@@ -698,6 +700,30 @@ sdist = { url = "https://files.pythonhosted.org/packages/e4/47/b9efed96c114afcfa
 wheels = [
     { url = "https://files.pythonhosted.org/packages/24/25/1de2678b631f5a49215c6c96fff41ba892b0a34df68d6d80292b1b48aa7f/pytest-9.1.1-py3-none-any.whl", hash = "sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c", size = 386536, upload-time = "2026-06-19T10:58:31.347Z" },
 ]
+
+[[package]]
+name = "rf-knots"
+version = "0.1.0"
+source = { editable = "../rf-knots" }
+dependencies = [
+    { name = "jax", version = "0.10.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "jax", version = "0.11.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "pgx" },
+    { name = "typer" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "jax", specifier = ">=0.4.30" },
+    { name = "numpy", specifier = ">=1.26" },
+    { name = "pgx", specifier = ">=2.6.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.2" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
+    { name = "typer", specifier = ">=0.12" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "rich"
