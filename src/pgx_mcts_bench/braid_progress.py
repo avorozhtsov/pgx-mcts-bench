@@ -67,6 +67,7 @@ class BraidProgress:
         anchors: int = 16,
         seed: int = 10_000,
         bfs_depth: int = 5,
+        bfs_growth: int = 2,
         showcase: int = 6,
     ):
         if not isinstance(config.game, BraidGameConfig):
@@ -80,28 +81,54 @@ class BraidProgress:
         self.game = BraidUnknotGame(config.game)
         self.instances = anchor_instances(config.game.to_braid_config(), anchors, seed=seed)
         self.reports: list[IterationReport] = []
-        self.optimal = self._solve_anchors_exactly(bfs_depth)
+        self.optimal = self._anchor_optima(bfs_depth, bfs_growth, seed)
 
-    def _solve_anchors_exactly(self, bfs_depth: int) -> list[int | None]:
+    def _anchor_optima(self, bfs_depth: int, bfs_growth: int, seed: int) -> list[int | None]:
         """Shortest solutions where breadth-first search can still reach them.
 
         `None` means "deeper than the cutoff", not "unsolvable" -- every anchor is
         an unknot by construction. Knowing the optimum turns "solved" into
         "solved in k moves more than necessary", which is a far sharper signal.
+
+        Two things make this affordable. `bfs_growth` bounds how far the search
+        may lengthen a word: at K=6, growth 6 costs 12.9s on a 7-letter anchor
+        while growth 2 costs 0.7s for the *same* answer, because ~74% of the
+        branching is insertions. And the result is cached on disk -- the anchor
+        set is pinned to a fixed seed, so otherwise every run of every sweep
+        recomputes byte-identical numbers.
         """
+        import hashlib
+        import json as _json
+
         from rf_knots.reference import bfs_unknot
+
+        game = self.game_config
+        key = hashlib.sha256(
+            _json.dumps(
+                [
+                    game.max_len,
+                    game.max_strands,
+                    game.scramble_budget,
+                    len(self.instances),
+                    seed,
+                    bfs_depth,
+                    bfs_growth,
+                ]
+            ).encode()
+        ).hexdigest()[:16]
+        cache = self.out.parent / f".anchor-optima-{key}.json"
+        if cache.exists():
+            return [None if v is None else int(v) for v in _json.loads(cache.read_text())]
 
         spec = self.game.env.spec
         found: list[int | None] = []
         for word, strands in self.instances:
             path = bfs_unknot(
-                spec,
-                word,
-                strands,
-                max_depth=bfs_depth,
-                max_growth=self.game_config.scramble_budget,
+                spec, word, strands, max_depth=bfs_depth, max_growth=bfs_growth
             )
             found.append(None if path is None else len(path))
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(_json.dumps(found))
         return found
 
     def evaluate(self, iteration: int, network: torch.nn.Module) -> IterationReport:

@@ -159,6 +159,7 @@ class VariantResult:
     scrambler_beyond_cutoff: float
     seconds: float
     final_loss: float | None
+    setup_seconds: float = 0.0
     history: list[dict[str, float]] = field(default_factory=list)
     per_iteration: list[dict[str, Any]] = field(default_factory=list)
 
@@ -216,7 +217,13 @@ def run_variant(
     config = _experiment(variant, game, seed, device)
     # Anchors are pinned to a fixed seed so that every variant AND every seed is
     # scored on the same instances.
+    #
+    # Setup is timed separately from training. The anchor optima are exact BFS,
+    # and they were once 18x more expensive than necessary while being invisible
+    # inside a single opaque per-run duration.
+    setup_started = time.perf_counter()
     progress = BraidProgress(config, out / label, anchors=anchors, seed=10_000)
+    setup_seconds = time.perf_counter() - setup_started
     started = time.perf_counter()
 
     if variant.train:
@@ -260,14 +267,30 @@ def run_variant(
         scrambler_depth=float(difficulty["mean_optimal_depth"]),
         scrambler_beyond_cutoff=float(difficulty["beyond_cutoff"]),
         seconds=time.perf_counter() - started,
+        setup_seconds=setup_seconds,
         final_loss=float(agent.history[-1]["loss"]) if agent.history else None,
         history=agent.history,
         per_iteration=per_iteration,
     )
 
 
+def enable_jax_compilation_cache() -> None:
+    """Share compiled JAX kernels across processes and across runs.
+
+    Every worker otherwise recompiles the env's `init` and `step` from scratch,
+    which the preflight timing showed is most of a worker's setup cost.
+    """
+    import jax
+
+    cache = Path.home() / ".cache" / "jax-pgx-mcts-bench"
+    cache.mkdir(parents=True, exist_ok=True)
+    jax.config.update("jax_compilation_cache_dir", str(cache))
+    jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
+    jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.1)
+
+
 def _worker_init() -> None:
-    """Pin each worker to one thread.
+    """Pin each worker to one thread, and share the JAX compilation cache.
 
     The nets are tiny (40k parameters, batch 8), so BLAS threading buys nothing
     and 8 workers x 4 threads on 8 cores would thrash. One thread per worker,
@@ -278,6 +301,7 @@ def _worker_init() -> None:
     import torch
 
     torch.set_num_threads(1)
+    enable_jax_compilation_cache()
 
 
 def _run_job(payload: tuple) -> VariantResult:
@@ -354,6 +378,7 @@ def run_sweep(
     log=print,
 ) -> list[VariantResult]:
     out.mkdir(parents=True, exist_ok=True)
+    enable_jax_compilation_cache()
     results: list[VariantResult] = []
     jobs = [
         (
@@ -370,13 +395,32 @@ def run_sweep(
         for offset in range(seeds)
     ]
 
+    wall_started = time.perf_counter()
+
     def record(result: VariantResult) -> None:
         results.append(result)
         excess = "-" if result.mean_excess is None else f"{result.mean_excess:+.2f}"
         log(
             f"[{len(results)}/{len(jobs)}] {result.name}: solve {result.solve_rate:.3f}  "
-            f"excess {excess}  Scr-depth {result.scrambler_depth:.2f}  {result.seconds:.0f}s"
+            f"excess {excess}  Scr-depth {result.scrambler_depth:.2f}  "
+            f"{result.seconds:.0f}s train + {result.setup_seconds:.0f}s setup"
         )
+        if len(results) == 1:
+            # Project from the first completion, so a sweep that is going to take
+            # hours says so in the first minute rather than the first hour.
+            elapsed = time.perf_counter() - wall_started
+            rounds = -(-len(jobs) // max(workers, 1))
+            projected = elapsed * rounds
+            log(
+                f"    first job done in {elapsed:.0f}s; {len(jobs)} jobs / "
+                f"{workers} workers = {rounds} rounds -> projected ~{projected / 60:.0f} min"
+            )
+            if result.setup_seconds > 0.3 * (result.setup_seconds + result.seconds):
+                log(
+                    f"    WARNING: setup is {result.setup_seconds:.0f}s of "
+                    f"{result.setup_seconds + result.seconds:.0f}s. Lower --anchors or "
+                    f"the BFS growth bound; anchor optima are cached across runs."
+                )
         control = next((r for r in results if r.name.startswith("no-training")), None)
         (out / "summary.json").write_text(
             json.dumps([vars(r) for r in results], indent=2, default=float) + "\n"
@@ -387,6 +431,22 @@ def run_sweep(
         for payload in jobs:
             record(_run_job(payload))
         return results
+
+    # Warm the anchor-optima cache before dispatching. Workers all start at once,
+    # so without this none of them finds a cache file and every one recomputes
+    # the identical exact BFS -- which the preflight timing showed was 59% of a
+    # short run's wall clock.
+    from dataclasses import replace as _replace
+
+    for budget in sorted({v.scramble_budget for v in variants}):
+        warm_started = time.perf_counter()
+        BraidProgress(
+            _experiment(variants[0], _replace(tier, scramble_budget=budget), seed, device),
+            out / f".warm-K{budget}",
+            anchors=anchors,
+            seed=10_000,
+        )
+        log(f"anchor optima for K={budget} ready in {time.perf_counter() - warm_started:.0f}s")
 
     # The runs share nothing: separate output directories, separate seeds, and
     # results that depend only on (variant, seed). So parallel execution gives

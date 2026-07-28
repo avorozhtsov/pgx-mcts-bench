@@ -259,7 +259,7 @@ def test_training_runs_end_to_end(tmp_path) -> None:
 
 def test_progress_tracker_produces_a_report(tmp_path) -> None:
     config = _experiment()
-    progress = BraidProgress(config, tmp_path, anchors=2, bfs_depth=4)
+    progress = BraidProgress(config, tmp_path / "run", anchors=2, bfs_depth=4)
     assert len(progress.instances) == 2
     for word, strands in progress.instances:
         assert word != ()
@@ -269,10 +269,14 @@ def test_progress_tracker_produces_a_report(tmp_path) -> None:
     report = progress.evaluate(1, network)
     assert 0.0 <= report.solve_rate <= 1.0
     assert len(report.attempts) == 2
-    markdown = (tmp_path / "progress.md").read_text()
+    markdown = (tmp_path / "run" / "progress.md").read_text()
     assert "Braid unknotting progress" in markdown
     assert "<svg" in markdown
-    assert (tmp_path / "progress.json").exists()
+    assert (tmp_path / "run" / "progress.json").exists()
+    caches = list(tmp_path.glob(".anchor-optima-*.json"))
+    assert len(caches) == 1, "anchor optima must be cached, not recomputed per run"
+    second = BraidProgress(config, tmp_path / "run2", anchors=2, bfs_depth=4)
+    assert second.optimal == progress.optimal
 
 
 # -- the fixes -----------------------------------------------------------------
