@@ -73,7 +73,7 @@ def play_selfplay_games(
     rngs: list[np.random.Generator],
     seeds: list[int],
     temperature_moves: int,
-    first_role_exploration_only: bool = False,
+    random_first_role: bool = False,
 ) -> list[GameRecord]:
     """Play independent games while batching every neural search evaluation."""
     if len(rngs) != len(seeds):
@@ -89,42 +89,51 @@ def play_selfplay_games(
         ]
         if not active:
             break
-        results = search.run_batch(
-            states=[transitions[index].state for index in active],
-            observations=[transitions[index].observation for index in active],
-            legal_actions=[transitions[index].legal_actions for index in active],
-            rngs=[rngs[index] for index in active],
-            temperatures=[
-                1.0
-                if (
-                    transitions[index].player == first_role[index]
-                    if first_role_exploration_only
-                    else moves[index] < temperature_moves
-                )
-                else 0.0
-                for index in active
-            ],
-            add_root_noise=[
-                (transitions[index].player == first_role[index])
-                if first_role_exploration_only
-                else True
-                for index in active
-            ],
-        )
-        for index, result in zip(active, results, strict=True):
-            transition = transitions[index]
-            position = Position(
-                observation=transition.observation,
-                legal_actions=transition.legal_actions,
-                policy=result.policy.astype(np.float32),
-                action=result.action,
-                player=transition.player,
-                role=0 if transition.player == first_role[index] else 1,
+        # The first role (the Scrambler) plays uniform-random legal moves and its
+        # positions are not trained on. A learned adversary measured no better
+        # than this over 8 seeds and collapsed to worse on some, so it is a fixed
+        # generator now rather than an agent.
+        searched = [
+            index
+            for index in active
+            if not (random_first_role and transitions[index].player == first_role[index])
+        ]
+        results_by_index: dict[int, Any] = {}
+        if searched:
+            batch = search.run_batch(
+                states=[transitions[i].state for i in searched],
+                observations=[transitions[i].observation for i in searched],
+                legal_actions=[transitions[i].legal_actions for i in searched],
+                rngs=[rngs[i] for i in searched],
+                temperatures=[
+                    1.0 if moves[i] < temperature_moves else 0.0 for i in searched
+                ],
+                add_root_noise=True,
             )
-            next_transition = game.step(transition.state, result.action)
-            position.reward = next_transition.reward
-            position.next_terminated = next_transition.terminated
-            records[index].append(position)
+            results_by_index = dict(zip(searched, batch, strict=True))
+        for index in active:
+            transition = transitions[index]
+            if index in results_by_index:
+                result = results_by_index[index]
+                position = Position(
+                    observation=transition.observation,
+                    legal_actions=transition.legal_actions,
+                    policy=result.policy.astype(np.float32),
+                    action=result.action,
+                    player=transition.player,
+                    role=0 if transition.player == first_role[index] else 1,
+                )
+                action = result.action
+            else:
+                position = None
+                action = int(
+                    rngs[index].choice(np.flatnonzero(transition.legal_actions))
+                )
+            next_transition = game.step(transition.state, action)
+            if position is not None:
+                position.reward = next_transition.reward
+                position.next_terminated = next_transition.terminated
+                records[index].append(position)
             transitions[index] = next_transition
             moves[index] += 1
 
@@ -158,10 +167,9 @@ def train_alphazero_step(
     replay: ReplayBuffer,
     batch_size: int,
     device: torch.device,
-    balanced: bool = False,
 ) -> dict[str, float]:
     network.train()
-    batch = replay.sample_positions(batch_size, balanced=balanced)
+    batch = replay.sample_positions(batch_size)
     logits, values = network(_observations(batch, device))
     p_loss = policy_loss(logits, _policies(batch, device))
     v_loss = F.mse_loss(values, _outcomes(batch, device))
@@ -459,7 +467,7 @@ def train_agent(
                 game_rngs,
                 seeds,
                 config.train.temperature_moves,
-                config.train.first_role_exploration_only,
+                config.train.random_first_role,
             )
             records.extend(batch_records)
             simulated_positions += sum(len(record) for record in batch_records)
@@ -482,7 +490,6 @@ def train_agent(
                     replay,
                     config.train.batch_size,
                     device,
-                    balanced=config.train.role_balanced_batches,
                 )
             else:
                 assert isinstance(network, MuZeroNet)

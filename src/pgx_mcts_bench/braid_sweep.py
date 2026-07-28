@@ -23,7 +23,7 @@ from typing import Any
 
 import torch
 
-from pgx_mcts_bench.braid_progress import BraidProgress, evaluate_scrambler_difficulty
+from pgx_mcts_bench.braid_progress import BraidProgress
 from pgx_mcts_bench.config import (
     BraidGameConfig,
     ExperimentConfig,
@@ -49,12 +49,6 @@ class Variant:
     batch_size: int = 32
     learning_rate: float = 1e-3
     temperature_moves: int = 12
-    first_role_exploration_only: bool = False
-    role_balanced_batches: bool = False
-    max_children: int = 0
-    dirichlet_scale: float = 0.0
-    speed_bonus: float = 0.0
-    value_head: str = "masked"
     curriculum_start_k: int = 0
     serial_window: int = 0
     simplify_budget: int = 0
@@ -78,8 +72,7 @@ def default_variants(iterations: int, scramble_budget: int) -> list[Variant]:
             exploration="u3",
             **common,
         ),
-        Variant("u4", "prior-weighted UCT; best mean and tightest spread so far",
-                exploration="u4", **common),
+        Variant("u4", "prior-weighted UCT", exploration="u4", **common),
         Variant("u5-muzero", "MuZero pb_c schedule", exploration="u5", **common),
         Variant(
             "search-heavy",
@@ -88,88 +81,16 @@ def default_variants(iterations: int, scramble_budget: int) -> list[Variant]:
             **common,
         ),
         Variant(
-            "search-light",
-            "8 simulations: forces the network to carry the policy",
-            simulations=8,
-            **common,
-        ),
-        Variant("wide-net", "96 channels: is the network underfitting?",
-                channels=96, train_steps=128, **common),
-        Variant("long-train", "4x the optimizer steps per iteration", train_steps=256, **common),
-        Variant(
-            "role-exploration",
-            "FIX: explore only while scrambling; play the Simplifier sharply",
-            first_role_exploration_only=True,
-            **common,
-        ),
-        Variant(
-            "balanced-batches",
-            "FIX: equal gradient per role; the buffer is otherwise ~85% Simplifier",
-            role_balanced_batches=True,
-            **common,
-        ),
-        Variant(
-            "topk-16",
-            "FIX: expand only the 16 highest-prior children; 74% of actions are insertions",
-            max_children=16,
-            **common,
-        ),
-        Variant(
-            "speed-bonus",
-            "FIX: reward shorter solutions; solution length IS the unknotting bound",
-            speed_bonus=0.3,
-            **common,
-        ),
-        Variant(
-            "value-flat",
-            "A/B: reads every position; accurate but tied to one word capacity",
-            value_head="flat",
-            **common,
-        ),
-        Variant(
-            "value-pooled",
-            "A/B: pools over all L slots; length-agnostic but dilutes by ~6x",
-            value_head="pooled",
-            **common,
-        ),
-        Variant(
-            "value-masked",
-            "A/B: pools over occupied positions only; no dilution, still agnostic",
-            value_head="masked",
-            **common,
-        ),
-        Variant(
             "curriculum",
-            "FIX: start K low and climb only while the Simplifier is winning",
+            "start K low and climb only while the Simplifier is winning. 0.951 +- 0.029 "
+            "with no collapses, against 0.375 for the control.",
             curriculum_start_k=1,
-            **common,
-        ),
-        Variant(
-            "curriculum-u4",
-            "curriculum on the steadiest exploration rule",
-            curriculum_start_k=1,
-            exploration="u4",
-            **common,
-        ),
-        Variant(
-            "curriculum-speed",
-            "FIX: curriculum + graded payoff, so a slow Simplifier win pays the "
-            "Scrambler more than a fast one -- otherwise its reward is a constant -1",
-            curriculum_start_k=1,
-            speed_bonus=0.3,
-            **common,
-        ),
-        Variant(
-            "curriculum-speed-hi",
-            "the same, with a stronger difficulty gradient",
-            curriculum_start_k=1,
-            speed_bonus=0.6,
             **common,
         ),
         Variant(
             "serial-w7",
-            "moving window: act at a head, shift by w/2. Action space 2N+8, "
-            "independent of L. Shifts cost plies, so the budget is raised.",
+            "moving window: act within a window, shift the head by w/2. Action space "
+            "is independent of L. Shifts cost plies, so the budget is raised.",
             serial_window=7,
             simplify_budget=48,
             curriculum_start_k=1,
@@ -183,15 +104,6 @@ def default_variants(iterations: int, scramble_budget: int) -> list[Variant]:
             curriculum_start_k=1,
             **common,
         ),
-        Variant(
-            "all-fixes",
-            "the fixes that worked, bundled: role exploration + balanced batches",
-            exploration="u4",
-            first_role_exploration_only=True,
-            role_balanced_batches=True,
-            dirichlet_scale=10.0,
-            **common,
-        ),
     ]
 
 
@@ -203,8 +115,6 @@ class VariantResult:
     mean_excess: float | None
     scrambler_win_rate: float
     simplifier_win_rate: float
-    scrambler_depth: float
-    scrambler_beyond_cutoff: float
     seconds: float
     final_loss: float | None
     setup_seconds: float = 0.0
@@ -220,13 +130,10 @@ def _experiment(
         search=SearchConfig(
             simulations=variant.simulations,
             exploration=variant.exploration,  # type: ignore[arg-type]
-            max_children=variant.max_children,
-            root_dirichlet_scale=variant.dirichlet_scale,
         ),
         model=ModelConfig(
             channels=variant.channels,
             latent_channels=variant.channels,
-            braid_value_head=variant.value_head,
         ),
         train=TrainConfig(
             iterations=variant.iterations,
@@ -235,8 +142,7 @@ def _experiment(
             batch_size=variant.batch_size,
             learning_rate=variant.learning_rate,
             temperature_moves=variant.temperature_moves,
-            first_role_exploration_only=variant.first_role_exploration_only,
-            role_balanced_batches=variant.role_balanced_batches,
+            random_first_role=True,
             curriculum_start_k=variant.curriculum_start_k,
             seed=seed,
             device=device,
@@ -254,7 +160,6 @@ def run_variant(
     seed: int,
     device: str,
     label: str | None = None,
-    track_scrambler: int = 0,
 ) -> VariantResult:
     from dataclasses import replace
 
@@ -262,7 +167,6 @@ def run_variant(
     game = replace(
         tier,
         scramble_budget=variant.scramble_budget,
-        simplifier_speed_bonus=variant.speed_bonus,
         serial_window=variant.serial_window,
         simplify_budget=variant.simplify_budget or tier.simplify_budget,
     )
@@ -288,19 +192,8 @@ def run_variant(
                 "solve_rate": report.solve_rate,
                 "mean_excess": report.mean_excess,
             }
-            if track_scrambler:
-                # The Scrambler's reward is K+M plies away and its search cannot
-                # reach it, so "is it learning at all?" needs its own trace.
-                agent_now = TrainedAgent("alphazero", network, [], config)
-                stats = evaluate_scrambler_difficulty(
-                    agent_now, track_scrambler, seed=seed + 900_000, bfs_depth=6
-                )
-                row["scrambler_depth"] = stats["mean_optimal_depth"]
             per_iteration.append(row)
-            extra = (
-                f", Scr-depth {row['scrambler_depth']:.2f}" if track_scrambler else ""
-            )
-            return progress.summary_line(report) + extra
+            return progress.summary_line(report)
 
         agent = train_agent("alphazero", config, iteration_hook=hook)
     else:
@@ -318,7 +211,6 @@ def run_variant(
 
     final = progress.reports[-1]
     baseline = evaluate_against_random(agent, baseline_games, seed=seed + 500_000)
-    difficulty = evaluate_scrambler_difficulty(agent, baseline_games, seed=seed + 700_000)
     return VariantResult(
         name=label,
         rationale=variant.rationale,
@@ -326,8 +218,6 @@ def run_variant(
         mean_excess=final.mean_excess,
         scrambler_win_rate=float(baseline["first_role_win_rate"]),
         simplifier_win_rate=float(baseline["second_role_win_rate"]),
-        scrambler_depth=float(difficulty["mean_optimal_depth"]),
-        scrambler_beyond_cutoff=float(difficulty["beyond_cutoff"]),
         seconds=time.perf_counter() - started,
         setup_seconds=setup_seconds,
         final_loss=float(agent.history[-1]["loss"]) if agent.history else None,
@@ -367,7 +257,7 @@ def _worker_init() -> None:
 
 
 def _run_job(payload: tuple) -> VariantResult:
-    variant, tier, out, anchors, baseline_games, seed, device, label, track = payload
+    variant, tier, out, anchors, baseline_games, seed, device, label = payload
     return run_variant(
         variant,
         tier,
@@ -377,7 +267,6 @@ def _run_job(payload: tuple) -> VariantResult:
         seed=seed,
         device=device,
         label=label,
-        track_scrambler=track,
     )
 
 
@@ -392,9 +281,6 @@ def render_summary(results: list[VariantResult], control: VariantResult | None) 
         "* `excess` — moves used beyond a shortest solution, averaged over solved anchors.",
         "  Lower is better; the reward is win/lose, so nothing directly optimises this.",
         "* `Simp vs rnd` — Simplifier win rate against a uniform-random Scrambler.",
-        "* `Scr depth` — exact BFS-optimal depth of the instances this Scrambler makes.",
-        "  A uniform-random Scrambler at K=4 scores 3.16; that is the number to beat.",
-        "  `>cutoff` is the fraction too hard for BFS to solve — the interesting ones.",
         "",
     ]
     if control is not None:
@@ -405,17 +291,15 @@ def render_summary(results: list[VariantResult], control: VariantResult | None) 
             "",
         ]
     lines += [
-        "| variant | solve rate | excess | Simp vs rnd | Scr depth | Scr >cutoff "
-        "| final loss | seconds |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| variant | solve rate | excess | Simp vs rnd | final loss | seconds |",
+        "|---|---:|---:|---:|---:|---:|",
     ]
     for result in sorted(results, key=lambda r: (-r.solve_rate, r.mean_excess or 1e9)):
         excess = "-" if result.mean_excess is None else f"{result.mean_excess:+.2f}"
         loss = "-" if result.final_loss is None else f"{result.final_loss:.3f}"
         lines.append(
             f"| `{result.name}` | {result.solve_rate:.3f} | {excess} "
-            f"| {result.simplifier_win_rate:.2f} | {result.scrambler_depth:.2f} "
-            f"| {result.scrambler_beyond_cutoff:.2f} | {loss} | {result.seconds:.0f} |"
+            f"| {result.simplifier_win_rate:.2f} | {loss} | {result.seconds:.0f} |"
         )
     lines += ["", "## What each variant was testing", ""]
     for result in results:
@@ -438,7 +322,6 @@ def run_sweep(
     seeds: int = 1,
     device: str = "cpu",
     workers: int = 1,
-    track_scrambler: int = 0,
     log=print,
 ) -> list[VariantResult]:
     out.mkdir(parents=True, exist_ok=True)
@@ -454,7 +337,6 @@ def run_sweep(
             seed + offset,
             device,
             variant.name if seeds == 1 else f"{variant.name}#s{seed + offset}",
-            track_scrambler,
         )
         for variant in variants
         for offset in range(seeds)
@@ -467,7 +349,7 @@ def run_sweep(
         excess = "-" if result.mean_excess is None else f"{result.mean_excess:+.2f}"
         log(
             f"[{len(results)}/{len(jobs)}] {result.name}: solve {result.solve_rate:.3f}  "
-            f"excess {excess}  Scr-depth {result.scrambler_depth:.2f}  "
+            f"excess {excess}  "
             f"{result.seconds:.0f}s train + {result.setup_seconds:.0f}s setup"
         )
         if len(results) == 1:

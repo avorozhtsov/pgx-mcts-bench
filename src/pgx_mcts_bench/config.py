@@ -67,7 +67,6 @@ class BraidGameConfig:
     scramble_budget: int = 6
     simplify_budget: int = 24
     allow_crossing_change: bool = False
-    simplifier_speed_bonus: float = 0.0
     multi_objective: bool = False
     log_ratio_range: tuple[float, float] = (0.0, 0.0)
     # > 0 selects the serial (moving-window) formulation: the agent sees a window
@@ -87,7 +86,6 @@ class BraidGameConfig:
             scramble_budget=self.scramble_budget,
             simplify_budget=self.simplify_budget,
             allow_crossing_change=self.allow_crossing_change,
-            simplifier_speed_bonus=self.simplifier_speed_bonus,
             multi_objective=self.multi_objective,
             log_ratio_range=self.log_ratio_range,
         )
@@ -159,21 +157,7 @@ class SearchConfig:
     c2: float = 19652.0
     discount: float = 1.0
     root_dirichlet_alpha: float = 0.3
-    # If > 0, the Dirichlet concentration is `root_dirichlet_scale / legal_moves`
-    # instead of the fixed alpha. AlphaZero scales alpha inversely with the
-    # branching factor (~0.03 Go, ~0.3 chess); the braid game's branching varies
-    # by an order of magnitude between tiers, so a fixed alpha cannot fit both.
-    root_dirichlet_scale: float = 0.0
     root_exploration_fraction: float = 0.25
-    # Mix uniform into the policy prior at every node: P' = (1-e)P + e/|legal|.
-    # PUCT's exploration bonus is proportional to P, so an action the network
-    # assigns ~0 is never visited however many simulations run. A floor makes
-    # a bad prior recoverable instead of fatal.
-    prior_smoothing: float = 0.0
-    # If > 0, expand only the top-k children by prior. The braid action space is
-    # 74% insertions, most of them useless, so at tier 1 the branching factor
-    # grows well past what the simulation budget can cover.
-    max_children: int = 0
     muzero_exact_rules: bool = True
 
 
@@ -186,11 +170,6 @@ class ModelConfig:
     # what the curriculum needs; flattening reads every position directly and
     # may be more accurate at a fixed L. Which one wins is an empirical
     # question, so it is a switch rather than an assumption.
-    # "flat" reads every position (accurate, tied to one L); "pooled" averages
-    # over all L slots (length-agnostic, but ~85% of the average is padding at
-    # K=4, which the A/B showed measurably costs accuracy); "masked" pools over
-    # the occupied positions only -- length-agnostic without the dilution.
-    braid_value_head: str = "masked"
     # Condition the braid network on log(A/B) multiplicatively rather than by
     # appending a channel, so the two ends of the Pareto front can behave like
     # different networks inside one set of weights.
@@ -209,22 +188,17 @@ class TrainConfig:
     weight_decay: float = 1e-4
     unroll_steps: int = 3
     temperature_moves: int = 12
-    # Braid game: apply exploration (temperature AND root Dirichlet noise) only
-    # while the first role (the Scrambler) is moving. Diversifying instances is
-    # useful; noise in the Simplifier's play only degrades the solutions it
-    # finds. Removing exploration globally is not the answer -- the `greedy`
-    # variant did that and collapsed to 0.000 on 2 of 5 seeds.
-    first_role_exploration_only: bool = False
-    # Sample training batches with equal weight per role. Without this the braid
-    # replay buffer is ~85% Simplifier positions (K scramble plies against up to
-    # M simplify plies), so the Scrambler gets several times less gradient.
-    role_balanced_batches: bool = False
     # Braid game: raise the Scrambler's budget K only once the Simplifier is
     # actually winning. Without this a run whose Simplifier never wins a single
     # self-play game has every training target reading "Simplifier loses" -- the
     # value head learns a constant and no gradient points toward solving. That
     # was 4 of 42 runs at a fixed K=6, and they were unrecoverable from
     # iteration 1.
+    # The Scrambler is a fixed uniform-random policy, not a learned adversary:
+    # measured over 8 seeds it was indistinguishable from random (+0.15, 95% CI
+    # [-0.06, +0.35]) and collapsed to worse than random on some seeds. Only
+    # Simplifier positions are trained on.
+    random_first_role: bool = False
     curriculum_start_k: int = 0          # 0 disables; else start here and climb
     curriculum_promote_at: float = 0.5   # Simplifier self-play win rate to promote
     seed: int = 0

@@ -319,71 +319,6 @@ def braid_smoke(output: Path | None = None) -> None:
 
 
 @app.command()
-def braid_scrambler(
-    tier: str = "tier0",
-    scramble_budget: Annotated[int, typer.Option(min=1)] = 6,
-    iterations: Annotated[int, typer.Option(min=1)] = 8,
-    games: Annotated[int, typer.Option(min=8, help="Instances measured per arm")] = 60,
-    seed: Annotated[int, typer.Option()] = 0,
-    device: Annotated[str, typer.Option()] = "cpu",
-    output: Annotated[Path | None, typer.Option()] = None,
-) -> None:
-    """Does a *trained* Scrambler produce harder instances than a random one?
-
-    Trains one curriculum agent, then measures both arms on identical settings:
-    same K, same BFS cutoff and growth bound, same seeds. Reports the raw depths
-    so the comparison can carry a confidence interval instead of two bare means.
-    """
-    import json as _json
-    from dataclasses import replace as _replace
-
-    from pgx_mcts_bench.braid_progress import scrambler_depths
-
-    game = _replace(BRAID_TIERS[tier], scramble_budget=scramble_budget)
-    config = ExperimentConfig(
-        game=game,
-        search=SearchConfig(simulations=32),
-        model=ModelConfig(channels=32, latent_channels=32),
-        train=TrainConfig(
-            iterations=iterations,
-            selfplay_games=8,
-            train_steps=64,
-            batch_size=32,
-            seed=seed,
-            device=device,
-            curriculum_start_k=1,
-        ),
-    )
-    typer.echo(f"training a curriculum agent at K={scramble_budget}, seed {seed}")
-    agent = train_agent("alphazero", config)
-
-    typer.echo(f"measuring {games} instances per arm")
-    trained = scrambler_depths(agent, games, seed=seed + 900_000)
-    random_arm = scrambler_depths(agent, games, seed=seed + 900_000, random_policy=True)
-
-    out = output or artifact_dir(Path.cwd(), f"scrambler-{seed}")
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "depths.json").write_text(
-        _json.dumps({"seed": seed, "K": scramble_budget,
-                     "trained": trained, "random": random_arm}, indent=2) + "\n"
-    )
-    import statistics as _st
-
-    t = trained["depths"]
-    r = random_arm["depths"]
-    typer.echo(f"  trained: mean {_st.mean(t):.2f} sd {_st.pstdev(t):.2f} "
-               f"beyond-cutoff {trained['beyond_cutoff']:.2f}")
-    typer.echo(f"  random : mean {_st.mean(r):.2f} sd {_st.pstdev(r):.2f} "
-               f"beyond-cutoff {random_arm['beyond_cutoff']:.2f}")
-    typer.echo(
-        f"  at maximum difficulty (depth >= K): trained "
-        f"{trained['at_maximum']:.2f}  random {random_arm['at_maximum']:.2f}"
-    )
-    typer.echo(f"  difference (trained - random): {_st.mean(t) - _st.mean(r):+.2f}")
-    typer.echo(f"Saved: {out / 'depths.json'}")
-
-
-@app.command()
 def braid_screen(
     tier: Annotated[str, typer.Option(help="tier0 (small) or tier1")] = "tier0",
     scramble_budget: Annotated[int, typer.Option(min=1, help="K, the difficulty dial")] = 3,
@@ -395,9 +330,6 @@ def braid_screen(
     workers: Annotated[
         int, typer.Option(min=1, help="Parallel runs; the sweep is embarrassingly parallel")
     ] = 1,
-    track_scrambler: Annotated[
-        int, typer.Option(min=0, help="Games per iteration for Scrambler difficulty; 0 off")
-    ] = 0,
     only: Annotated[str, typer.Option(help="Comma-separated variant names to run")] = "",
     device: Annotated[str, typer.Option()] = "cpu",
     output: Annotated[Path | None, typer.Option()] = None,
@@ -432,7 +364,6 @@ def braid_screen(
         seeds=seeds,
         device=device,
         workers=workers,
-        track_scrambler=track_scrambler,
         log=typer.echo,
     )
     typer.echo(f"Summary: {out / 'summary.md'}")

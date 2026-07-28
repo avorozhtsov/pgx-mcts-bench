@@ -282,60 +282,6 @@ def test_progress_tracker_produces_a_report(tmp_path) -> None:
 # -- the fixes -----------------------------------------------------------------
 
 
-def test_replay_balances_roles() -> None:
-    """The braid buffer is ~85% Simplifier positions without this."""
-    from pgx_mcts_bench.data import Position, ReplayBuffer
-
-    rng = np.random.default_rng(0)
-    replay = ReplayBuffer(1000, rng)
-    obs = np.zeros((1, 4, 3), dtype=np.float32)
-    legal = np.ones(5, dtype=bool)
-    policy = np.ones(5, dtype=np.float32) / 5
-    scrambler = [Position(obs, legal, policy, 0, player=0, role=0) for _ in range(3)]
-    simplifier = [Position(obs, legal, policy, 0, player=1, role=1) for _ in range(97)]
-    replay.add(scrambler + simplifier)
-
-    plain = replay.sample_positions(400)
-    assert sum(p.role == 0 for p in plain) < 100  # tracks the 3% population share
-
-    balanced = replay.sample_positions(400, balanced=True)
-    assert sum(p.role == 0 for p in balanced) == 200
-
-
-def test_replay_balanced_falls_back_when_one_role_is_missing() -> None:
-    from pgx_mcts_bench.data import Position, ReplayBuffer
-
-    replay = ReplayBuffer(100, np.random.default_rng(0))
-    obs = np.zeros((1, 4, 3), dtype=np.float32)
-    replay.add([Position(obs, np.ones(5, bool), np.ones(5, np.float32) / 5, 0, 0, role=0)])
-    assert len(replay.sample_positions(8, balanced=True)) == 8
-
-
-def test_top_k_expansion_limits_and_renormalises() -> None:
-    game = BraidUnknotGame(SMALL)
-    search = NeuralMCTS(
-        game,
-        BraidAlphaZeroNet(SMALL, ModelConfig(channels=4)),
-        SearchConfig(max_children=4),
-    )
-    legal = np.zeros(SMALL.action_size, dtype=bool)
-    legal[:20] = True
-    logits = np.linspace(0.0, 5.0, SMALL.action_size)
-    node = Node(1.0)
-    search._expand_children(node, logits, legal)
-    assert len(node.children) == 4
-    assert set(node.children) == {16, 17, 18, 19}  # the four highest logits
-    assert sum(child.prior for child in node.children.values()) == pytest.approx(1.0)
-
-
-def test_unlimited_expansion_is_the_default() -> None:
-    game = BraidUnknotGame(SMALL)
-    search = NeuralMCTS(game, BraidAlphaZeroNet(SMALL, ModelConfig(channels=4)), SearchConfig())
-    legal = np.zeros(SMALL.action_size, dtype=bool)
-    legal[:20] = True
-    node = Node(1.0)
-    search._expand_children(node, np.zeros(SMALL.action_size), legal)
-    assert len(node.children) == 20
 
 
 def test_root_noise_can_be_set_per_root() -> None:
@@ -366,47 +312,6 @@ def test_root_noise_can_be_set_per_root() -> None:
         )
 
 
-def test_scaled_dirichlet_alpha_tracks_the_branching_factor() -> None:
-    """A fixed alpha cannot fit both tiers: branching varies by an order of
-    magnitude, and AlphaZero scales alpha inversely with it."""
-
-    class SpyRng:
-        def __init__(self) -> None:
-            self.alphas: list[float] = []
-            self.inner = np.random.default_rng(0)
-
-        def dirichlet(self, alphas):
-            self.alphas.append(float(alphas[0]))
-            return self.inner.dirichlet(alphas)
-
-    game = BraidUnknotGame(SMALL)
-    network = BraidAlphaZeroNet(SMALL, ModelConfig(channels=4))
-
-    scaled = NeuralMCTS(game, network, SearchConfig(root_dirichlet_scale=10.0))
-    rng = SpyRng()
-    root = Node(1.0)
-    root.children = {action: Node(0.25) for action in range(20)}
-    scaled._add_root_noise(root, rng)  # type: ignore[arg-type]
-    assert rng.alphas == [pytest.approx(10.0 / 20)]
-
-    fixed = NeuralMCTS(game, network, SearchConfig(root_dirichlet_alpha=0.3))
-    rng = SpyRng()
-    root = Node(1.0)
-    root.children = {action: Node(0.25) for action in range(20)}
-    fixed._add_root_noise(root, rng)  # type: ignore[arg-type]
-    assert rng.alphas == [pytest.approx(0.3)]
-
-
-def test_scrambler_difficulty_beats_or_matches_the_random_baseline() -> None:
-    from pgx_mcts_bench.braid_progress import evaluate_scrambler_difficulty
-    from pgx_mcts_bench.training import TrainedAgent
-
-    config = _experiment()
-    agent = TrainedAgent("alphazero", BraidAlphaZeroNet(SMALL, config.model), [], config)
-    stats = evaluate_scrambler_difficulty(agent, 4, seed=0, bfs_depth=4)
-    assert stats["games"] == 4
-    assert 0.0 <= stats["beyond_cutoff"] <= 1.0
-    assert stats["mean_word_length"] >= 0.0
 
 
 def test_the_whole_braid_network_is_length_agnostic() -> None:
@@ -419,7 +324,6 @@ def test_the_whole_braid_network_is_length_agnostic() -> None:
     small = BraidGameConfig(max_len=32, max_strands=5)
     large = BraidGameConfig(max_len=128, max_strands=5)
     model = ModelConfig(channels=16, latent_channels=16)
-    assert model.braid_value_head == "masked", "the default must be length-agnostic"
 
     trained = BraidAlphaZeroNet(small, model)
     grown = BraidAlphaZeroNet(large, model)
@@ -435,21 +339,6 @@ def test_the_whole_braid_network_is_length_agnostic() -> None:
     assert large.action_size > small.action_size
 
 
-def test_flattened_value_head_is_length_dependent() -> None:
-    """The A/B alternative, and the reason it is not the default: it reads every
-    position directly, so its weights are tied to one word capacity."""
-    model = ModelConfig(channels=16, latent_channels=16, braid_value_head="flat")
-    small = BraidAlphaZeroNet(BraidGameConfig(max_len=32, max_strands=5), model)
-    large = BraidAlphaZeroNet(BraidGameConfig(max_len=128, max_strands=5), model)
-    shapes_small = {k: v.shape for k, v in small.state_dict().items()}
-    shapes_large = {k: v.shape for k, v in large.state_dict().items()}
-    assert {k for k in shapes_small if shapes_small[k] != shapes_large[k]}
-
-    game = BraidGameConfig(max_len=32, max_strands=5)
-    policy, value = small(torch.zeros(2, game.observation_channels, 1, game.max_len))
-    assert policy.shape == (2, game.action_size)
-    assert value.shape == (2,)
-
 
 def test_masked_value_head_is_length_agnostic_and_finite() -> None:
     """Masked pooling keeps the head independent of L while ignoring padding.
@@ -457,7 +346,7 @@ def test_masked_value_head_is_length_agnostic_and_finite() -> None:
     Plain mean pooling averages a 5-letter word over all L slots; the A/B showed
     that ~6x dilution is enough to make runs collapse.
     """
-    model = ModelConfig(channels=16, latent_channels=16, braid_value_head="masked")
+    model = ModelConfig(channels=16, latent_channels=16)
     small = BraidAlphaZeroNet(BraidGameConfig(max_len=32, max_strands=5), model)
     large = BraidAlphaZeroNet(BraidGameConfig(max_len=128, max_strands=5), model)
     assert {k: v.shape for k, v in small.state_dict().items()} == {

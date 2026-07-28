@@ -251,22 +251,6 @@ class NeuralMCTS:
     def _expand_children(self, node: Node, logits: np.ndarray, legal: np.ndarray) -> None:
         priors = _masked_softmax(logits, legal, self.game.config.terminal_action)
         actions = np.flatnonzero(legal)
-        epsilon = self.config.prior_smoothing
-        if epsilon > 0 and len(actions):
-            priors = priors.copy()
-            priors[actions] = (1.0 - epsilon) * priors[actions] + epsilon / len(actions)
-        limit = self.config.max_children
-        if limit > 0 and len(actions) > limit:
-            # Keep the highest-prior actions and renormalise over them, so the
-            # PUCT constant keeps its meaning. Discarded actions are unreachable
-            # from this node -- acceptable when the simulation budget could never
-            # have visited them anyway, and the point of the learned prior is to
-            # decide which ones those are.
-            keep = np.argpartition(priors[actions], -limit)[-limit:]
-            actions = actions[keep]
-            total = float(priors[actions].sum())
-            if total > 0:
-                priors = priors / total
         node.children = {int(action): Node(prior=float(priors[action])) for action in actions}
 
     def _expand_alphazero_batch(
@@ -427,10 +411,9 @@ class NeuralMCTS:
         if not root.children or self.config.root_exploration_fraction <= 0:
             return
         actions = list(root.children)
-        alpha = self.config.root_dirichlet_alpha
-        if self.config.root_dirichlet_scale > 0:
-            alpha = self.config.root_dirichlet_scale / max(1, len(actions))
-        noise = rng.dirichlet(np.full(len(actions), alpha))
+        noise = rng.dirichlet(
+            np.full(len(actions), self.config.root_dirichlet_alpha)
+        )
         fraction = self.config.root_exploration_fraction
         for action, sample in zip(actions, noise, strict=True):
             child = root.children[action]

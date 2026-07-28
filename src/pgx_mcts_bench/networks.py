@@ -220,27 +220,15 @@ class BraidAlphaZeroNet(PolicyValueNet):
         # the scalar planes exact -- they are constant along the word -- and max
         # pooling preserves "does any position have this feature", which mean
         # alone washes out on a mostly padded array.
-        self.value_mode = model.braid_value_head
-        if self.value_mode not in ("flat", "pooled", "masked"):
-            raise ValueError(f"unknown braid_value_head: {self.value_mode}")
         # The padding plane is the last of the letter one-hots.
         self.padding_channel = 2 * (game.max_strands - 1)
-        if self.value_mode != "flat":
-            self.value_project = nn.Conv2d(model.channels, model.channels, 1)
-            self.value_head = nn.Sequential(
-                nn.Linear(2 * model.channels, 32),
-                nn.ReLU(),
-                nn.Linear(32, 1),
-                nn.Tanh(),
-            )
-        else:
-            self.value_project = nn.Conv2d(model.channels, 1, 1)
-            self.value_head = nn.Sequential(
-                nn.Linear(game.cells, 32),
-                nn.ReLU(),
-                nn.Linear(32, 1),
-                nn.Tanh(),
-            )
+        self.value_project = nn.Conv2d(model.channels, model.channels, 1)
+        self.value_head = nn.Sequential(
+            nn.Linear(2 * model.channels, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1),
+            nn.Tanh(),
+        )
 
     def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
         hidden = self.representation(observation)
@@ -248,21 +236,14 @@ class BraidAlphaZeroNet(PolicyValueNet):
             log_ratio = observation[:, self.ratio_channel, 0, 0]
             hidden = self.film(hidden, log_ratio)
         projected = torch.relu(self.value_project(hidden))
-        if self.value_mode == "flat":
-            summary = projected.flatten(1)
-        elif self.value_mode == "pooled":
-            summary = torch.cat(
-                [projected.mean(dim=(2, 3)), projected.amax(dim=(2, 3))], dim=1
-            )
-        else:
-            # Average over occupied positions only. Averaging over all L slots
-            # dilutes a 5-letter word by ~6x at tier 0, and the A/B showed that
-            # dilution is enough to make runs collapse.
-            occupied = 1.0 - observation[:, self.padding_channel : self.padding_channel + 1]
-            count = occupied.sum(dim=(2, 3), keepdim=True).clamp(min=1.0)
-            masked_mean = (projected * occupied).sum(dim=(2, 3), keepdim=True) / count
-            masked_max = (projected + (occupied - 1.0) * 1e4).amax(dim=(2, 3))
-            summary = torch.cat([masked_mean.flatten(1), masked_max], dim=1)
+        # Pool over occupied positions only. Averaging over all L slots dilutes a
+        # 5-letter word by ~6x at tier 0, and an A/B over 6 seeds showed that
+        # dilution is enough to make runs collapse (0.778 against 0.944).
+        occupied = 1.0 - observation[:, self.padding_channel : self.padding_channel + 1]
+        count = occupied.sum(dim=(2, 3), keepdim=True).clamp(min=1.0)
+        masked_mean = (projected * occupied).sum(dim=(2, 3), keepdim=True) / count
+        masked_max = (projected + (occupied - 1.0) * 1e4).amax(dim=(2, 3))
+        summary = torch.cat([masked_mean.flatten(1), masked_max], dim=1)
         return self.policy_head(hidden), self.value_head(summary).squeeze(-1)
 
 
