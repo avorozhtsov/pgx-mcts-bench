@@ -509,3 +509,126 @@ def test_curriculum_is_off_by_default_and_reports_the_target() -> None:
     assert config.train.curriculum_start_k == 0
     agent = train_agent("alphazero", config)
     assert agent.history[0]["scramble_k"] == float(SMALL.scramble_budget)
+
+
+# -- serial (moving-window) formulation ----------------------------------------
+
+SERIAL = BraidGameConfig(
+    max_len=12, max_strands=4, scramble_budget=3, simplify_budget=18, serial_window=5
+)
+
+
+def test_serial_action_space_does_not_depend_on_L() -> None:
+    """The whole point: the serial action space is invariant to word capacity,
+    while the parallel one grows linearly with it."""
+    from dataclasses import replace as _replace
+
+    serial = [_replace(SERIAL, max_len=length).action_size for length in (12, 64, 256)]
+    assert serial == [2 * SERIAL.max_strands + 8] * 3, serial
+
+    parallel = [
+        _replace(SERIAL, max_len=length, serial_window=0).action_size
+        for length in (12, 64, 256)
+    ]
+    assert parallel[0] < parallel[1] < parallel[2]
+    assert parallel[2] > 40 * serial[2]
+
+
+def test_serial_game_dispatches_and_observes_a_window() -> None:
+    from pgx_mcts_bench.game import make_game
+    from pgx_mcts_bench.serial_braid import SerialBraidGame
+
+    game = make_game(SERIAL)
+    assert isinstance(game, SerialBraidGame)
+    transition = game.reset(0)
+    assert transition.observation.shape == (1, SERIAL.serial_window, SERIAL.observation_channels)
+    assert transition.legal_actions.shape == (SERIAL.action_size,)
+    assert transition.legal_actions.any()
+    pgx_state, head = transition.state
+    assert head == 0
+    assert game.unwrap(transition.state) is pgx_state
+
+
+def test_serial_shifts_cost_a_ply() -> None:
+    """Free shifts would make the game non-terminating and would hide the very
+    cost the serial formulation is being measured for."""
+    from pgx_mcts_bench.game import make_game
+
+    game = make_game(SERIAL)
+    transition = game.from_word([1, 2, 1, 2, 1], strands=3)
+    budget_before = int(np.asarray(game.unwrap(transition.state)._budget))
+    shift = SERIAL.action_size - 1
+    assert transition.legal_actions[shift]
+    after = game.step(transition.state, shift)
+    assert int(np.asarray(game.unwrap(after.state)._budget)) == budget_before - 1
+    assert after.state[1] != transition.state[1], "the head must actually move"
+
+
+def test_serial_edits_agree_with_the_parallel_environment() -> None:
+    """A serial edit at the head must be the same move as the parallel action."""
+    from pgx_mcts_bench.game import make_game
+    from pgx_mcts_bench.serial_braid import SERIAL_REDUCE
+
+    serial = make_game(SERIAL)
+    transition = serial.from_word([1, -1, 2, 3], strands=4)
+    assert transition.legal_actions[SERIAL_REDUCE], "s1 s1^-1 at the head reduces"
+    after = serial.step(transition.state, SERIAL_REDUCE)
+    word = [int(x) for x in np.asarray(serial.unwrap(after.state)._word) if int(x)]
+    assert word == [2, 3]
+
+
+def test_serial_trains_end_to_end(tmp_path) -> None:
+    from pgx_mcts_bench.networks import SerialBraidNet
+
+    config = ExperimentConfig(
+        game=SERIAL,
+        search=SearchConfig(simulations=4),
+        model=ModelConfig(channels=8, latent_channels=8),
+        train=TrainConfig(
+            iterations=1, selfplay_games=2, train_steps=1, batch_size=2, device="cpu"
+        ),
+    )
+    agent = train_agent("alphazero", config, checkpoint_dir=tmp_path)
+    assert isinstance(agent.network, SerialBraidNet)
+    assert agent.history[0]["mean_game_length"] > 1
+
+
+def test_acting_anywhere_in_the_window_stays_independent_of_L() -> None:
+    """Two readings of "windowed": act only at the head, or act anywhere visible.
+
+    Both keep the action space independent of L -- the position never appears in
+    the action index, only an offset bounded by the window.
+    """
+    from dataclasses import replace as _replace
+
+    head_only = [
+        _replace(SERIAL, max_len=length, serial_act_width=1).action_size
+        for length in (12, 64, 256)
+    ]
+    in_window = [
+        _replace(SERIAL, max_len=length, serial_act_width=SERIAL.serial_window).action_size
+        for length in (12, 64, 256)
+    ]
+    assert len(set(head_only)) == 1, head_only
+    assert len(set(in_window)) == 1, in_window
+    assert in_window[0] > head_only[0]
+    # w offsets x (3 rewrites + 2G inserts + crossing) + 4 singletons + 2 shifts
+    generators = SERIAL.max_strands - 1
+    assert in_window[0] == SERIAL.serial_window * (3 + 2 * generators + 1) + 6
+
+
+def test_in_window_offsets_address_the_right_positions() -> None:
+    from dataclasses import replace as _replace
+
+    from pgx_mcts_bench.game import make_game
+
+    game = make_game(_replace(SERIAL, serial_act_width=SERIAL.serial_window))
+    transition = game.from_word([2, 3, 1, -1, 2], strands=4)
+    # s1 s1^-1 sits at positions 2,3 -- reachable as REDUCE at offset +2
+    per_offset = 3 + 2 * (SERIAL.max_strands - 1) + 1
+    reduce_at_2 = 2 * per_offset + 0
+    assert game.describe(reduce_at_2).startswith("REDUCE@+2")
+    assert transition.legal_actions[reduce_at_2]
+    after = game.step(transition.state, reduce_at_2)
+    word = [int(x) for x in np.asarray(game.unwrap(after.state)._word) if int(x)]
+    assert word == [2, 3, 2]

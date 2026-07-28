@@ -58,6 +58,10 @@ class GameAdapter(Protocol):
         """
         ...
 
+    def unwrap(self, state: Any) -> Any:
+        """The underlying Pgx state. Wrappers that carry extra state override it."""
+        return state
+
 
 class Go6x6:
     """Thin non-jitted Pgx adapter with observations in the side-to-move frame."""
@@ -211,9 +215,16 @@ class BraidUnknotGame:
         """The Scrambler, which is this game's analogue of Black."""
         return int(np.asarray(state._scrambler))
 
+    def unwrap(self, state: Any) -> Any:
+        return state
+
 
 def make_game(config: AnyGameConfig) -> GameAdapter:
     if isinstance(config, BraidGameConfig):
+        if config.serial_window:
+            from pgx_mcts_bench.serial_braid import SerialBraidGame
+
+            return SerialBraidGame(config)
         return BraidUnknotGame(config)
     if isinstance(config, GameConfig):
         return Go6x6(config)

@@ -19,7 +19,6 @@ import numpy as np
 import torch
 
 from pgx_mcts_bench.config import BraidGameConfig, ExperimentConfig
-from pgx_mcts_bench.game import BraidUnknotGame
 from pgx_mcts_bench.search import NeuralMCTS
 
 
@@ -78,7 +77,9 @@ class BraidProgress:
         self.game_config = config.game
         self.out = out
         self.showcase = showcase
-        self.game = BraidUnknotGame(config.game)
+        from pgx_mcts_bench.game import make_game
+
+        self.game = make_game(config.game)
         self.instances = anchor_instances(config.game.to_braid_config(), anchors, seed=seed)
         self.reports: list[IterationReport] = []
         self.optimal = self._anchor_optima(bfs_depth, bfs_growth, seed)
@@ -152,8 +153,9 @@ class BraidProgress:
                 )
                 names.append(spec.describe(result.action))
                 transition = self.game.step(transition.state, result.action)
-            final_word = np.asarray(transition.state._word)
-            solved = bool((final_word == 0).all()) and int(np.asarray(transition.state._n)) == 1
+            final = self.game.unwrap(transition.state)
+            final_word = np.asarray(final._word)
+            solved = bool((final_word == 0).all()) and int(np.asarray(final._n)) == 1
             attempts.append(
                 AnchorAttempt(
                     index=index,
@@ -284,7 +286,9 @@ def evaluate_scrambler_difficulty(
     """
     from rf_knots.reference import bfs_unknot
 
-    game = BraidUnknotGame(agent.config.game)
+    from pgx_mcts_bench.game import make_game
+
+    game = make_game(agent.config.game)
     spec = game.env.spec
     search = NeuralMCTS(game, agent.network, agent.config.search, agent.config.train.device)
     budget = agent.config.game.scramble_budget
@@ -295,7 +299,10 @@ def evaluate_scrambler_difficulty(
     for index in range(games):
         rng = np.random.default_rng(seed + index)
         transition = game.reset(seed + index)
-        while not transition.terminated and int(np.asarray(transition.state._phase)) == 0:
+        while (
+            not transition.terminated
+            and int(np.asarray(game.unwrap(transition.state)._phase)) == 0
+        ):
             result = search.run(
                 transition.state,
                 transition.observation,
@@ -305,8 +312,9 @@ def evaluate_scrambler_difficulty(
                 add_root_noise=True,
             )
             transition = game.step(transition.state, result.action)
-        word = tuple(int(x) for x in np.asarray(transition.state._word) if int(x) != 0)
-        strands = int(np.asarray(transition.state._n))
+        final = game.unwrap(transition.state)
+        word = tuple(int(x) for x in np.asarray(final._word) if int(x) != 0)
+        strands = int(np.asarray(final._n))
         lengths.append(len(word))
         path = bfs_unknot(spec, word, strands, max_depth=bfs_depth, max_growth=budget)
         if path is None:

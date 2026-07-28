@@ -68,6 +68,13 @@ class BraidGameConfig:
     simplify_budget: int = 24
     allow_crossing_change: bool = False
     simplifier_speed_bonus: float = 0.0
+    # > 0 selects the serial (moving-window) formulation: the agent sees a window
+    # of this width around a head it must move, and the action space stops
+    # depending on L. See serial_braid.py.
+    serial_window: int = 0
+    # How many window offsets the agent may act at. 1 = only at the head
+    # (position lives in the state); serial_window = act anywhere it can see.
+    serial_act_width: int = 1
 
     def to_braid_config(self):
         from rf_knots.config import BraidConfig
@@ -89,6 +96,12 @@ class BraidGameConfig:
 
     @property
     def action_size(self) -> int:
+        if self.serial_window:
+            from pgx_mcts_bench.serial_braid import serial_action_size
+
+            return serial_action_size(
+                self.max_strands, min(max(self.serial_act_width, 1), self.serial_window)
+            )
         return self._spec.num_actions
 
     @property
@@ -104,11 +117,11 @@ class BraidGameConfig:
 
     @property
     def width(self) -> int:
-        return self.max_len
+        return self.serial_window or self.max_len
 
     @property
     def cells(self) -> int:
-        return self.max_len
+        return self.serial_window or self.max_len
 
     @property
     def max_moves(self) -> int:
@@ -118,6 +131,9 @@ class BraidGameConfig:
     def terminal_action(self) -> int:
         from rf_knots.actions import PASS
 
+        if self.serial_window:
+            width = min(max(self.serial_act_width, 1), self.serial_window)
+            return width * (3 + 2 * (self.max_strands - 1) + 1) + 3  # PASS
         return self._spec.start_of(PASS)
 
     @property

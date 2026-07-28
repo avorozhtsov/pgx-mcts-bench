@@ -231,6 +231,32 @@ class BraidAlphaZeroNet(PolicyValueNet):
         return self.policy_head(hidden), self.value_head(summary).squeeze(-1)
 
 
+class SerialBraidNet(PolicyValueNet):
+    """Network for the moving-window formulation.
+
+    The observation is a `1 x w` window and the action space is `2N + 8`, neither
+    of which depends on `L`. So this is a small convolution over the window,
+    pooled, then two heads -- no positional policy head, because the agent acts
+    only at the head position.
+    """
+
+    def __init__(self, game: BraidGameConfig, model: ModelConfig):
+        super().__init__()
+        self.representation = Representation(game, model, model.channels)
+        self.body = nn.Sequential(
+            nn.Linear(2 * model.channels, 64),
+            nn.ReLU(),
+        )
+        self.policy = nn.Linear(64, game.action_size)
+        self.value = nn.Sequential(nn.Linear(64, 1), nn.Tanh())
+
+    def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
+        hidden = self.representation(observation)
+        pooled = torch.cat([hidden.mean(dim=(2, 3)), hidden.amax(dim=(2, 3))], dim=1)
+        features = self.body(pooled)
+        return self.policy(features), self.value(features).squeeze(-1)
+
+
 class Dynamics(nn.Module):
     """Learned latent transition. Go-specific: the action is encoded as a board
     point plus a pass plane, which has no analogue in a 1158-action braid space."""

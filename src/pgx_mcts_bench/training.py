@@ -20,6 +20,7 @@ from pgx_mcts_bench.networks import (
     BraidAlphaZeroNet,
     MuZeroNet,
     PolicyValueNet,
+    SerialBraidNet,
 )
 from pgx_mcts_bench.search import NeuralMCTS
 
@@ -275,6 +276,8 @@ class TrainedAgent:
 def _new_network(kind: str, config: ExperimentConfig) -> PolicyValueNet | MuZeroNet:
     if kind == "alphazero":
         if isinstance(config.game, BraidGameConfig):
+            if config.game.serial_window:
+                return SerialBraidNet(config.game, config.model)
             return BraidAlphaZeroNet(config.game, config.model)
         return AlphaZeroNet(config.game, config.model)
     if kind == "muzero":

@@ -56,6 +56,8 @@ class Variant:
     speed_bonus: float = 0.0
     value_head: str = "masked"
     curriculum_start_k: int = 0
+    serial_window: int = 0
+    simplify_budget: int = 0
     train: bool = True
 
 
@@ -150,6 +152,38 @@ def default_variants(iterations: int, scramble_budget: int) -> list[Variant]:
             **common,
         ),
         Variant(
+            "curriculum-speed",
+            "FIX: curriculum + graded payoff, so a slow Simplifier win pays the "
+            "Scrambler more than a fast one -- otherwise its reward is a constant -1",
+            curriculum_start_k=1,
+            speed_bonus=0.3,
+            **common,
+        ),
+        Variant(
+            "curriculum-speed-hi",
+            "the same, with a stronger difficulty gradient",
+            curriculum_start_k=1,
+            speed_bonus=0.6,
+            **common,
+        ),
+        Variant(
+            "serial-w7",
+            "moving window: act at a head, shift by w/2. Action space 2N+8, "
+            "independent of L. Shifts cost plies, so the budget is raised.",
+            serial_window=7,
+            simplify_budget=48,
+            curriculum_start_k=1,
+            **common,
+        ),
+        Variant(
+            "serial-w11",
+            "the same at the parallel net's receptive field (11 letters)",
+            serial_window=11,
+            simplify_budget=48,
+            curriculum_start_k=1,
+            **common,
+        ),
+        Variant(
             "all-fixes",
             "the fixes that worked, bundled: role exploration + balanced batches",
             exploration="u4",
@@ -220,6 +254,7 @@ def run_variant(
     seed: int,
     device: str,
     label: str | None = None,
+    track_scrambler: int = 0,
 ) -> VariantResult:
     from dataclasses import replace
 
@@ -228,6 +263,8 @@ def run_variant(
         tier,
         scramble_budget=variant.scramble_budget,
         simplifier_speed_bonus=variant.speed_bonus,
+        serial_window=variant.serial_window,
+        simplify_budget=variant.simplify_budget or tier.simplify_budget,
     )
     config = _experiment(variant, game, seed, device)
     # Anchors are pinned to a fixed seed so that every variant AND every seed is
@@ -246,14 +283,24 @@ def run_variant(
 
         def hook(iteration: int, network) -> str:
             report = progress.evaluate(iteration, network)
-            per_iteration.append(
-                {
-                    "iteration": iteration,
-                    "solve_rate": report.solve_rate,
-                    "mean_excess": report.mean_excess,
-                }
+            row = {
+                "iteration": iteration,
+                "solve_rate": report.solve_rate,
+                "mean_excess": report.mean_excess,
+            }
+            if track_scrambler:
+                # The Scrambler's reward is K+M plies away and its search cannot
+                # reach it, so "is it learning at all?" needs its own trace.
+                agent_now = TrainedAgent("alphazero", network, [], config)
+                stats = evaluate_scrambler_difficulty(
+                    agent_now, track_scrambler, seed=seed + 900_000, bfs_depth=6
+                )
+                row["scrambler_depth"] = stats["mean_optimal_depth"]
+            per_iteration.append(row)
+            extra = (
+                f", Scr-depth {row['scrambler_depth']:.2f}" if track_scrambler else ""
             )
-            return progress.summary_line(report)
+            return progress.summary_line(report) + extra
 
         agent = train_agent("alphazero", config, iteration_hook=hook)
     else:
@@ -320,7 +367,7 @@ def _worker_init() -> None:
 
 
 def _run_job(payload: tuple) -> VariantResult:
-    variant, tier, out, anchors, baseline_games, seed, device, label = payload
+    variant, tier, out, anchors, baseline_games, seed, device, label, track = payload
     return run_variant(
         variant,
         tier,
@@ -330,6 +377,7 @@ def _run_job(payload: tuple) -> VariantResult:
         seed=seed,
         device=device,
         label=label,
+        track_scrambler=track,
     )
 
 
@@ -390,6 +438,7 @@ def run_sweep(
     seeds: int = 1,
     device: str = "cpu",
     workers: int = 1,
+    track_scrambler: int = 0,
     log=print,
 ) -> list[VariantResult]:
     out.mkdir(parents=True, exist_ok=True)
@@ -405,6 +454,7 @@ def run_sweep(
             seed + offset,
             device,
             variant.name if seeds == 1 else f"{variant.name}#s{seed + offset}",
+            track_scrambler,
         )
         for variant in variants
         for offset in range(seeds)

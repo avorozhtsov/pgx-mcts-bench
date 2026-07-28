@@ -330,6 +330,9 @@ def braid_screen(
     workers: Annotated[
         int, typer.Option(min=1, help="Parallel runs; the sweep is embarrassingly parallel")
     ] = 1,
+    track_scrambler: Annotated[
+        int, typer.Option(min=0, help="Games per iteration for Scrambler difficulty; 0 off")
+    ] = 0,
     only: Annotated[str, typer.Option(help="Comma-separated variant names to run")] = "",
     device: Annotated[str, typer.Option()] = "cpu",
     output: Annotated[Path | None, typer.Option()] = None,
@@ -364,6 +367,7 @@ def braid_screen(
         seeds=seeds,
         device=device,
         workers=workers,
+        track_scrambler=track_scrambler,
         log=typer.echo,
     )
     typer.echo(f"Summary: {out / 'summary.md'}")
