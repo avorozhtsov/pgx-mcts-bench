@@ -68,6 +68,8 @@ class BraidGameConfig:
     simplify_budget: int = 24
     allow_crossing_change: bool = False
     simplifier_speed_bonus: float = 0.0
+    multi_objective: bool = False
+    log_ratio_range: tuple[float, float] = (0.0, 0.0)
     # > 0 selects the serial (moving-window) formulation: the agent sees a window
     # of this width around a head it must move, and the action space stops
     # depending on L. See serial_braid.py.
@@ -86,6 +88,8 @@ class BraidGameConfig:
             simplify_budget=self.simplify_budget,
             allow_crossing_change=self.allow_crossing_change,
             simplifier_speed_bonus=self.simplifier_speed_bonus,
+            multi_objective=self.multi_objective,
+            log_ratio_range=self.log_ratio_range,
         )
 
     @property
@@ -107,9 +111,9 @@ class BraidGameConfig:
     @property
     def observation_channels(self) -> int:
         # letter one-hot (+/- each generator), padding, the top-generator
-        # marker that makes DESTABILIZE legality locally visible, and six
-        # broadcast scalars
-        return 2 * (self.max_strands - 1) + 1 + 1 + 6
+        # marker that makes DESTABILIZE legality locally visible, and eight
+        # broadcast scalars (the last two are log(A/B) and crossing changes so far)
+        return 2 * (self.max_strands - 1) + 1 + 1 + 8
 
     @property
     def height(self) -> int:
@@ -187,6 +191,10 @@ class ModelConfig:
     # K=4, which the A/B showed measurably costs accuracy); "masked" pools over
     # the occupied positions only -- length-agnostic without the dilution.
     braid_value_head: str = "masked"
+    # Condition the braid network on log(A/B) multiplicatively rather than by
+    # appending a channel, so the two ends of the Pareto front can behave like
+    # different networks inside one set of weights.
+    film_on_ratio: bool = True
 
 
 @dataclass(frozen=True)

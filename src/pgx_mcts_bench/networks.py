@@ -130,6 +130,34 @@ class AlphaZeroNet(PolicyValueNet):
         return policy, value
 
 
+class FiLM(nn.Module):
+    """Feature-wise Linear Modulation on log(A/B)  (Perez et al., 2018).
+
+    Appending the ratio as an input channel makes the network *free* to use it,
+    and a small trunk will most likely learn one compromise policy that is
+    mediocre at both extremes. FiLM instead makes the conditioning
+    **multiplicative**: a per-channel gain and shift generated from log(A/B),
+    applied after each residual block. At log(A/B) = -5 and +5 the gains gate
+    different feature subsets, so one set of weights behaves like genuinely
+    different networks at the two ends of the Pareto front -- which is the point
+    of conditioning at all.
+    """
+
+    def __init__(self, channels: int, hidden: int = 32):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(1, hidden), nn.ReLU(), nn.Linear(hidden, 2 * channels)
+        )
+        # Start as the identity, so conditioning is learned rather than imposed.
+        nn.init.zeros_(self.net[-1].weight)
+        nn.init.zeros_(self.net[-1].bias)
+        self.channels = channels
+
+    def forward(self, hidden: Tensor, log_ratio: Tensor) -> Tensor:
+        gamma, beta = self.net(log_ratio[:, None]).chunk(2, dim=1)
+        return (1.0 + gamma)[:, :, None, None] * hidden + beta[:, :, None, None]
+
+
 class BraidPolicyHead(nn.Module):
     """Positional policy head matching the braid action-space layout exactly.
 
@@ -180,6 +208,10 @@ class BraidAlphaZeroNet(PolicyValueNet):
     def __init__(self, game: BraidGameConfig, model: ModelConfig):
         super().__init__()
         self.representation = Representation(game, model, model.channels)
+        # log(A/B) is the 7th scalar plane; it is constant across positions, so
+        # one value per batch element suffices.
+        self.ratio_channel = 2 * (game.max_strands - 1) + 1 + 1 + 6
+        self.film = FiLM(model.channels) if model.film_on_ratio else None
         self.policy_head = BraidPolicyHead(model.channels, game)
         # Pooled, not flattened. `Flatten -> Linear(L, ...)` would tie the value
         # head to one word capacity, defeating the point: every other parameter
@@ -212,6 +244,9 @@ class BraidAlphaZeroNet(PolicyValueNet):
 
     def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
         hidden = self.representation(observation)
+        if self.film is not None:
+            log_ratio = observation[:, self.ratio_channel, 0, 0]
+            hidden = self.film(hidden, log_ratio)
         projected = torch.relu(self.value_project(hidden))
         if self.value_mode == "flat":
             summary = projected.flatten(1)

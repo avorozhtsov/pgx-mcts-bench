@@ -632,3 +632,59 @@ def test_in_window_offsets_address_the_right_positions() -> None:
     after = game.step(transition.state, reduce_at_2)
     word = [int(x) for x in np.asarray(game.unwrap(after.state)._word) if int(x)]
     assert word == [2, 3, 2]
+
+
+def test_film_amplifies_the_ratio_beyond_the_input_channel() -> None:
+    """log(A/B) reaches the network two ways, and they are not equivalent.
+
+    As an input channel it is one of 18 planes, and the trunk is free to give it
+    almost no weight -- collapsing the Pareto front to a single compromise
+    policy. FiLM applies a per-channel gain generated from the ratio, so the same
+    observation can produce genuinely different policies at the two ends. This
+    checks the second mechanism does more than the first, with the trunk held
+    identical between the two networks.
+    """
+    from dataclasses import replace as _replace
+
+    game = _replace(SMALL, multi_objective=True, log_ratio_range=(-5.0, 5.0))
+    torch.manual_seed(0)
+    without = BraidAlphaZeroNet(
+        game, ModelConfig(channels=16, latent_channels=16, film_on_ratio=False)
+    ).eval()
+    torch.manual_seed(0)
+    with_film = BraidAlphaZeroNet(
+        game, ModelConfig(channels=16, latent_channels=16, film_on_ratio=True)
+    ).eval()
+    assert without.film is None and with_film.film is not None
+    # identical trunk and heads; the only difference is the modulator
+    with torch.no_grad():
+        for name, parameter in without.named_parameters():
+            dict(with_film.named_parameters())[name].copy_(parameter)
+        for parameter in with_film.film.net[-1].parameters():
+            parameter.normal_(0.0, 0.5)
+
+    def spread(net) -> float:
+        outputs = []
+        for log_ratio in (-5.0, 5.0):
+            obs = torch.zeros(1, game.observation_channels, 1, game.max_len)
+            obs[0, : game.max_strands - 1, 0, :3] = 1.0
+            obs[0, net.ratio_channel] = log_ratio / 5.0
+            with torch.inference_mode():
+                outputs.append(net(obs)[0])
+        return (outputs[0] - outputs[1]).abs().max().item()
+
+    channel_only = spread(without)
+    modulated = spread(with_film)
+    assert modulated > channel_only, (
+        f"FiLM should widen the gap between the ends of the front: "
+        f"{modulated:.4f} vs {channel_only:.4f}"
+    )
+
+
+def test_film_can_be_switched_off() -> None:
+    model = ModelConfig(channels=16, latent_channels=16, film_on_ratio=False)
+    net = BraidAlphaZeroNet(SMALL, model)
+    assert net.film is None
+    obs = torch.zeros(2, SMALL.observation_channels, 1, SMALL.max_len)
+    policy, value = net(obs)
+    assert policy.shape == (2, SMALL.action_size)

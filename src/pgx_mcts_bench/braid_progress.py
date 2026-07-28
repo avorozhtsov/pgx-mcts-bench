@@ -316,7 +316,7 @@ def evaluate_scrambler_difficulty(
         word = tuple(int(x) for x in np.asarray(final._word) if int(x) != 0)
         strands = int(np.asarray(final._n))
         lengths.append(len(word))
-        path = bfs_unknot(spec, word, strands, max_depth=bfs_depth, max_growth=budget)
+        path = bfs_unknot(spec, word, strands, max_depth=bfs_depth, max_growth=2)
         if path is None:
             beyond_cutoff += 1  # harder than the search cutoff: the interesting case
         else:
@@ -328,4 +328,81 @@ def evaluate_scrambler_difficulty(
         "beyond_cutoff": beyond_cutoff / games,
         "mean_word_length": float(np.mean(lengths)),
         "difficulty_per_move": (float(np.mean(depths)) / budget) if depths else float("nan"),
+    }
+
+
+def scrambler_depths(
+    agent,
+    games: int,
+    *,
+    seed: int,
+    bfs_depth: int = 6,
+    bfs_growth: int = 2,
+    random_policy: bool = False,
+) -> dict[str, object]:
+    """Raw BFS-optimal depths of the instances a Scrambler produces.
+
+    `random_policy` replaces the agent with uniform-random legal moves, giving
+    the baseline the trained Scrambler has to beat. Everything else -- the game,
+    K, the BFS settings, the seeds -- is identical between the two arms, so the
+    only difference is who chooses the scramble moves.
+
+    Instances too deep for the cutoff are reported separately rather than
+    dropped: they are the *hardest* ones, so discarding them biases the mean
+    down, and exactly against the arm we hope is better.
+    """
+    from rf_knots.reference import bfs_unknot
+
+    from pgx_mcts_bench.game import make_game
+
+    game = make_game(agent.config.game)
+    spec = game.env.spec
+    search = NeuralMCTS(game, agent.network, agent.config.search, agent.config.train.device)
+
+    depths: list[int] = []
+    lengths: list[int] = []
+    beyond = 0
+    for index in range(games):
+        rng = np.random.default_rng(seed + index)
+        transition = game.reset(seed + index)
+        while (
+            not transition.terminated
+            and int(np.asarray(game.unwrap(transition.state)._phase)) == 0
+        ):
+            if random_policy:
+                action = int(rng.choice(np.flatnonzero(transition.legal_actions)))
+            else:
+                action = search.run(
+                    transition.state,
+                    transition.observation,
+                    transition.legal_actions,
+                    rng,
+                    temperature=1.0,
+                    add_root_noise=True,
+                ).action
+            transition = game.step(transition.state, action)
+        final = game.unwrap(transition.state)
+        word = tuple(int(x) for x in np.asarray(final._word) if int(x) != 0)
+        strands = int(np.asarray(final._n))
+        lengths.append(len(word))
+        path = bfs_unknot(
+            spec, word, strands, max_depth=bfs_depth, max_growth=bfs_growth
+        )
+        if path is None:
+            beyond += 1
+            # Censored at the cutoff: a conservative lower bound on the truth.
+            depths.append(bfs_depth + 1)
+        else:
+            depths.append(len(path))
+    budget = agent.config.game.scramble_budget
+    return {
+        "depths": depths,
+        "mean_word_length": float(np.mean(lengths)),
+        "beyond_cutoff": beyond / games,
+        # Optimal depth is bounded by K: every scramble move is invertible within
+        # the move set, so reversing a K-move scramble always solves it in <= K.
+        # The interpretable quantity is therefore not the mean depth but how
+        # often the Scrambler wastes none of its budget.
+        "at_maximum": float(np.mean([d >= budget for d in depths])),
+        "fraction_of_max": float(np.mean(depths)) / budget,
     }
