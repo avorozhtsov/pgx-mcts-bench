@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -132,6 +132,23 @@ def play_selfplay_games(
         for position in record:
             position.outcome = float(rewards[position.player])
     return records
+
+
+def second_role_win_rate(records: list[GameRecord]) -> float:
+    """Fraction of games the second role (the Simplifier) won.
+
+    The curriculum signal. A run where this stays at zero cannot learn: every
+    target says the Simplifier lost, so there is nothing to imitate.
+    """
+    wins = 0
+    counted = 0
+    for record in records:
+        outcomes = [p.outcome for p in record if p.role == 1]
+        if not outcomes:
+            continue
+        counted += 1
+        wins += outcomes[0] > 0
+    return wins / counted if counted else 0.0
 
 
 def train_alphazero_step(
@@ -381,6 +398,16 @@ def train_agent(
     np_rng = np.random.default_rng(config.train.seed)
     device = torch.device(config.train.device)
     game = make_game(config.game)
+    # Curriculum: train at a reduced Scrambler budget and climb toward the
+    # target only when the Simplifier is winning. The evaluation anchors stay at
+    # the target difficulty, so this changes what the agent trains on and not
+    # what it is measured against.
+    target_k = getattr(config.game, "scramble_budget", 0)
+    current_k = config.train.curriculum_start_k
+    use_curriculum = bool(current_k) and isinstance(config.game, BraidGameConfig)
+    if use_curriculum:
+        current_k = min(current_k, target_k)
+        game = make_game(replace(config.game, scramble_budget=current_k))
     network = _new_network(kind, config)
     network.to(device)
     optimizer = torch.optim.AdamW(
@@ -464,8 +491,19 @@ def train_agent(
                     config.train.unroll_steps,
                     device,
                 )
+        simplifier_wins = second_role_win_rate(records)
+        promoted = 0
+        if use_curriculum and current_k < target_k:
+            if simplifier_wins >= config.train.curriculum_promote_at:
+                current_k += 1
+                promoted = 1
+                game = make_game(replace(config.game, scramble_budget=current_k))
+                search = NeuralMCTS(game, network, config.search, config.train.device)
         row = {
             "iteration": float(iteration + 1),
+            "simplifier_wins": float(simplifier_wins),
+            "scramble_k": float(current_k if use_curriculum else target_k),
+            "promoted": float(promoted),
             "positions": float(replay.position_count),
             "positions_generated": float(generated_positions),
             "positions_simulated": float(simulated_positions),

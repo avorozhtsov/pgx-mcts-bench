@@ -55,6 +55,7 @@ class Variant:
     dirichlet_scale: float = 0.0
     speed_bonus: float = 0.0
     value_head: str = "masked"
+    curriculum_start_k: int = 0
     train: bool = True
 
 
@@ -136,6 +137,19 @@ def default_variants(iterations: int, scramble_budget: int) -> list[Variant]:
             **common,
         ),
         Variant(
+            "curriculum",
+            "FIX: start K low and climb only while the Simplifier is winning",
+            curriculum_start_k=1,
+            **common,
+        ),
+        Variant(
+            "curriculum-u4",
+            "curriculum on the steadiest exploration rule",
+            curriculum_start_k=1,
+            exploration="u4",
+            **common,
+        ),
+        Variant(
             "all-fixes",
             "the fixes that worked, bundled: role exploration + balanced batches",
             exploration="u4",
@@ -189,6 +203,7 @@ def _experiment(
             temperature_moves=variant.temperature_moves,
             first_role_exploration_only=variant.first_role_exploration_only,
             role_balanced_batches=variant.role_balanced_batches,
+            curriculum_start_k=variant.curriculum_start_k,
             seed=seed,
             device=device,
         ),

@@ -145,6 +145,11 @@ class SearchConfig:
     # by an order of magnitude between tiers, so a fixed alpha cannot fit both.
     root_dirichlet_scale: float = 0.0
     root_exploration_fraction: float = 0.25
+    # Mix uniform into the policy prior at every node: P' = (1-e)P + e/|legal|.
+    # PUCT's exploration bonus is proportional to P, so an action the network
+    # assigns ~0 is never visited however many simulations run. A floor makes
+    # a bad prior recoverable instead of fatal.
+    prior_smoothing: float = 0.0
     # If > 0, expand only the top-k children by prior. The braid action space is
     # 74% insertions, most of them useless, so at tier 1 the branching factor
     # grows well past what the simulation budget can cover.
@@ -190,6 +195,14 @@ class TrainConfig:
     # replay buffer is ~85% Simplifier positions (K scramble plies against up to
     # M simplify plies), so the Scrambler gets several times less gradient.
     role_balanced_batches: bool = False
+    # Braid game: raise the Scrambler's budget K only once the Simplifier is
+    # actually winning. Without this a run whose Simplifier never wins a single
+    # self-play game has every training target reading "Simplifier loses" -- the
+    # value head learns a constant and no gradient points toward solving. That
+    # was 4 of 42 runs at a fixed K=6, and they were unrecoverable from
+    # iteration 1.
+    curriculum_start_k: int = 0          # 0 disables; else start here and climb
+    curriculum_promote_at: float = 0.5   # Simplifier self-play win rate to promote
     seed: int = 0
     device: str = "cpu"
     exact_position_budget: bool = True

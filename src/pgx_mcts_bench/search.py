@@ -251,6 +251,10 @@ class NeuralMCTS:
     def _expand_children(self, node: Node, logits: np.ndarray, legal: np.ndarray) -> None:
         priors = _masked_softmax(logits, legal, self.game.config.terminal_action)
         actions = np.flatnonzero(legal)
+        epsilon = self.config.prior_smoothing
+        if epsilon > 0 and len(actions):
+            priors = priors.copy()
+            priors[actions] = (1.0 - epsilon) * priors[actions] + epsilon / len(actions)
         limit = self.config.max_children
         if limit > 0 and len(actions) > limit:
             # Keep the highest-prior actions and renormalise over them, so the

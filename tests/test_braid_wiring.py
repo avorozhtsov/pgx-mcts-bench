@@ -476,3 +476,36 @@ def test_masked_value_head_is_length_agnostic_and_finite() -> None:
         policy, value = small(x)
     assert policy.shape == (1, game.action_size)
     assert torch.isfinite(value).all() and value.abs().item() <= 1.0
+
+
+def test_curriculum_starts_low_and_climbs_only_on_wins() -> None:
+    """A run whose Simplifier never wins has every target reading "it lost", so
+    nothing points toward solving. Four of 42 runs died that way at fixed K=6."""
+    from dataclasses import replace as _replace
+
+    game = _replace(SMALL, scramble_budget=5)
+    config = ExperimentConfig(
+        game=game,
+        search=SearchConfig(simulations=2),
+        model=ModelConfig(channels=4, latent_channels=4),
+        train=TrainConfig(
+            iterations=3,
+            selfplay_games=2,
+            train_steps=1,
+            batch_size=2,
+            device="cpu",
+            curriculum_start_k=1,
+            curriculum_promote_at=0.0,  # promote every iteration
+        ),
+    )
+    agent = train_agent("alphazero", config)
+    ks = [row["scramble_k"] for row in agent.history]
+    assert ks == [2.0, 3.0, 4.0], f"K should climb one step per iteration, got {ks}"
+    assert all("simplifier_wins" in row for row in agent.history)
+
+
+def test_curriculum_is_off_by_default_and_reports_the_target() -> None:
+    config = _experiment()
+    assert config.train.curriculum_start_k == 0
+    agent = train_agent("alphazero", config)
+    assert agent.history[0]["scramble_k"] == float(SMALL.scramble_budget)
