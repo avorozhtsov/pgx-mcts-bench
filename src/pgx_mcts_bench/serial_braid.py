@@ -204,8 +204,12 @@ class SerialBraidGame:
             list(instance.word), instance.strands, log_ratio=log_ratio
         )
 
-    def from_word(self, word: list[int], strands: int) -> Transition:
-        return self._view(self.env.init_from_word(word, strands), 0, reward=0.0)
+    def from_word(
+        self, word: list[int], strands: int, log_ratio: float = 0.0
+    ) -> Transition:
+        return self._view(
+            self.env.init_from_word(word, strands, log_ratio=log_ratio), 0, reward=0.0
+        )
 
     def step(self, state: Any, action: int) -> Transition:
         pgx_state, head = state

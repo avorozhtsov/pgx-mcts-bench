@@ -209,13 +209,17 @@ class BraidUnknotGame:
         rewards = np.asarray(next_state.rewards, dtype=np.float32)
         return self._view(next_state, reward=float(rewards[actor]))
 
-    def from_word(self, word: list[int], strands: int) -> Transition:
-        """Start at an externally supplied instance, with the Simplifier to move.
+    def from_word(
+        self, word: list[int], strands: int, log_ratio: float = 0.0
+    ) -> Transition:
+        """Start at an externally supplied instance, with the solver to move.
 
-        Used to evaluate against a frozen anchor set, and later to point a trained
-        agent at real knot tables instead of at self-generated scrambles.
+        Same signature on every adapter, so evaluation code never has to know
+        whether it is talking to the parallel or the moving-window formulation.
         """
-        return self._view(self.env.init_from_word(word, strands), reward=0.0)
+        return self._view(
+            self.env.init_from_word(word, strands, log_ratio=log_ratio), reward=0.0
+        )
 
     def _view(self, state: Any, reward: float) -> Transition:
         observation = np.asarray(state.observation, dtype=np.float32)

@@ -161,10 +161,9 @@ def evaluate_stage(game, network, config, games: int, seed: int) -> dict[float, 
             source, scramble = config.game.stage_source, config.game.stage_scramble
             src = next(s for s in game.generator.sources if s.name == source)
             instance = game.generator.generate(src, scramble, rng)
-            state = game.env.init_from_word(
-                list(instance.word), instance.strands, log_ratio=log_ratio
+            transition = game.from_word(
+                list(instance.word), instance.strands, log_ratio
             )
-            transition = game._view(state, reward=0.0)
             while not transition.terminated:
                 action = search.run(
                     transition.state, transition.observation, transition.legal_actions,
