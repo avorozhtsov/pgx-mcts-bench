@@ -51,6 +51,7 @@ class Variant:
     temperature_moves: int = 12
     curriculum_start_k: int = 0
     serial_window: int = 0
+    serial_act_width: int = 1
     simplify_budget: int = 0
     train: bool = True
 
@@ -168,6 +169,7 @@ def run_variant(
         tier,
         scramble_budget=variant.scramble_budget,
         serial_window=variant.serial_window,
+        serial_act_width=variant.serial_act_width,
         simplify_budget=variant.simplify_budget or tier.simplify_budget,
     )
     config = _experiment(variant, game, seed, device)

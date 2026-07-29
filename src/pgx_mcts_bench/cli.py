@@ -319,6 +319,169 @@ def braid_smoke(output: Path | None = None) -> None:
 
 
 @app.command()
+def braid_ladder(
+    candidates_only: Annotated[str, typer.Option("--only", help="Comma-separated names")] = "",
+    seed: Annotated[int, typer.Option()] = 0,
+    max_iterations: Annotated[int, typer.Option(min=1)] = 25,
+    eval_games: Annotated[int, typer.Option(min=4)] = 16,
+    promote_at: Annotated[float, typer.Option()] = 0.8,
+    workers: Annotated[int, typer.Option(min=1)] = 1,
+    device: Annotated[str, typer.Option()] = "cpu",
+    output: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Climb the complexity ladder; score is the highest stage cleared."""
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    from pgx_mcts_bench.braid_sweep import _worker_init, enable_jax_compilation_cache
+    from pgx_mcts_bench.ladder import STAGES, _silent, candidates, run_ladder, save
+
+    enable_jax_compilation_cache()
+    chosen = candidates()
+    if candidates_only:
+        wanted = {n.strip() for n in candidates_only.split(",") if n.strip()}
+        chosen = [c for c in chosen if c.name in wanted]
+    out = output or artifact_dir(Path.cwd(), "ladder")
+    typer.echo(f"{len(chosen)} candidates over {len(STAGES)} stages, {workers} workers")
+    for index, stage in enumerate(STAGES):
+        typer.echo(f"  stage {index}: {stage[0]} + {stage[1]} scramble moves")
+
+    results = []
+    if workers <= 1:
+        for candidate in chosen:
+            results.append(
+                run_ladder(candidate, seed=seed, device=device,
+                           checkpoint_dir=out / "checkpoints",
+                           max_iterations_per_stage=max_iterations,
+                           eval_games=eval_games, promote_at=promote_at, log=typer.echo)
+            )
+            save(results, out)
+    else:
+        with ProcessPoolExecutor(max_workers=workers, initializer=_worker_init) as pool:
+            futures = {
+                pool.submit(run_ladder, c, seed=seed, device=device,
+                            checkpoint_dir=out / "checkpoints",
+                            max_iterations_per_stage=max_iterations,
+                            eval_games=eval_games, promote_at=promote_at, log=_silent): c
+                for c in chosen
+            }
+            for future in as_completed(futures):
+                result = future.result()
+                results.append(result)
+                typer.echo(
+                    f"  [{len(results)}/{len(chosen)}] {result.name}: "
+                    f"highest stage {result.highest_stage}  {result.seconds:.0f}s"
+                )
+                save(results, out)
+    typer.echo(f"Saved: {out / 'ladder.md'}")
+
+
+@app.command()
+def braid_multi(
+    tier: str = "tier0",
+    max_crossings: Annotated[int, typer.Option(min=0)] = 5,
+    max_scramble: Annotated[int, typer.Option(min=0)] = 3,
+    simulations: Annotated[int, typer.Option(min=1)] = 48,
+    iterations: Annotated[int, typer.Option(min=1)] = 12,
+    selfplay_games: Annotated[int, typer.Option(min=1)] = 8,
+    train_steps: Annotated[int, typer.Option(min=1)] = 64,
+    eval_games: Annotated[int, typer.Option(min=1)] = 12,
+    seed: Annotated[int, typer.Option()] = 0,
+    device: Annotated[str, typer.Option()] = "cpu",
+    output: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Train on `A*crossing_changes + B*total_moves` and score against theorems.
+
+    Instances come from the graded generator, so every source knot has a *proved*
+    unknotting number -- u(T(p,q)) = (p-1)(q-1)/2. The question is whether the
+    agent reaches it, and whether the crossing-change/move trade-off actually
+    moves with log(A/B) rather than collapsing to one compromise policy.
+    """
+    import json as _json
+    from dataclasses import replace as _replace
+
+    import numpy as np
+
+    from pgx_mcts_bench.game import BraidUnknotGame
+    from pgx_mcts_bench.search import NeuralMCTS
+
+    base = BRAID_TIERS[tier]
+    game_cfg = _replace(
+        base,
+        max_len=48,
+        simplify_budget=32,
+        allow_crossing_change=True,
+        multi_objective=True,
+        log_ratio_range=(-3.0, 3.0),
+        generator_max_crossings=max_crossings,
+        generator_max_scramble=max_scramble,
+    )
+    config = ExperimentConfig(
+        game=game_cfg,
+        search=SearchConfig(simulations=simulations),
+        model=ModelConfig(channels=32, latent_channels=32),
+        train=TrainConfig(
+            iterations=iterations,
+            selfplay_games=selfplay_games,
+            train_steps=train_steps,
+            batch_size=32,
+            seed=seed,
+            device=device,
+        ),
+    )
+    game = BraidUnknotGame(game_cfg)
+    typer.echo(
+        "sources: "
+        + ", ".join(f"{s.name}(u={s.unknotting_number})" for s in game.generator.sources)
+    )
+    agent = train_agent("alphazero", config)
+
+    # Score against the theorem, and sweep log(A/B) to see whether the trade-off
+    # actually moves.
+    search = NeuralMCTS(game, agent.network, config.search, device)
+    rows = []
+    for source in game.generator.sources:
+        for log_ratio in (-3.0, 0.0, 3.0):
+            solved = crossings = moves = 0
+            for index in range(eval_games):
+                rng = np.random.default_rng(seed + 7000 * index)
+                instance = game.generator.generate(source, max_scramble, rng)
+                state = game.env.init_from_word(
+                    list(instance.word), instance.strands, log_ratio=log_ratio
+                )
+                t = game._view(state, reward=0.0)
+                while not t.terminated:
+                    action = search.run(
+                        t.state, t.observation, t.legal_actions, rng,
+                        temperature=0.0, add_root_noise=False,
+                    ).action
+                    t = game.step(t.state, action)
+                final = game.unwrap(t.state)
+                won = bool((np.asarray(final._word) == 0).all()) and int(final._n) == 1
+                solved += won
+                if won:
+                    crossings += int(np.asarray(final._crossing_changes))
+                    moves += int(game_cfg.simplify_budget - int(np.asarray(final._budget)))
+            row = {
+                "source": source.name,
+                "u": source.unknotting_number,
+                "log_ratio": log_ratio,
+                "solved": solved / eval_games,
+                "crossings": crossings / solved if solved else float("nan"),
+                "moves": moves / solved if solved else float("nan"),
+            }
+            rows.append(row)
+            typer.echo(
+                f"  {source.name:<8} u={source.unknotting_number}"
+                f"  log(A/B)={log_ratio:+.0f}  solved {row['solved']:.2f}"
+                f"  crossings {row['crossings']:.2f}  moves {row['moves']:.1f}"
+            )
+    out = output or artifact_dir(Path.cwd(), f"multi-{seed}")
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "pareto.json").write_text(_json.dumps(rows, indent=2) + "\n")
+    typer.echo(f"Saved: {out / 'pareto.json'}")
+
+
+@app.command()
 def braid_screen(
     tier: Annotated[str, typer.Option(help="tier0 (small) or tier1")] = "tier0",
     scramble_budget: Annotated[int, typer.Option(min=1, help="K, the difficulty dial")] = 3,

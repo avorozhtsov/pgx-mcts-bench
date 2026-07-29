@@ -163,10 +163,43 @@ class BraidUnknotGame:
         self.env = BraidUnknot(config.to_braid_config())
         self._init = jax.jit(self.env.init)
         self._step = jax.jit(self.env.step)
+        self.generator = None
+        if config.generator_max_crossings or config.generator_max_scramble:
+            from rf_knots.generator import GradedGenerator
+
+            self.generator = GradedGenerator(
+                config.to_braid_config(),
+                max_crossings=config.generator_max_crossings,
+            )
 
     def reset(self, seed: int) -> Transition:
-        state = self._init(jax.random.PRNGKey(seed))
-        return self._view(state, reward=0.0)
+        if self.generator is None:
+            state = self._init(jax.random.PRNGKey(seed))
+            return self._view(state, reward=0.0)
+        return self._view(self._generated(seed)[0], reward=0.0)
+
+    def _generated(self, seed: int):
+        """An instance from the graded generator, with log(A/B) sampled.
+
+        There is no Scrambler phase here: the instance is *given*, the solver
+        starts immediately, and the source knot's unknotting number is known.
+        """
+        rng = np.random.default_rng(seed)
+        if self.config.stage_source:
+            source = next(
+                s for s in self.generator.sources if s.name == self.config.stage_source
+            )
+            moves = self.config.stage_scramble
+        else:
+            levels = self.generator.levels(self.config.generator_max_scramble)
+            source, moves = levels[int(rng.integers(len(levels)))]
+        instance = self.generator.generate(source, moves, rng)
+        low, high = self.config.log_ratio_range
+        log_ratio = float(rng.uniform(low, high)) if high > low else low
+        state = self.env.init_from_word(
+            list(instance.word), instance.strands, log_ratio=log_ratio
+        )
+        return state, source
 
     def step(self, state: Any, action: int) -> Transition:
         if not bool(np.asarray(state.legal_action_mask)[action]):

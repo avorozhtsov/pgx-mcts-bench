@@ -69,6 +69,16 @@ class BraidGameConfig:
     allow_crossing_change: bool = False
     multi_objective: bool = False
     log_ratio_range: tuple[float, float] = (0.0, 0.0)
+    # Instances come from the graded generator rather than from a Scrambler
+    # phase: a torus knot of at most this crossing number, plus up to this many
+    # scramble moves. u(T(p,q)) = (p-1)(q-1)/2 is a theorem, so the optimal
+    # number of crossing changes is known exactly for every instance.
+    generator_max_crossings: int = 0
+    generator_max_scramble: int = 0
+    # Pin the generator to one source knot and scramble depth. Set by the ladder
+    # runner so a stage is a fixed difficulty rather than a mixture.
+    stage_source: str = ""
+    stage_scramble: int = 0
     # > 0 selects the serial (moving-window) formulation: the agent sees a window
     # of this width around a head it must move, and the action space stops
     # depending on L. See serial_braid.py.
