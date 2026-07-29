@@ -101,6 +101,13 @@ class BraidGameConfig:
     # takes the powers of two that fit `max_len`, so any site is reachable in
     # O(log L) plies. A single stride reproduces the original one-step tape.
     serial_shift_strides: tuple[int, ...] = ()
+    # Binary registers carried in the head, with one TOGGLE action each. This is
+    # the *finite control state* of a Turing machine -- the half that a memoryless
+    # scanning head is missing, and the half that costs nothing to make exact. The
+    # agent writes them; nothing is computed for it, so this stays a fair arm under
+    # the zero-human-knowledge constraint. K registers give 2^K control states and
+    # add K actions and K observation channels, both O(1) in word length.
+    serial_registers: int = 0
 
     def to_braid_config(self):
         from rf_knots.config import BraidConfig
@@ -139,7 +146,10 @@ class BraidGameConfig:
             from pgx_mcts_bench.serial_braid import serial_action_size
 
             return serial_action_size(
-                self.max_strands, self.serial_width, len(self.serial_strides)
+                self.max_strands,
+                self.serial_width,
+                len(self.serial_strides),
+                self.serial_registers,
             )
         return self._spec.num_actions
 
@@ -147,8 +157,10 @@ class BraidGameConfig:
     def observation_channels(self) -> int:
         # letter one-hot (+/- each generator), padding, the top-generator
         # marker that makes DESTABILIZE legality locally visible, and eight
-        # broadcast scalars (the last two are log(A/B) and crossing changes so far)
-        return 2 * (self.max_strands - 1) + 1 + 1 + 8
+        # broadcast scalars (the last two are log(A/B) and crossing changes so far),
+        # plus one broadcast plane per head register when the serial formulation
+        # carries them.
+        return 2 * (self.max_strands - 1) + 1 + 1 + 8 + self.serial_registers
 
     @property
     def height(self) -> int:

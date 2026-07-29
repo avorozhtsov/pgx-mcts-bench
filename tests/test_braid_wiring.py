@@ -437,7 +437,7 @@ def test_serial_game_dispatches_and_observes_a_window() -> None:
     assert transition.observation.shape == (1, SERIAL.serial_window, SERIAL.observation_channels)
     assert transition.legal_actions.shape == (SERIAL.action_size,)
     assert transition.legal_actions.any()
-    pgx_state, head = transition.state
+    pgx_state, head = transition.state[0], transition.state[1]
     assert head == 0
     assert game.unwrap(transition.state) is pgx_state
 
@@ -543,7 +543,7 @@ def test_serial_window_is_centred_so_both_shifts_are_informed() -> None:
 
     game = make_game(SERIAL)
     transition = game.from_word([1, 2, 3, 1, 2, 3, 1, 2], strands=4)
-    state, head = transition.state
+    state, head = transition.state[0], transition.state[1]
     observed = np.asarray(state.observation)
     window = transition.observation[0]
     assert np.allclose(window[SERIAL.serial_window // 2], observed[head]), (

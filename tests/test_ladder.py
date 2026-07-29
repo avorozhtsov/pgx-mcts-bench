@@ -163,3 +163,76 @@ def test_unsolved_evaluations_count_as_worst_not_as_missing() -> None:
     assert promotion_reason(
         1.0, float("nan"), history, 1, promote_at=0.8, tolerance=0.25, window=3
     ) == "plateau"
+
+
+# -- head registers ------------------------------------------------------------
+
+
+def test_written_registers_are_a_finite_control_state() -> None:
+    """The half of a Turing machine a memoryless scanning head is missing.
+
+    Registers ride in the state and are broadcast into the observation, which is
+    what lets them exist without touching search, the replay buffer or the training
+    step: the register value is part of the observation that gets stored. There is
+    no gradient through the memory -- a TOGGLE is an action and takes its credit
+    from MCTS like any other.
+    """
+    from dataclasses import replace as _replace
+
+    from pgx_mcts_bench.ladder import memory_arms
+
+    for candidate in memory_arms():
+        config = _config(candidate, STAGES[5], 0, "cpu")
+        game = make_game(config.game)
+        k = candidate.serial_registers
+
+        # One action and one observation channel per register, both O(1) in L.
+        plain = _replace(config.game, serial_registers=0)
+        assert config.game.action_size == plain.action_size + k
+        assert config.game.observation_channels == plain.observation_channels + k
+        assert game.num_actions == config.game.action_size
+
+        transition = game.reset(5)
+        assert transition.observation.shape[-1] == config.game.observation_channels
+        assert np.all(transition.state[2] == 0.0), "registers start clear"
+
+        toggle = game.num_actions - 1
+        assert game.describe(toggle) == f"TOGGLE(r{k - 1})"
+        assert transition.legal_actions[toggle], "the control state is always writable"
+
+        budget_before = int(np.asarray(game.unwrap(transition.state)._budget))
+        after = game.step(transition.state, toggle)
+        assert after.state[2][k - 1] == 1.0
+        # It must reach the network, not just the state.
+        assert np.all(after.observation[0, :, -1] == 1.0)
+        # And it must cost a ply: free writes would let the agent set up an
+        # arbitrary control state between two edits, which is an oracle, not a
+        # machine.
+        assert int(np.asarray(game.unwrap(after.state)._budget)) == budget_before - 1
+        assert np.array_equal(
+            np.asarray(game.unwrap(after.state)._word),
+            np.asarray(game.unwrap(transition.state)._word),
+        ), "a write must not touch the tape"
+
+        assert game.step(after.state, toggle).state[2][k - 1] == 0.0, "involution"
+
+        # Edits and shifts must carry the control state through unchanged.
+        shift = next(
+            a for a in np.flatnonzero(after.legal_actions) if game.shift_of(int(a)) is not None
+        )
+        assert np.array_equal(game.step(after.state, int(shift)).state[2], after.state[2])
+
+
+def test_registers_do_not_disturb_the_default_serial_arms() -> None:
+    """The register work must be inert when unused, or every earlier serial number
+    silently stops being comparable."""
+    from pgx_mcts_bench.ladder import serial_arms
+
+    for candidate in serial_arms():
+        config = _config(candidate, STAGES[5], 0, "cpu")
+        assert config.game.serial_registers == 0
+        game = make_game(config.game)
+        assert game.registers == 0
+        transition = game.reset(1)
+        assert transition.observation.shape[-1] == config.game.observation_channels
+        assert len(transition.state) == 3 and transition.state[2].size == 0

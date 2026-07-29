@@ -82,7 +82,9 @@ def shift_strides(
     return tuple(strides) if strides else DEFAULT_STRIDES
 
 
-def serial_action_size(max_strands: int, act_width: int = 1, n_strides: int = 1) -> int:
+def serial_action_size(
+    max_strands: int, act_width: int = 1, n_strides: int = 1, registers: int = 0
+) -> int:
     """Actions for a window agent.
 
     `act_width` is how many window offsets the agent may act at. 1 means "only at
@@ -94,7 +96,7 @@ def serial_action_size(max_strands: int, act_width: int = 1, n_strides: int = 1)
     stride set is fixed by `max_len` at *construction*, not by the current word.
     """
     positional = 3 + 2 * (max_strands - 1) + 1  # reduce/commute/braid, inserts, crossing
-    return act_width * positional + 4 + 2 * n_strides
+    return act_width * positional + 4 + 2 * n_strides + registers
 
 
 def serial_action_names(max_strands: int, strides: tuple[int, ...] = (1,)) -> list[str]:
@@ -117,9 +119,12 @@ def serial_action_names(max_strands: int, strides: tuple[int, ...] = (1,)) -> li
 class SerialBraidGame:
     """Adapter presenting the braid environment through a moving window.
 
-    State is `(pgx_state, head)`. `GameAdapter` treats state opaquely, so search
-    and training need no changes -- this drops into the existing sweep as another
-    variant, scored on the same anchors.
+    State is `(pgx_state, head, registers)`. `GameAdapter` treats state opaquely,
+    so search and training need no changes -- this drops into the existing sweep as
+    another variant, scored on the same anchors. The registers ride in the state
+    and are broadcast into the observation, which is why nothing in `search.py`,
+    `data.py` or `training.py` has to know they exist: the register value is part
+    of the observation that gets stored in the replay buffer.
     """
 
     def __init__(self, config: BraidGameConfig):
@@ -167,11 +172,16 @@ class SerialBraidGame:
         self._crossing = CROSSING_CHANGE
         self._insert_kind = INSERT
         self.num_actions = serial_action_size(
-            config.max_strands, self.act_width, len(self.strides)
+            config.max_strands,
+            self.act_width,
+            len(self.strides),
+            max(config.serial_registers, 0),
         )
         self._per_offset = 3 + 2 * generators + 1
         self._singleton_base = self.act_width * self._per_offset
         self._shift_base = self._singleton_base + 4
+        self.registers = max(config.serial_registers, 0)
+        self._register_base = self._shift_base + 2 * len(self.strides)
         # Offsets are centred on the head, matching the centred window: action
         # block j acts at head + j - act_width//2. At act_width = 1 that is the
         # head itself.
@@ -203,6 +213,8 @@ class SerialBraidGame:
         return self.spec.encode(self._crossing, position=position)
 
     def describe(self, action: int) -> str:
+        if action >= self._register_base:
+            return f"TOGGLE(r{action - self._register_base})"
         if action >= self._shift_base:
             index, direction = divmod(action - self._shift_base, 2)
             side = "RIGHT" if direction else "LEFT"
@@ -220,19 +232,25 @@ class SerialBraidGame:
         return f"{names[within]}@{offset - self._act_origin:+d}"
 
     def shift_of(self, action: int) -> int | None:
-        """Signed head displacement of a shift action, or `None` if it is an edit."""
-        if action < self._shift_base:
+        """Signed head displacement of a shift action, or `None` if it is not one."""
+        if not self._shift_base <= action < self._register_base:
             return None
         index, direction = divmod(action - self._shift_base, 2)
         return self.strides[index] if direction else -self.strides[index]
+
+    def register_of(self, action: int) -> int | None:
+        """Index of the register a TOGGLE action flips, or `None`."""
+        if action < self._register_base:
+            return None
+        return action - self._register_base
 
     # -- environment ----------------------------------------------------------
 
     def reset(self, seed: int) -> Transition:
         if self.generator is None:
             state = self._init(jax.random.PRNGKey(seed))
-            return self._view(state, 0, reward=0.0)
-        return self._view(self._generated(seed), 0, reward=0.0)
+            return self._view(state, 0, self._no_registers(), reward=0.0)
+        return self._view(self._generated(seed), 0, self._no_registers(), reward=0.0)
 
     def _generated(self, seed: int):
         """An instance from the graded generator, with log(A/B) sampled."""
@@ -249,21 +267,35 @@ class SerialBraidGame:
         self, word: list[int], strands: int, log_ratio: float = 0.0
     ) -> Transition:
         return self._view(
-            self.env.init_from_word(word, strands, log_ratio=log_ratio), 0, reward=0.0
+            self.env.init_from_word(word, strands, log_ratio=log_ratio),
+            0,
+            self._no_registers(),
+            reward=0.0,
         )
 
     def step(self, state: Any, action: int) -> Transition:
-        pgx_state, head = state
+        pgx_state, head, registers = state
         mask = self._legal(pgx_state, head)
         if not mask[action]:
             raise ValueError(f"Illegal serial action {self.describe(action)}")
+
+        # A toggle costs a ply, like every other action. Free writes would let the
+        # agent set up an arbitrary control state between two edits at no cost,
+        # which is not a machine -- it is an oracle.
+        slot = self.register_of(action)
+        if slot is not None:
+            flipped = registers.copy()
+            flipped[slot] = 1.0 - flipped[slot]
+            return self._view(
+                self._charge_budget(pgx_state), head, flipped, reward=0.0
+            )
 
         displacement = self.shift_of(action)
         if displacement is not None:
             length = max(int(np.asarray(pgx_state._word).astype(bool).sum()), 1)
             new_head = (head + displacement) % length
             advanced = self._charge_budget(pgx_state)
-            return self._view(advanced, new_head, reward=0.0)
+            return self._view(advanced, new_head, registers, reward=0.0)
 
         actor = int(np.asarray(pgx_state.current_player))
         length_before = int(np.asarray(pgx_state._word).astype(bool).sum())
@@ -272,7 +304,9 @@ class SerialBraidGame:
         )
         rewards = np.asarray(next_state.rewards, dtype=np.float32)
         length = max(int(np.asarray(next_state._word).astype(bool).sum()), 1)
-        return self._view(next_state, head % length, reward=float(rewards[actor]))
+        return self._view(
+            next_state, head % length, registers, reward=float(rewards[actor])
+        )
 
     def _charge_budget(self, pgx_state: Any):
         """Spend one ply without touching the word.
@@ -305,11 +339,11 @@ class SerialBraidGame:
         )
 
     def final_rewards(self, state: Any) -> np.ndarray:
-        pgx_state, _ = state
+        pgx_state = state[0]
         return np.asarray(pgx_state.rewards, dtype=np.float32)
 
     def state_info(self, state: Any) -> dict[str, int]:
-        pgx_state, _ = state
+        pgx_state = state[0]
         return {
             "player": int(np.asarray(pgx_state.current_player)),
             "move_count": int(np.asarray(pgx_state._step_count)),
@@ -317,12 +351,12 @@ class SerialBraidGame:
         }
 
     def first_role_player(self, state: Any) -> int:
-        pgx_state, _ = state
+        pgx_state = state[0]
         return int(np.asarray(pgx_state._scrambler))
 
     def unwrap(self, state: Any) -> Any:
-        """Drop the head; callers that inspect the word want the Pgx state."""
-        pgx_state, _ = state
+        """Drop the head and registers; callers inspecting the word want Pgx."""
+        pgx_state = state[0]
         return pgx_state
 
     # -- observation and legality --------------------------------------------
@@ -333,6 +367,10 @@ class SerialBraidGame:
         length = int(np.asarray(pgx_state._word).astype(bool).sum())
         for action in range(self._shift_base):
             mask[action] = full[self.underlying_action(action, head, length)]
+        # Toggles are always available while the episode runs: the control state is
+        # the agent's own, not a function of the word.
+        if not bool(np.asarray(pgx_state.terminated)):
+            mask[self._register_base :] = True
         # Shifting is pointless on a word too short to move within, and it must
         # never be the only option -- PASS remains the guaranteed fallback. A
         # stride that is a multiple of the current length is a no-op on the
@@ -346,7 +384,12 @@ class SerialBraidGame:
             mask[self._singleton_base + 3] = True
         return mask
 
-    def _view(self, pgx_state: Any, head: int, reward: float) -> Transition:
+    def _no_registers(self) -> np.ndarray:
+        return np.zeros(self.registers, dtype=np.float32)
+
+    def _view(
+        self, pgx_state: Any, head: int, registers: np.ndarray, reward: float
+    ) -> Transition:
         observation = np.asarray(pgx_state.observation, dtype=np.float32)  # (L, C)
         word = np.asarray(pgx_state._word)
         length = int((word != 0).sum())
@@ -358,9 +401,18 @@ class SerialBraidGame:
         else:
             indexes = np.zeros(self.window, dtype=int)
         window = observation[indexes]
+        if self.registers:
+            # Broadcast along the window, like the environment's own scalar planes.
+            # Carrying the control state in the observation rather than in a
+            # separate channel to the network is what keeps search, the replay
+            # buffer and the training step untouched.
+            planes = np.broadcast_to(
+                registers[None, :], (self.window, self.registers)
+            )
+            window = np.concatenate([window, planes], axis=1)
         return Transition(
-            state=(pgx_state, head),
-            observation=window.reshape(1, self.window, observation.shape[1]),
+            state=(pgx_state, head, registers),
+            observation=window.reshape(1, self.window, window.shape[1]),
             legal_actions=self._legal(pgx_state, head),
             reward=reward,
             terminated=bool(np.asarray(pgx_state.terminated)),

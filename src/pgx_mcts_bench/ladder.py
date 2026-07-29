@@ -92,6 +92,9 @@ class Candidate:
     # () takes the default power-of-two stride set. `(w // 2,)` is the original
     # single-stride tape, kept screenable so the change can be ablated.
     serial_shift_strides: tuple[int, ...] = ()
+    # Binary registers in the head, one TOGGLE action each: the finite control
+    # state a memoryless scanning head is missing.
+    serial_registers: int = 0
     train: bool = True
 
 
@@ -127,6 +130,26 @@ def serial_arms() -> list[Candidate]:
     ]
 
 
+def memory_arms() -> list[Candidate]:
+    """Head registers: does a finite control state help a scanning head?
+
+    Matched to `s-head-128` in every other respect, so the comparison is the
+    register and nothing else. Registers are *written by the agent*, so there is no
+    gradient through the memory and no BPTT -- a TOGGLE is an action and gets its
+    credit from MCTS like any other. That is what makes this arm cheap enough to
+    run before the learned-embedding version, and it is a fair arm under the
+    zero-human-knowledge constraint: a mechanism, not a feature.
+    """
+    base = dict(exploration="u1", simulations=128, channels=32, train_steps=96,
+                serial_window=7, serial_act_width=1)
+    return [
+        Candidate("s-reg4", "head-only + 4 written registers (16 control states)",
+                  serial_registers=4, **base),
+        Candidate("s-reg8", "head-only + 8 written registers (256 control states)",
+                  serial_registers=8, **base),
+    ]
+
+
 def parallel_arms() -> list[Candidate]:
     return [
         Candidate("no-training", "control: search only, weights never updated", train=False),
@@ -141,7 +164,7 @@ def parallel_arms() -> list[Candidate]:
 
 
 def candidates() -> list[Candidate]:
-    return parallel_arms() + serial_arms()
+    return parallel_arms() + serial_arms() + memory_arms()
 
 
 @dataclass
@@ -291,6 +314,7 @@ def _config(
         serial_window=candidate.serial_window,
         serial_act_width=candidate.serial_act_width,
         serial_shift_strides=candidate.serial_shift_strides,
+        serial_registers=candidate.serial_registers,
     )
     return ExperimentConfig(
         game=game,
