@@ -35,6 +35,13 @@ from pgx_mcts_bench.search import NeuralMCTS
 from pgx_mcts_bench.training import play_selfplay_games, train_alphazero_step
 
 # (source knot, scramble moves). Monotone in u(K) and in depth.
+#
+# Stages 10-12 extend the original ten, which `s-window-128` cleared outright and
+# four other arms reached the top of. They keep the same shape -- a new source
+# knot unscrambled, then scrambled, then a structurally harder knot of the *same*
+# unknotting number, which is what the T(2,7)/T(3,4) pair at u=3 already does.
+# T(2,9) is u=4 on two strands with 9 crossings; T(3,5) is u=4 on three with 10,
+# so stage 12 separates "larger u" from "harder diagram at the same u".
 STAGES: list[tuple[str, int]] = [
     ("unknot", 2),
     ("unknot", 6),
@@ -46,6 +53,9 @@ STAGES: list[tuple[str, int]] = [
     ("T(2,7)", 4),
     ("T(3,4)", 0),
     ("T(3,4)", 4),
+    ("T(2,9)", 0),
+    ("T(2,9)", 4),
+    ("T(3,5)", 0),
 ]
 
 # The three cost ratios the network must serve simultaneously, as requested:
@@ -74,7 +84,39 @@ class Candidate:
     train: bool = True
 
 
-def candidates() -> list[Candidate]:
+def serial_arms() -> list[Candidate]:
+    """The serial grid, as screened in `artifacts/serial-screen`.
+
+    Four factors varied one at a time against a common base rather than crossed.
+    All six clear stage 1, which the pre-fix serial candidates could not, so the
+    grid measures speed and objective quality rather than whether it works:
+
+    * `act_width`  -- head-only against acting anywhere visible.
+    * `simulations` -- 128 against 256; the serial formulation spends plies on
+      repositioning, so it may need depth the parallel one does not.
+    * `budget`     -- 64 plies against 96, since head motion is charged.
+    * `strides`    -- the power-of-two set against the original single stride,
+      the ablation for the reachability change.
+    """
+    base = dict(exploration="u1", simulations=128, channels=32, train_steps=96)
+    return [
+        Candidate("s-head-128", "head-only, 128 sims", serial_window=7,
+                  serial_act_width=1, **base),
+        Candidate("s-window-128", "act anywhere in a 7-window, 128 sims",
+                  serial_window=7, serial_act_width=7, **base),
+        Candidate("s-w11-128", "11-window, act anywhere, 128 sims",
+                  serial_window=11, serial_act_width=11, **base),
+        Candidate("s-head-256", "head-only, 256 sims: is depth still the wall?",
+                  serial_window=7, serial_act_width=1,
+                  exploration="u1", simulations=256, channels=32, train_steps=96),
+        Candidate("s-head-budget96", "head-only, 96 plies to pay for head motion",
+                  serial_window=7, serial_act_width=1, simplify_budget=96, **base),
+        Candidate("s-head-1stride", "ABLATION: head-only, the original single stride",
+                  serial_window=7, serial_act_width=1, serial_shift_strides=(3,), **base),
+    ]
+
+
+def parallel_arms() -> list[Candidate]:
     return [
         Candidate("no-training", "control: search only, weights never updated", train=False),
         Candidate("u1-puct", "AlphaZero PUCT, parallel head", exploration="u1"),
@@ -84,13 +126,11 @@ def candidates() -> list[Candidate]:
                   simulations=16),
         Candidate("wide-net", "96 channels: is capacity the constraint?", channels=96,
                   train_steps=160),
-        Candidate("serial-w7-head", "moving window, acting only at the head",
-                  serial_window=7, serial_act_width=1),
-        Candidate("serial-w7-window", "moving window, acting anywhere it can see",
-                  serial_window=7, serial_act_width=7),
-        Candidate("serial-w11", "window at the parallel net's receptive field (11)",
-                  serial_window=11, serial_act_width=11),
     ]
+
+
+def candidates() -> list[Candidate]:
+    return parallel_arms() + serial_arms()
 
 
 @dataclass
@@ -233,9 +273,39 @@ def run_ladder(
         start_stage = saved["highest_stage"] + 1
         log(f"    [{candidate.name}] resumed at stage {start_stage}")
 
+    def snapshot(index: int, when: str, stage_result: StageResult | None = None) -> None:
+        """Weights either side of a stage, kept rather than overwritten.
+
+        The resume pointer (`<name>.pt`) only ever holds the last *promoted*
+        state, which makes the trajectory through a stage invisible -- and the
+        trajectory is what a promote-on-solve-rate rule hides. `crossings` at
+        promotion measures wherever the network happened to be when it crossed
+        the threshold, so telling improvement from threshold-crossing needs the
+        before and after weights side by side. Optimizer state is deliberately
+        omitted: it doubles the size and nothing downstream replays training
+        from a snapshot.
+        """
+        if checkpoint_dir is None:
+            return
+        directory = checkpoint_dir / candidate.name
+        directory.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "network": network.state_dict(),
+                "candidate": candidate.name,
+                "stage": index,
+                "source": STAGES[index][0],
+                "scramble": STAGES[index][1],
+                "when": when,
+                "stage_result": asdict(stage_result) if stage_result else None,
+            },
+            directory / f"stage{index:02d}-{when}.pt",
+        )
+
     for index, stage in enumerate(STAGES):
         if index < start_stage:
             continue
+        snapshot(index, "before")
         config = _config(candidate, stage, seed, device)
         game = make_game(config.game)
         source = next(s for s in game.generator.sources if s.name == stage[0])
@@ -270,20 +340,20 @@ def run_ladder(
             if not candidate.train:
                 break
 
-        result.stages.append(
-            StageResult(
-                stage=index,
-                by_ratio={str(k): v for k, v in by_ratio.items()},
-                source=stage[0],
-                scramble=stage[1],
-                iterations=iterations,
-                solve_rate=solve_rate,
-                crossings=crossings,
-                optimal_crossings=source.unknotting_number,
-                promoted=promoted,
-                seconds=time.perf_counter() - stage_started,
-            )
+        stage_result = StageResult(
+            stage=index,
+            by_ratio={str(k): v for k, v in by_ratio.items()},
+            source=stage[0],
+            scramble=stage[1],
+            iterations=iterations,
+            solve_rate=solve_rate,
+            crossings=crossings,
+            optimal_crossings=source.unknotting_number,
+            promoted=promoted,
+            seconds=time.perf_counter() - stage_started,
         )
+        result.stages.append(stage_result)
+        snapshot(index, "after", stage_result)
         log(
             f"    [{candidate.name}] stage {index} {stage[0]}+{stage[1]} "
             f"(u={source.unknotting_number}): solved {solve_rate:.2f} "

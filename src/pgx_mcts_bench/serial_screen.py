@@ -19,42 +19,12 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 
-from pgx_mcts_bench.ladder import STAGES, Candidate, run_ladder
+from pgx_mcts_bench.ladder import STAGES, run_ladder, serial_arms
 
-
-def arms() -> list[Candidate]:
-    """The grid.
-
-    Four factors, screened one at a time against a common base rather than
-    crossed -- a full cross is 48 arms and this machine has five free cores.
-
-    * `act_width`  -- head-only against acting anywhere visible. The first run
-      could not separate these because neither could see *where*; with a
-      positional policy head the comparison means something.
-    * `simulations` -- the serial formulation spends plies on repositioning, so
-      it needs depth the parallel one does not. `search-heavy` (128) was the
-      strongest parallel candidate by a wide margin.
-    * `budget`     -- 64 plies against 96, since head motion is charged.
-    * `strides`    -- the new power-of-two set against the original single
-      stride, which is the ablation for the reachability fix.
-    """
-    base = dict(exploration="u1", simulations=128, channels=32, train_steps=96)
-    grid: list[Candidate] = [
-        Candidate("s-head-128", "head-only, 128 sims", serial_window=7,
-                  serial_act_width=1, **base),
-        Candidate("s-window-128", "act anywhere in a 7-window, 128 sims",
-                  serial_window=7, serial_act_width=7, **base),
-        Candidate("s-w11-128", "11-window, act anywhere, 128 sims",
-                  serial_window=11, serial_act_width=11, **base),
-        Candidate("s-head-256", "head-only, 256 sims: is depth still the wall?",
-                  serial_window=7, serial_act_width=1,
-                  exploration="u1", simulations=256, channels=32, train_steps=96),
-        Candidate("s-head-budget96", "head-only, 96 plies to pay for head motion",
-                  serial_window=7, serial_act_width=1, simplify_budget=96, **base),
-        Candidate("s-head-1stride", "ABLATION: head-only, the original single stride",
-                  serial_window=7, serial_act_width=1, serial_shift_strides=(3,), **base),
-    ]
-    return grid
+# The grid itself lives in `ladder.py` as `serial_arms()`, so the extended ladder
+# can race the serial and parallel formulations against each other on one stage
+# list rather than keeping two divergent copies of the settings.
+arms = serial_arms
 
 
 def _run(args) -> dict:
