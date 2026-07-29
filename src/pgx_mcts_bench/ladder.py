@@ -65,6 +65,12 @@ class Candidate:
     train_steps: int = 96
     serial_window: int = 0
     serial_act_width: int = 1
+    # 0 takes the default rule: 32 plies for parallel candidates, 64 for serial
+    # ones, which pay plies to move the head.
+    simplify_budget: int = 0
+    # () takes the default power-of-two stride set. `(w // 2,)` is the original
+    # single-stride tape, kept screenable so the change can be ablated.
+    serial_shift_strides: tuple[int, ...] = ()
     train: bool = True
 
 
@@ -119,7 +125,10 @@ def _config(candidate: Candidate, stage: tuple[str, int], seed: int, device: str
         max_len=48,
         max_strands=5,
         scramble_budget=1,
-        simplify_budget=32 if not candidate.serial_window else 64,
+        simplify_budget=(
+            candidate.simplify_budget
+            or (32 if not candidate.serial_window else 64)
+        ),
         allow_crossing_change=True,
         multi_objective=True,
         log_ratio_range=(float(np.log(min(RATIOS))), float(np.log(max(RATIOS)))),
@@ -129,6 +138,7 @@ def _config(candidate: Candidate, stage: tuple[str, int], seed: int, device: str
         stage_scramble=stage[1],
         serial_window=candidate.serial_window,
         serial_act_width=candidate.serial_act_width,
+        serial_shift_strides=candidate.serial_shift_strides,
     )
     return ExperimentConfig(
         game=game,

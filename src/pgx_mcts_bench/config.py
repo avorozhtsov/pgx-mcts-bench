@@ -86,6 +86,10 @@ class BraidGameConfig:
     # How many window offsets the agent may act at. 1 = only at the head
     # (position lives in the state); serial_window = act anywhere it can see.
     serial_act_width: int = 1
+    # Head strides, in letters, each giving a left and a right action. Empty
+    # takes the powers of two that fit `max_len`, so any site is reachable in
+    # O(log L) plies. A single stride reproduces the original one-step tape.
+    serial_shift_strides: tuple[int, ...] = ()
 
     def to_braid_config(self):
         from rf_knots.config import BraidConfig
@@ -107,12 +111,24 @@ class BraidGameConfig:
         return ActionSpec(max_len=self.max_len, max_strands=self.max_strands)
 
     @property
+    def serial_strides(self) -> tuple[int, ...]:
+        from pgx_mcts_bench.serial_braid import shift_strides
+
+        return shift_strides(
+            self.serial_window, self.max_len, self.serial_shift_strides
+        )
+
+    @property
+    def serial_width(self) -> int:
+        return min(max(self.serial_act_width, 1), self.serial_window)
+
+    @property
     def action_size(self) -> int:
         if self.serial_window:
             from pgx_mcts_bench.serial_braid import serial_action_size
 
             return serial_action_size(
-                self.max_strands, min(max(self.serial_act_width, 1), self.serial_window)
+                self.max_strands, self.serial_width, len(self.serial_strides)
             )
         return self._spec.num_actions
 
@@ -144,8 +160,7 @@ class BraidGameConfig:
         from rf_knots.actions import PASS
 
         if self.serial_window:
-            width = min(max(self.serial_act_width, 1), self.serial_window)
-            return width * (3 + 2 * (self.max_strands - 1) + 1) + 3  # PASS
+            return self.serial_width * (3 + 2 * (self.max_strands - 1) + 1) + 3  # PASS
         return self._spec.start_of(PASS)
 
     @property

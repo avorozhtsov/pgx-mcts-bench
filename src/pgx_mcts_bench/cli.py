@@ -376,6 +376,34 @@ def braid_ladder(
 
 
 @app.command()
+def braid_serial_screen(
+    arms_only: Annotated[str, typer.Option("--only", help="Comma-separated arm names")] = "",
+    seed: Annotated[int, typer.Option()] = 0,
+    max_iterations: Annotated[int, typer.Option(min=1)] = 40,
+    eval_games: Annotated[int, typer.Option(min=4)] = 12,
+    promote_at: Annotated[float, typer.Option()] = 0.8,
+    workers: Annotated[int, typer.Option(min=1)] = 4,
+    output: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Screen serial-formulation settings on the ladder's own stages."""
+    from pgx_mcts_bench.serial_screen import run_screen
+
+    only = [n.strip() for n in arms_only.split(",") if n.strip()]
+    out = output or artifact_dir(Path.cwd(), "serial-screen")
+    run_screen(
+        out,
+        max_iterations=max_iterations,
+        eval_games=eval_games,
+        promote_at=promote_at,
+        workers=workers,
+        seed=seed,
+        only=only,
+        log=typer.echo,
+    )
+    typer.echo(f"Saved: {out / 'screen.md'}")
+
+
+@app.command()
 def braid_multi(
     tier: str = "tier0",
     max_crossings: Annotated[int, typer.Option(min=0)] = 5,

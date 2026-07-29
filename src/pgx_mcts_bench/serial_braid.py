@@ -6,11 +6,16 @@ costs one forward pass over the whole word. That is the right trade while a
 full-length pass is affordable.
 
 This is the other formulation. A **head** points at one position; the agent sees
-only a window of width `w` around it and may either act at the head or shift the
-head by `w/2`. The consequences:
+only a window of width `w` *centred* on it and may either act inside that window
+or shift the head. The window is centred rather than forward-looking so that the
+two shift directions are equally informed -- with `[head, head+w)` a left shift
+walks into tape the agent has never seen, and the first ladder run showed the
+head-only agent taking 118 blind left shifts against 2 right ones in the
+episodes it failed. The consequences:
 
-* the action space is `2N + 8` -- **independent of L**. At N=5 that is 18
-  against 388, and it does not grow when the word does;
+* the action space is `W * (2N + 2) + 4 + 2S` -- **independent of L**. At N=5,
+  W=1 and five strides that is 22 against 388, and it does not grow when the
+  word does;
 * the network never sees the whole word, so nothing in it depends on `L` either;
 * but reaching a distant site costs *actions*, and in MCTS an action is a ply of
   search depth. That is the price, and measuring it is the point.
@@ -34,25 +39,50 @@ import numpy as np
 from pgx_mcts_bench.config import BraidGameConfig
 from pgx_mcts_bench.game import Transition
 
-# Serial action layout, with G = max_strands - 1 generators.
-#   0                REDUCE at head
-#   1                COMMUTE at head
-#   2                BRAID at head
-#   3 .. 3+2G-1      INSERT at head, (generator, sign)
-#   +0               DESTABILIZE          (position-free)
-#   +1               STABILIZE_POS
-#   +2               STABILIZE_NEG
-#   +3               PASS
-#   +4               CROSSING_CHANGE at head
-#   +5               SHIFT_LEFT   by w/2
-#   +6               SHIFT_RIGHT  by w/2
+# Serial action layout, with G = max_strands - 1 generators and W = act_width.
+# One block of `per_offset = 3 + 2G + 1` actions per actionable offset, then the
+# position-free singletons, then two shift actions per stride:
+#   offset j, j = 0 .. W-1, acting at head + j - W//2
+#     +0             REDUCE
+#     +1             COMMUTE
+#     +2             BRAID
+#     +3 .. +3+2G-1  INSERT (generator, sign)
+#     +3+2G          CROSSING_CHANGE
+#   W*per_offset + 0 DESTABILIZE          (position-free)
+#                +1  STABILIZE_POS
+#                +2  STABILIZE_NEG
+#                +3  PASS
+#                +4  SHIFT by -strides[0]
+#                +5  SHIFT by +strides[0]
+#                ... one pair per stride
 SERIAL_REDUCE = 0
 SERIAL_COMMUTE = 1
 SERIAL_BRAID = 2
 SERIAL_INSERT = 3
 
+# Strides available to the head, in letters. A **fixed** set of powers of two:
+# fixed so the action count stays exactly independent of L (deriving it from
+# `max_len` would make the space grow like log L, giving up the property the
+# formulation exists for), powers of two so the head reaches a site by binary
+# decomposition instead of stepping. This matters more than it looks -- each ply
+# of repositioning is a ply of MCTS search depth, and depth is exponentially
+# expensive, so a head that can only step puts distant sites past the horizon
+# entirely. Measured on the first ladder: in the episodes `serial-w7-head`
+# failed, it spent 118 plies stepping one way round the necklace and 2 the
+# other, and arrived nowhere. At max_len = 48 this set repositions anywhere in
+# at most two plies.
+DEFAULT_STRIDES: tuple[int, ...] = (1, 2, 4, 8, 16)
 
-def serial_action_size(max_strands: int, act_width: int = 1) -> int:
+
+def shift_strides(
+    window: int, max_len: int, strides: tuple[int, ...] = ()
+) -> tuple[int, ...]:
+    """Head strides. `strides` overrides; `(w // 2,)` reproduces the old tape."""
+    del window, max_len  # deliberately not a function of the word capacity
+    return tuple(strides) if strides else DEFAULT_STRIDES
+
+
+def serial_action_size(max_strands: int, act_width: int = 1, n_strides: int = 1) -> int:
     """Actions for a window agent.
 
     `act_width` is how many window offsets the agent may act at. 1 means "only at
@@ -60,26 +90,27 @@ def serial_action_size(max_strands: int, act_width: int = 1) -> int:
     neighbour costs a shift. Larger values let one ply act anywhere in the
     visible window, which costs a wider head but no plies.
 
-    Either way the count is independent of L, which is the whole point.
+    Either way the count is independent of L, which is the whole point: the
+    stride set is fixed by `max_len` at *construction*, not by the current word.
     """
     positional = 3 + 2 * (max_strands - 1) + 1  # reduce/commute/braid, inserts, crossing
-    return act_width * positional + 6           # + 4 singletons + 2 shifts
+    return act_width * positional + 4 + 2 * n_strides
 
 
-def serial_action_names(max_strands: int) -> list[str]:
+def serial_action_names(max_strands: int, strides: tuple[int, ...] = (1,)) -> list[str]:
     names = ["REDUCE", "COMMUTE", "BRAID"]
     for generator in range(1, max_strands):
         for sign in ("+", "-"):
             names.append(f"INSERT(s{generator}{sign})")
     names += [
+        "CROSSING_CHANGE",
         "DESTABILIZE",
         "STABILIZE_POS",
         "STABILIZE_NEG",
         "PASS",
-        "CROSSING_CHANGE",
-        "SHIFT_LEFT",
-        "SHIFT_RIGHT",
     ]
+    for stride in strides:
+        names += [f"SHIFT_LEFT({stride})", f"SHIFT_RIGHT({stride})"]
     return names
 
 
@@ -110,7 +141,9 @@ class SerialBraidGame:
         self.config = config
         self.window = config.serial_window
         self.act_width = min(max(config.serial_act_width, 1), config.serial_window)
-        self.stride = max(1, config.serial_window // 2)
+        self.strides = shift_strides(
+            config.serial_window, config.max_len, config.serial_shift_strides
+        )
         self.env = BraidUnknot(config.to_braid_config())
         self.spec = self.env.spec
         self._init = jax.jit(self.env.init)
@@ -133,11 +166,17 @@ class SerialBraidGame:
         self._singletons = [DESTABILIZE, STABILIZE_POS, STABILIZE_NEG, PASS]
         self._crossing = CROSSING_CHANGE
         self._insert_kind = INSERT
-        self.num_actions = serial_action_size(config.max_strands, self.act_width)
+        self.num_actions = serial_action_size(
+            config.max_strands, self.act_width, len(self.strides)
+        )
         self._per_offset = 3 + 2 * generators + 1
         self._singleton_base = self.act_width * self._per_offset
-        self._shift_left = self.num_actions - 2
-        self._shift_right = self.num_actions - 1
+        self._shift_base = self._singleton_base + 4
+        # Offsets are centred on the head, matching the centred window: action
+        # block j acts at head + j - act_width//2. At act_width = 1 that is the
+        # head itself.
+        self._act_origin = self.act_width // 2
+        self._window_origin = self.window // 2
 
     # -- action translation ---------------------------------------------------
 
@@ -147,12 +186,12 @@ class SerialBraidGame:
         `None` means a head shift, which the wrapped environment knows nothing
         about. Offsets wrap: the word is a necklace.
         """
-        if action >= self._shift_left:
+        if action >= self._shift_base:
             return None
         if action >= self._singleton_base:
             return self.spec.encode(self._singletons[action - self._singleton_base])
         offset, within = divmod(action, self._per_offset)
-        position = (head + offset) % max(length, 1)
+        position = (head + offset - self._act_origin) % max(length, 1)
         if within < SERIAL_INSERT:
             return self.spec.encode(self._positional_kinds[within], position=position)
         insert_end = SERIAL_INSERT + len(self._inserts)
@@ -164,8 +203,10 @@ class SerialBraidGame:
         return self.spec.encode(self._crossing, position=position)
 
     def describe(self, action: int) -> str:
-        if action >= self._shift_left:
-            return "SHIFT_LEFT" if action == self._shift_left else "SHIFT_RIGHT"
+        if action >= self._shift_base:
+            index, direction = divmod(action - self._shift_base, 2)
+            side = "RIGHT" if direction else "LEFT"
+            return f"SHIFT_{side}({self.strides[index]})"
         if action >= self._singleton_base:
             return ["DESTABILIZE", "STABILIZE_POS", "STABILIZE_NEG", "PASS"][
                 action - self._singleton_base
@@ -176,7 +217,14 @@ class SerialBraidGame:
             for sign in ("+", "-"):
                 names.append(f"INSERT(s{generator}{sign})")
         names.append("CROSSING_CHANGE")
-        return f"{names[within]}@+{offset}"
+        return f"{names[within]}@{offset - self._act_origin:+d}"
+
+    def shift_of(self, action: int) -> int | None:
+        """Signed head displacement of a shift action, or `None` if it is an edit."""
+        if action < self._shift_base:
+            return None
+        index, direction = divmod(action - self._shift_base, 2)
+        return self.strides[index] if direction else -self.strides[index]
 
     # -- environment ----------------------------------------------------------
 
@@ -217,10 +265,10 @@ class SerialBraidGame:
         if not mask[action]:
             raise ValueError(f"Illegal serial action {self.describe(action)}")
 
-        if action >= self._shift_left:
-            offset = -self.stride if action == self._shift_left else self.stride
+        displacement = self.shift_of(action)
+        if displacement is not None:
             length = max(int(np.asarray(pgx_state._word).astype(bool).sum()), 1)
-            new_head = (head + offset) % length
+            new_head = (head + displacement) % length
             advanced = self._charge_budget(pgx_state)
             return self._view(advanced, new_head, reward=0.0)
 
@@ -290,13 +338,17 @@ class SerialBraidGame:
         full = np.asarray(pgx_state.legal_action_mask, dtype=bool)
         mask = np.zeros(self.num_actions, dtype=bool)
         length = int(np.asarray(pgx_state._word).astype(bool).sum())
-        for action in range(self.num_actions - 2):
+        for action in range(self._shift_base):
             mask[action] = full[self.underlying_action(action, head, length)]
         # Shifting is pointless on a word too short to move within, and it must
-        # never be the only option -- PASS remains the guaranteed fallback.
+        # never be the only option -- PASS remains the guaranteed fallback. A
+        # stride that is a multiple of the current length is a no-op on the
+        # necklace, so it is masked out rather than offered as a wasted ply.
         if length > 1 and not bool(np.asarray(pgx_state.terminated)):
-            mask[self._shift_left] = True
-            mask[self._shift_right] = True
+            for index, stride in enumerate(self.strides):
+                if stride % length:
+                    mask[self._shift_base + 2 * index] = True
+                    mask[self._shift_base + 2 * index + 1] = True
         if not mask.any():
             mask[self._singleton_base + 3] = True
         return mask
@@ -309,7 +361,7 @@ class SerialBraidGame:
         # shorter than the window the same positions repeat, which is what the
         # necklace actually looks like.
         if length > 0:
-            indexes = (head + np.arange(self.window)) % length
+            indexes = (head + np.arange(self.window) - self._window_origin) % length
         else:
             indexes = np.zeros(self.window, dtype=int)
         window = observation[indexes]

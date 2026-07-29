@@ -250,27 +250,68 @@ class BraidAlphaZeroNet(PolicyValueNet):
 class SerialBraidNet(PolicyValueNet):
     """Network for the moving-window formulation.
 
-    The observation is a `1 x w` window and the action space is `2N + 8`, neither
-    of which depends on `L`. So this is a small convolution over the window,
-    pooled, then two heads -- no positional policy head, because the agent acts
-    only at the head position.
+    The observation is a `1 x w` window and the action space is `O(1)` in `L`,
+    neither of which depends on the word length. So this is a small convolution
+    over the window and two heads.
+
+    **The policy head is positional, like the parallel one.** The first version
+    pooled the window with mean+max and read every logit off that vector, which
+    made the readout near-invariant to *where in the window* a feature sat --
+    exactly the one question this formulation exists to answer. A trained
+    `serial-w7-head` moved its policy by 0.14 when the window contents were
+    cyclically rolled against 0.40 for a genuinely different state, so a third of
+    its positional signal was leaking through the convolution's zero padding
+    rather than being represented. Here the per-offset logits come from a 1x1
+    convolution over the window cells, and the head cell's own features are
+    concatenated to the pooled summary that feeds the position-free actions --
+    shifts included, since "should I move, and which way" is a question about the
+    head's neighbourhood, not about the window's average.
     """
 
     def __init__(self, game: BraidGameConfig, model: ModelConfig):
         super().__init__()
         self.representation = Representation(game, model, model.channels)
+        self.ratio_channel = 2 * (game.max_strands - 1) + 1 + 1 + 6
+        self.film = FiLM(model.channels) if model.film_on_ratio else None
+
+        self.act_width = game.serial_width
+        self.per_offset = 3 + 2 * (game.max_strands - 1) + 1
+        self.n_global = game.action_size - self.act_width * self.per_offset
+        # The actionable offsets are centred on the head, and so is the window,
+        # so the actionable cells are the middle `act_width` columns.
+        self.act_start = (game.serial_window - self.act_width) // 2
+        self.head_cell = game.serial_window // 2
+
+        self.positional = nn.Conv2d(model.channels, self.per_offset, 1)
         self.body = nn.Sequential(
-            nn.Linear(2 * model.channels, 64),
+            nn.Linear(3 * model.channels, 64),
             nn.ReLU(),
         )
-        self.policy = nn.Linear(64, game.action_size)
+        self.global_policy = nn.Linear(64, self.n_global)
         self.value = nn.Sequential(nn.Linear(64, 1), nn.Tanh())
 
     def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
         hidden = self.representation(observation)
-        pooled = torch.cat([hidden.mean(dim=(2, 3)), hidden.amax(dim=(2, 3))], dim=1)
-        features = self.body(pooled)
-        return self.policy(features), self.value(features).squeeze(-1)
+        if self.film is not None:
+            hidden = self.film(hidden, observation[:, self.ratio_channel, 0, 0])
+
+        cells = self.positional(hidden)[:, :, 0, :]  # (B, per_offset, w)
+        acting = cells[:, :, self.act_start : self.act_start + self.act_width]
+        # (B, act_width, per_offset) -> flat, matching the offset-major layout of
+        # `SerialBraidGame.underlying_action`.
+        positional = acting.permute(0, 2, 1).flatten(1)
+
+        summary = torch.cat(
+            [
+                hidden.mean(dim=(2, 3)),
+                hidden.amax(dim=(2, 3)),
+                hidden[:, :, 0, self.head_cell],
+            ],
+            dim=1,
+        )
+        features = self.body(summary)
+        logits = torch.cat([positional, self.global_policy(features)], dim=1)
+        return logits, self.value(features).squeeze(-1)
 
 
 class Dynamics(nn.Module):

@@ -413,7 +413,11 @@ def test_serial_action_space_does_not_depend_on_L() -> None:
     from dataclasses import replace as _replace
 
     serial = [_replace(SERIAL, max_len=length).action_size for length in (12, 64, 256)]
-    assert serial == [2 * SERIAL.max_strands + 8] * 3, serial
+    # head-only: (3 rewrites + 2G inserts + crossing) + 4 singletons + a left and
+    # a right action per stride. The stride set is fixed, not derived from
+    # max_len -- deriving it would make the count grow like log L.
+    expected = (2 * SERIAL.max_strands + 2) + 4 + 2 * len(SERIAL.serial_strides)
+    assert serial == [expected] * 3, serial
 
     parallel = [
         _replace(SERIAL, max_len=length, serial_window=0).action_size
@@ -501,9 +505,11 @@ def test_acting_anywhere_in_the_window_stays_independent_of_L() -> None:
     assert len(set(head_only)) == 1, head_only
     assert len(set(in_window)) == 1, in_window
     assert in_window[0] > head_only[0]
-    # w offsets x (3 rewrites + 2G inserts + crossing) + 4 singletons + 2 shifts
+    # w offsets x (3 rewrites + 2G inserts + crossing) + 4 singletons + 2 per stride
     generators = SERIAL.max_strands - 1
-    assert in_window[0] == SERIAL.serial_window * (3 + 2 * generators + 1) + 6
+    assert in_window[0] == SERIAL.serial_window * (3 + 2 * generators + 1) + 4 + 2 * len(
+        SERIAL.serial_strides
+    )
 
 
 def test_in_window_offsets_address_the_right_positions() -> None:
@@ -513,14 +519,88 @@ def test_in_window_offsets_address_the_right_positions() -> None:
 
     game = make_game(_replace(SERIAL, serial_act_width=SERIAL.serial_window))
     transition = game.from_word([2, 3, 1, -1, 2], strands=4)
-    # s1 s1^-1 sits at positions 2,3 -- reachable as REDUCE at offset +2
+    # Offsets are centred on the head, so with act_width 5 the blocks address
+    # head-2 .. head+2. s1 s1^-1 sits at positions 2,3 and the head is at 0, so
+    # the reducible pair is block 4 -- offset +2.
     per_offset = 3 + 2 * (SERIAL.max_strands - 1) + 1
-    reduce_at_2 = 2 * per_offset + 0
+    reduce_at_2 = 4 * per_offset + 0
     assert game.describe(reduce_at_2).startswith("REDUCE@+2")
     assert transition.legal_actions[reduce_at_2]
     after = game.step(transition.state, reduce_at_2)
     word = [int(x) for x in np.asarray(game.unwrap(after.state)._word) if int(x)]
     assert word == [2, 3, 2]
+
+
+def test_serial_window_is_centred_so_both_shifts_are_informed() -> None:
+    """A forward-looking window `[head, head+w)` makes one shift direction blind.
+
+    The first ladder run measured the consequence: in the episodes it failed,
+    `serial-w7-head` played 118 `SHIFT_LEFT` against 2 `SHIFT_RIGHT` -- it walked
+    into tape it had never seen, because nothing distinguished the direction that
+    was visible from the one that was not.
+    """
+    from pgx_mcts_bench.game import make_game
+
+    game = make_game(SERIAL)
+    transition = game.from_word([1, 2, 3, 1, 2, 3, 1, 2], strands=4)
+    state, head = transition.state
+    observed = np.asarray(state.observation)
+    window = transition.observation[0]
+    assert np.allclose(window[SERIAL.serial_window // 2], observed[head]), (
+        "the head must sit at the centre of its own window"
+    )
+    # Both neighbours of the head are visible before the agent commits a ply.
+    length = int((np.asarray(state._word) != 0).sum())
+    assert np.allclose(window[SERIAL.serial_window // 2 - 1], observed[(head - 1) % length])
+    assert np.allclose(window[SERIAL.serial_window // 2 + 1], observed[(head + 1) % length])
+
+
+def test_serial_policy_head_reads_the_cell_it_acts_on() -> None:
+    """The regression that put every serial candidate at stage 0.
+
+    The first `SerialBraidNet` pooled the window with mean+max and read every
+    logit off that vector, so the readout was near-invariant to *where* in the
+    window a feature sat -- the one question this formulation exists to answer.
+    A trained checkpoint moved its policy by 0.14 when the window was cyclically
+    rolled, against 0.40 for a genuinely different state. `REDUCE` at an offset
+    must depend on that offset's cell and its neighbour, not on the average.
+    """
+    from dataclasses import replace as _replace
+
+    from pgx_mcts_bench.networks import SerialBraidNet
+
+    config = _replace(SERIAL, serial_act_width=1)
+    net = SerialBraidNet(config, ModelConfig(channels=8, latent_channels=8)).eval()
+    x = torch.randn(1, config.observation_channels, 1, config.serial_window,
+                    requires_grad=True)
+    logits, _ = net(x)
+    logits[0, 0].backward()                      # REDUCE at the head
+    per_cell = x.grad.abs().sum(dim=(0, 1))[0].numpy()
+
+    head = config.serial_window // 2
+    # REDUCE acts on the pair (head, head+1), and the trunk's receptive field is
+    # three taps, so the mass belongs on the head and its immediate neighbours.
+    local = per_cell[head - 1 : head + 2].sum()
+    assert local > 0.75 * per_cell.sum(), per_cell / per_cell.max()
+
+
+def test_serial_strides_reposition_the_head_in_a_couple_of_plies() -> None:
+    """Every ply of repositioning is a ply of MCTS depth, and depth is
+    exponentially expensive -- a head that can only step puts distant sites past
+    the search horizon. Powers of two reach anything on the tape by binary
+    decomposition."""
+    from pgx_mcts_bench.game import make_game
+
+    game = make_game(SERIAL)
+    length = SERIAL.max_len
+    strides = sorted(game.strides, reverse=True)
+    for target in range(length):
+        remaining, plies = min(target, length - target), 0
+        for stride in strides:
+            plies += remaining // stride
+            remaining %= stride
+        assert remaining == 0
+        assert plies <= 2, (target, plies)
 
 
 def test_film_amplifies_the_ratio_beyond_the_input_channel() -> None:
