@@ -42,20 +42,31 @@ from pgx_mcts_bench.training import play_selfplay_games, train_alphazero_step
 # unknotting number, which is what the T(2,7)/T(3,4) pair at u=3 already does.
 # T(2,9) is u=4 on two strands with 9 crossings; T(3,5) is u=4 on three with 10,
 # so stage 12 separates "larger u" from "harder diagram at the same u".
+# Graded finer in scramble depth and coarser in u, because the measurement says
+# that is where the difficulty actually lives. Every `+0` stage in the first
+# ladder promoted in 2 iterations at exactly the proved unknotting number; every
+# `+4` stage overshot and none converged. So the source knot is nearly free and
+# the scramble is the whole problem. T(2,7) is dropped: it is u=3, the same as
+# T(3,4), which is strictly harder (3 strands, 8 letters against 7) -- one knot
+# per unknotting number is enough. The plies freed pay for +2 and +8 rungs.
 STAGES: list[tuple[str, int]] = [
     ("unknot", 2),
     ("unknot", 6),
     ("T(2,3)", 0),
+    ("T(2,3)", 2),
     ("T(2,3)", 4),
     ("T(2,5)", 0),
+    ("T(2,5)", 2),
     ("T(2,5)", 4),
-    ("T(2,7)", 0),
-    ("T(2,7)", 4),
+    ("T(2,5)", 8),
     ("T(3,4)", 0),
+    ("T(3,4)", 2),
     ("T(3,4)", 4),
+    ("T(3,4)", 8),
     ("T(2,9)", 0),
     ("T(2,9)", 4),
     ("T(3,5)", 0),
+    ("T(3,5)", 4),
 ]
 
 # The three cost ratios the network must serve simultaneously, as requested:
@@ -145,6 +156,16 @@ class StageResult:
     optimal_crossings: int
     promoted: bool
     seconds: float
+    # Why the stage ended: cleanly at the objective, on a plateau, or capped.
+    reason: str = "capped"
+    # Solve rate and crossing changes on every *already cleared* stage, measured
+    # with the weights that just cleared this one. Without this the ladder never
+    # checks whether climbing costs the stages below, which is the question the
+    # promote-on-solve-rate rule cannot answer. Keyed by stage index, measured at
+    # the crossing-dominant end of the front only -- that is the number a theorem
+    # can be compared against, and evaluating one ratio instead of three keeps it
+    # affordable at every promotion.
+    retrospective: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -160,7 +181,97 @@ def _silent(*args, **kwargs) -> None:
     """Module-level so it survives pickling into a worker process."""
 
 
-def _config(candidate: Candidate, stage: tuple[str, int], seed: int, device: str):
+def stage_mixture(frontier: int, decay: float) -> tuple[tuple[str, int, float], ...]:
+    """Training mixture over stages 0..frontier, geometric back from the frontier.
+
+    `decay = 0` is the original rule -- train only at the frontier -- kept so the
+    change is ablatable rather than assumed. `decay = 0.5` gives the frontier half
+    the mass, the stage below a quarter, and so on, which keeps the tail cheap
+    while never dropping a cleared stage out of the distribution entirely.
+
+    Weight is per *stage*, so the deeper the ladder the thinner each old rung
+    gets. That is the intended shape: the point is to stop the forgetting-shaped
+    residual, not to re-train the whole curriculum every iteration.
+    """
+    if decay <= 0.0:
+        return ()
+    weights = [decay ** (frontier - i) for i in range(frontier + 1)]
+    total = sum(weights)
+    return tuple(
+        (STAGES[i][0], STAGES[i][1], w / total) for i, w in enumerate(weights)
+    )
+
+
+def resume_point(saved_stages: list[dict]) -> tuple[int, set, list[str]]:
+    """`(start_stage, cleared identities, gaps below the start)`.
+
+    Keyed on `(source, scramble)` rather than on the stage index. The stage list is
+    edited as measurements come in -- rungs inserted, a redundant knot dropped --
+    and an index-keyed resume silently lands on a different rung after every such
+    edit, with weights that never saw it. Identity matching also fills gaps: a
+    candidate that cleared the old ladder starts at the first *newly inserted*
+    stage it has not actually done, which is the honest place to restart.
+    """
+    cleared = {
+        (row["source"], row["scramble"]) for row in saved_stages if row.get("promoted")
+    }
+    start = next((i for i, s in enumerate(STAGES) if s not in cleared), len(STAGES))
+    # Gaps are the uncleared rungs *below the highest cleared one* -- newly
+    # inserted stages that a candidate skipped past on the previous ladder.
+    # Everything below `start` is cleared by construction, so measuring gaps
+    # against `start` would always be empty.
+    highest = max((i for i, s in enumerate(STAGES) if s in cleared), default=-1)
+    gaps = [f"{s[0]}+{s[1]}" for s in STAGES[: highest + 1] if s not in cleared]
+    return start, cleared, gaps
+
+
+def promotion_reason(
+    solve_rate: float,
+    crossings: float,
+    history: list[float],
+    optimal: int,
+    *,
+    promote_at: float,
+    tolerance: float,
+    window: int,
+) -> str | None:
+    """Why this stage should end now, or `None` to keep training.
+
+    Solve rate is a *feasibility* signal and the objective is crossing changes, so
+    the original rule advanced on the wrong quantity: it fired as soon as the
+    stage could be solved, long before it was solved well. Measured consequence --
+    `s-window-128` promoted `T(2,3)+4` at 4.18 crossing changes against an optimum
+    of 1.
+
+    Gating on the objective alone would be the opposite mistake. The same
+    measurement showed `T(2,5)+4` improving faster from *later* stages than it was
+    improving in place, so grinding until optimal would spend budget worse than
+    moving up. Hence two exits: reaching the objective, or plateauing on it.
+    """
+    if solve_rate < promote_at:
+        return None
+    if crossings == crossings and crossings <= optimal + tolerance:
+        return "objective"
+    # Needs two windows of history: one to establish a best, one to fail to beat
+    # it. Otherwise the first two flat evaluations of a stage read as a plateau.
+    # The comparison is recent-window against everything *before* it -- comparing
+    # against the whole history includes the recent window, so a monotonically
+    # improving run has its global best inside the window and reads as flat.
+    if len(history) >= 2 * window:
+        if min(history[-window:]) > min(history[:-window]) - 0.01:
+            return "plateau"
+    return None
+
+
+def _config(
+    candidate: Candidate,
+    stage: tuple[str, int],
+    seed: int,
+    device: str,
+    *,
+    frontier: int = -1,
+    mix_decay: float = 0.0,
+):
     game = BraidGameConfig(
         max_len=48,
         max_strands=5,
@@ -176,6 +287,7 @@ def _config(candidate: Candidate, stage: tuple[str, int], seed: int, device: str
         generator_max_scramble=6,
         stage_source=stage[0],
         stage_scramble=stage[1],
+        stage_mix=stage_mixture(frontier, mix_decay) if frontier >= 0 else (),
         serial_window=candidate.serial_window,
         serial_act_width=candidate.serial_act_width,
         serial_shift_strides=candidate.serial_shift_strides,
@@ -195,15 +307,19 @@ def _config(candidate: Candidate, stage: tuple[str, int], seed: int, device: str
     )
 
 
-def evaluate_stage(game, network, config, games: int, seed: int) -> dict[float, dict]:
+def evaluate_stage(
+    game, network, config, games: int, seed: int, ratios: tuple[float, ...] = RATIOS
+) -> dict[float, dict]:
     """Per-ratio solve rate, crossing changes and moves on held-out instances.
 
     Evaluated at each of A:B = 1000:1, 10:1, 1:10 separately, so it is visible
     whether one network is really serving all three or collapsing to one policy.
+    `ratios` narrows that: the retrospective pass measures only the
+    crossing-dominant end, since that is the number a theorem compares against.
     """
     search = NeuralMCTS(game, network, config.search, config.train.device)
     out: dict[float, dict] = {}
-    for ratio in RATIOS:
+    for ratio in ratios:
         log_ratio = float(np.log(ratio))
         solved = crossings = moves = 0
         for index in range(games):
@@ -243,6 +359,10 @@ def run_ladder(
     eval_every: int = 2,
     eval_games: int = 16,
     promote_at: float = 0.8,
+    mix_decay: float = 0.5,
+    crossing_tolerance: float = 0.25,
+    plateau_window: int = 3,
+    retro_games: int = 6,
     log=print,
 ) -> LadderResult:
     started = time.perf_counter()
@@ -259,19 +379,28 @@ def run_ladder(
     replay = ReplayBuffer(20_000, rng)
     result = LadderResult(candidate.name, candidate.rationale, -1, 0.0)
 
-    # Resume: pick up at the stage after the last one cleared, with the weights
-    # that cleared it. A ladder run is long enough that losing it to a laptop
-    # closing would be silly.
+    # Resume: pick up at the first stage this candidate has *not* cleared, with
+    # the weights that cleared the last one. Matching is by stage **identity**
+    # (source, scramble), not by index -- the stage list is edited as the
+    # measurements come in, and an index-keyed resume silently means a different
+    # rung after every such edit. A ladder run is long enough that losing it to a
+    # laptop closing would be silly, and long enough that resuming onto the wrong
+    # rung would be worse.
     start_stage = 0
     path = checkpoint_dir / f"{candidate.name}.pt" if checkpoint_dir else None
     if path is not None and path.exists():
         saved = torch.load(path, map_location=device, weights_only=False)
         network.load_state_dict(saved["network"])
         optimizer.load_state_dict(saved["optimizer"])
-        result.stages = [StageResult(**row) for row in saved["stages"]]
-        result.highest_stage = saved["highest_stage"]
-        start_stage = saved["highest_stage"] + 1
-        log(f"    [{candidate.name}] resumed at stage {start_stage}")
+        start_stage, cleared, gaps = resume_point(saved["stages"])
+        result.stages = [
+            StageResult(**row)
+            for row in saved["stages"]
+            if (row["source"], row["scramble"]) in cleared
+        ]
+        result.highest_stage = start_stage - 1
+        log(f"    [{candidate.name}] resumed at stage {start_stage} "
+            f"({len(cleared)} cleared" + (f", filling {gaps}" if gaps else "") + ")")
 
     def snapshot(index: int, when: str, stage_result: StageResult | None = None) -> None:
         """Weights either side of a stage, kept rather than overwritten.
@@ -306,7 +435,13 @@ def run_ladder(
         if index < start_stage:
             continue
         snapshot(index, "before")
-        config = _config(candidate, stage, seed, device)
+        # Training draws from a mixture over stages 0..index; evaluation stays
+        # pinned to `index`, because `evaluate_stage` builds its instances from
+        # `stage_source`/`stage_scramble` directly rather than through the
+        # generator's sampler. One game object therefore serves both.
+        config = _config(
+            candidate, stage, seed, device, frontier=index, mix_decay=mix_decay
+        )
         game = make_game(config.game)
         source = next(s for s in game.generator.sources if s.name == stage[0])
         search = NeuralMCTS(game, network, config.search, device)
@@ -314,7 +449,9 @@ def run_ladder(
         solve_rate = crossings = float("nan")
         by_ratio: dict = {}
         promoted = False
+        reason = "capped"
         iterations = 0
+        history: list[float] = []
 
         for iteration in range(max_iterations_per_stage):
             if candidate.train:
@@ -334,11 +471,45 @@ def run_ladder(
                 # Promotion needs the hardest setting solved, not the easiest.
                 solve_rate = min(v["solved"] for v in by_ratio.values())
                 crossings = by_ratio[max(RATIOS)]["crossings"]
-                if solve_rate >= promote_at:
-                    promoted = True
+                # Unsolved sorts as worst rather than as missing, so a stage that
+                # stops solving reads as "not improving" instead of dropping out
+                # of the plateau test entirely.
+                history.append(crossings if crossings == crossings else float("inf"))
+                verdict = promotion_reason(
+                    solve_rate, crossings, history, source.unknotting_number,
+                    promote_at=promote_at, tolerance=crossing_tolerance,
+                    window=plateau_window,
+                )
+                if verdict is not None:
+                    promoted, reason = True, verdict
                     break
             if not candidate.train:
                 break
+
+        # Look back: are the stages already cleared still solved, and at what cost?
+        # Nothing measured this before, so "climbing costs the rungs below" was
+        # neither confirmed nor ruled out. Only on promotion -- there is nothing to
+        # look back on from a stage that was never cleared.
+        retrospective: dict = {}
+        if promoted and index > 0:
+            cc_edge = max(RATIOS)
+            for earlier in range(index):
+                back = _config(candidate, STAGES[earlier], seed, device)
+                back_game = make_game(back.game)
+                rows = evaluate_stage(
+                    back_game, network, back, retro_games,
+                    seed + 700_000 + earlier * 997, ratios=(cc_edge,),
+                )[cc_edge]
+                back_source = next(
+                    s for s in back_game.generator.sources if s.name == STAGES[earlier][0]
+                )
+                retrospective[str(earlier)] = {
+                    "source": STAGES[earlier][0],
+                    "scramble": STAGES[earlier][1],
+                    "solved": rows["solved"],
+                    "crossings": rows["crossings"],
+                    "optimal_crossings": back_source.unknotting_number,
+                }
 
         stage_result = StageResult(
             stage=index,
@@ -350,15 +521,22 @@ def run_ladder(
             crossings=crossings,
             optimal_crossings=source.unknotting_number,
             promoted=promoted,
+            reason=reason,
+            retrospective=retrospective,
             seconds=time.perf_counter() - stage_started,
         )
         result.stages.append(stage_result)
         snapshot(index, "after", stage_result)
+        regressed = [
+            f"{v['source']}+{v['scramble']} {v['crossings']:.2f}/{v['optimal_crossings']}"
+            for v in retrospective.values()
+            if v["solved"] < promote_at
+        ]
         log(
             f"    [{candidate.name}] stage {index} {stage[0]}+{stage[1]} "
             f"(u={source.unknotting_number}): solved {solve_rate:.2f} "
-            f"crossings {crossings:.2f} after {iterations} it "
-            f"({'promoted' if promoted else 'capped'})"
+            f"crossings {crossings:.2f} after {iterations} it ({reason})"
+            + (f"  REGRESSED: {', '.join(regressed)}" if regressed else "")
         )
         if promoted:
             result.highest_stage = index

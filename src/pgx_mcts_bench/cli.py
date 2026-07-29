@@ -325,6 +325,14 @@ def braid_ladder(
     max_iterations: Annotated[int, typer.Option(min=1)] = 25,
     eval_games: Annotated[int, typer.Option(min=4)] = 16,
     promote_at: Annotated[float, typer.Option()] = 0.8,
+    mix_decay: Annotated[
+        float, typer.Option(help="Training mixture decay back from the frontier; 0 = frontier only")
+    ] = 0.5,
+    crossing_tolerance: Annotated[
+        float, typer.Option(help="Promote cleanly when crossings <= u(K) + this")
+    ] = 0.25,
+    plateau_window: Annotated[int, typer.Option(min=1)] = 3,
+    retro_games: Annotated[int, typer.Option(min=0)] = 6,
     workers: Annotated[int, typer.Option(min=1)] = 1,
     device: Annotated[str, typer.Option()] = "cpu",
     output: Annotated[Path | None, typer.Option()] = None,
@@ -352,7 +360,10 @@ def braid_ladder(
                 run_ladder(candidate, seed=seed, device=device,
                            checkpoint_dir=out / "checkpoints",
                            max_iterations_per_stage=max_iterations,
-                           eval_games=eval_games, promote_at=promote_at, log=typer.echo)
+                           eval_games=eval_games, promote_at=promote_at,
+                           mix_decay=mix_decay, crossing_tolerance=crossing_tolerance,
+                           plateau_window=plateau_window, retro_games=retro_games,
+                           log=typer.echo)
             )
             save(results, out)
     else:
@@ -361,7 +372,10 @@ def braid_ladder(
                 pool.submit(run_ladder, c, seed=seed, device=device,
                             checkpoint_dir=out / "checkpoints",
                             max_iterations_per_stage=max_iterations,
-                            eval_games=eval_games, promote_at=promote_at, log=_silent): c
+                            eval_games=eval_games, promote_at=promote_at,
+                            mix_decay=mix_decay, crossing_tolerance=crossing_tolerance,
+                            plateau_window=plateau_window, retro_games=retro_games,
+                            log=_silent): c
                 for c in chosen
             }
             for future in as_completed(futures):

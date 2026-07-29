@@ -7,7 +7,7 @@ import jax
 import numpy as np
 from pgx.go import Go
 
-from pgx_mcts_bench.config import AnyGameConfig, BraidGameConfig, GameConfig
+from pgx_mcts_bench.config import AnyGameConfig, BraidGameConfig, GameConfig, pick_stage
 
 
 @dataclass(frozen=True)
@@ -185,14 +185,7 @@ class BraidUnknotGame:
         starts immediately, and the source knot's unknotting number is known.
         """
         rng = np.random.default_rng(seed)
-        if self.config.stage_source:
-            source = next(
-                s for s in self.generator.sources if s.name == self.config.stage_source
-            )
-            moves = self.config.stage_scramble
-        else:
-            levels = self.generator.levels(self.config.generator_max_scramble)
-            source, moves = levels[int(rng.integers(len(levels)))]
+        source, moves = pick_stage(self.config, self.generator, rng)
         instance = self.generator.generate(source, moves, rng)
         low, high = self.config.log_ratio_range
         log_ratio = float(rng.uniform(low, high)) if high > low else low

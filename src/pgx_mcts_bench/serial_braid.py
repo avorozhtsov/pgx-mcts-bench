@@ -36,7 +36,7 @@ from typing import Any
 import jax
 import numpy as np
 
-from pgx_mcts_bench.config import BraidGameConfig
+from pgx_mcts_bench.config import BraidGameConfig, pick_stage
 from pgx_mcts_bench.game import Transition
 
 # Serial action layout, with G = max_strands - 1 generators and W = act_width.
@@ -237,14 +237,7 @@ class SerialBraidGame:
     def _generated(self, seed: int):
         """An instance from the graded generator, with log(A/B) sampled."""
         rng = np.random.default_rng(seed)
-        if self.config.stage_source:
-            source = next(
-                s for s in self.generator.sources if s.name == self.config.stage_source
-            )
-            moves = self.config.stage_scramble
-        else:
-            levels = self.generator.levels(self.config.generator_max_scramble)
-            source, moves = levels[int(rng.integers(len(levels)))]
+        source, moves = pick_stage(self.config, self.generator, rng)
         instance = self.generator.generate(source, moves, rng)
         low, high = self.config.log_ratio_range
         log_ratio = float(rng.uniform(low, high)) if high > low else low

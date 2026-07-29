@@ -76,9 +76,20 @@ class BraidGameConfig:
     generator_max_crossings: int = 0
     generator_max_scramble: int = 0
     # Pin the generator to one source knot and scramble depth. Set by the ladder
-    # runner so a stage is a fixed difficulty rather than a mixture.
+    # runner so a stage is a fixed difficulty rather than a mixture. This stays
+    # the *frontier* stage even when training mixes: promotion is measured here.
     stage_source: str = ""
     stage_scramble: int = 0
+    # Training-instance mixture as (source, scramble, weight). Empty pins training
+    # to the frontier, which is what the first ladder did. Promoting used to mean
+    # abandoning a stage, and the measurement said that costs real quality: with
+    # the frontier-only rule, `s-window-128` promoted stage 3 at 4.18 crossing
+    # changes against an optimum of 1, and its final weights -- after eight more
+    # stages, none of them stage 3 -- still scored 1.17. Transfer from harder
+    # stages improves the easier ones but does not converge them. Mixing keeps the
+    # cleared stages in the training distribution so that gap closes.
+    # Evaluation never uses this; it always pins to the frontier.
+    stage_mix: tuple[tuple[str, int, float], ...] = ()
     # > 0 selects the serial (moving-window) formulation: the agent sees a window
     # of this width around a head it must move, and the action space stops
     # depending on L. See serial_braid.py.
@@ -171,6 +182,29 @@ class BraidGameConfig:
 
 
 AnyGameConfig = GameConfig | BraidGameConfig
+
+
+def pick_stage(config: BraidGameConfig, generator: Any, rng: Any):
+    """`(source, scramble)` for one training instance.
+
+    Three regimes, in precedence order: an explicit mixture over cleared stages,
+    a single pinned stage, or the generator's own full grading. Both adapters call
+    this so the two formulations cannot drift apart on which instances they train
+    against -- the sort of difference that would silently invalidate every
+    serial-against-parallel comparison in the ladder.
+    """
+    if config.stage_mix:
+        import numpy as np
+
+        weights = np.array([w for _, _, w in config.stage_mix], dtype=float)
+        index = int(rng.choice(len(weights), p=weights / weights.sum()))
+        name, scramble, _ = config.stage_mix[index]
+        return next(s for s in generator.sources if s.name == name), scramble
+    if config.stage_source:
+        source = next(s for s in generator.sources if s.name == config.stage_source)
+        return source, config.stage_scramble
+    levels = generator.levels(config.generator_max_scramble)
+    return levels[int(rng.integers(len(levels)))]
 
 
 @dataclass(frozen=True)
