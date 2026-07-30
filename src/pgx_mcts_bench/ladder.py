@@ -1,11 +1,18 @@
 """Staged curriculum over the generator's complexity grade.
 
-Ten stages, monotone in both the source knot's unknotting number and the number
-of scramble moves on top of it. A candidate trains at one stage until it can
-solve a held-out sample of that stage, then moves up; if it cannot, it moves up
-anyway after a cap so a stuck candidate spends its budget elsewhere rather than
-grinding. **The score is the highest stage reached**, which lets candidates
-spend different amounts of time per stage.
+`STAGES` rungs, monotone in both the source knot's unknotting number and the
+number of scramble moves on top of it -- the count is deliberately not written
+down in prose, because it has changed twice and the prose did not.
+
+A candidate trains at one rung until it either reaches the proved unknotting
+number there or stops improving on it, then moves up; if it cannot solve the rung
+at all it moves up anyway after a cap, so a stuck candidate spends its budget
+elsewhere rather than grinding. **The score is the highest stage reached**, which
+lets candidates spend different amounts of time per rung.
+
+Training draws from a mixture over the rungs already cleared; evaluation stays
+pinned to the frontier. Every promotion re-measures the rungs below, because
+climbing is supposed to improve them and where it does not, that is a result.
 
 Evaluation instances come from a seed stream disjoint from training, so the
 promotion signal is held out rather than measured on what was just trained on.
@@ -30,7 +37,7 @@ from pgx_mcts_bench.config import (
 )
 from pgx_mcts_bench.data import ReplayBuffer
 from pgx_mcts_bench.game import make_game
-from pgx_mcts_bench.networks import BraidAlphaZeroNet, SerialBraidNet
+from pgx_mcts_bench.networks import make_braid_network
 from pgx_mcts_bench.search import NeuralMCTS
 from pgx_mcts_bench.training import play_selfplay_games, train_alphazero_step
 
@@ -95,6 +102,9 @@ class Candidate:
     # Binary registers in the head, one TOGGLE action each: the finite control
     # state a memoryless scanning head is missing.
     serial_registers: int = 0
+    serial_encoder: str = ""
+    serial_encoder_states: int = 0
+    serial_encoder_prime: int = 5
     train: bool = True
 
 
@@ -150,6 +160,65 @@ def memory_arms() -> list[Candidate]:
     ]
 
 
+def invariant_learning_arms() -> list[Candidate]:
+    """Automatic whole-tape accumulators under the same serial controller."""
+    base = dict(
+        exploration="u1",
+        simulations=128,
+        channels=32,
+        train_steps=96,
+        serial_window=7,
+        serial_act_width=1,
+    )
+    return [
+        Candidate(
+            "s-gru128",
+            "automatic full-tape scan with unconstrained GRU-128",
+            serial_encoder="gru",
+            serial_encoder_states=128,
+            **base,
+        ),
+        Candidate(
+            "s-fsa32",
+            "automatic scan with a learned 32-state soft finite automaton",
+            serial_encoder="fsa",
+            serial_encoder_states=32,
+            **base,
+        ),
+        Candidate(
+            "s-ff4-p5",
+            "automatic scan with learned 4x4 matrices over F_5",
+            serial_encoder="finite-field",
+            serial_encoder_states=4,
+            serial_encoder_prime=5,
+            **base,
+        ),
+        Candidate(
+            "s-burau-oracle",
+            "ORACLE: fixed Burau matrices at t=-1 and t=1/2",
+            serial_encoder="burau",
+            serial_encoder_states=0,
+            **base,
+        ),
+    ]
+
+
+def central_benchmark_arms() -> list[Candidate]:
+    by_name = {c.name: c for c in serial_arms() + memory_arms() + invariant_learning_arms()}
+    return [
+        by_name[name]
+        for name in (
+            "s-head-128",
+            "s-reg4",
+            "s-reg8",
+            "s-gru128",
+            "s-fsa32",
+            "s-ff4-p5",
+            "s-burau-oracle",
+        )
+    ]
+
+
 def parallel_arms() -> list[Candidate]:
     return [
         Candidate("no-training", "control: search only, weights never updated", train=False),
@@ -164,7 +233,7 @@ def parallel_arms() -> list[Candidate]:
 
 
 def candidates() -> list[Candidate]:
-    return parallel_arms() + serial_arms() + memory_arms()
+    return parallel_arms() + serial_arms() + memory_arms() + invariant_learning_arms()
 
 
 @dataclass
@@ -315,6 +384,9 @@ def _config(
         serial_act_width=candidate.serial_act_width,
         serial_shift_strides=candidate.serial_shift_strides,
         serial_registers=candidate.serial_registers,
+        serial_encoder=candidate.serial_encoder,
+        serial_encoder_states=candidate.serial_encoder_states,
+        serial_encoder_prime=candidate.serial_encoder_prime,
     )
     return ExperimentConfig(
         game=game,
@@ -394,11 +466,7 @@ def run_ladder(
     torch.manual_seed(seed)
 
     first = _config(candidate, STAGES[0], seed, device)
-    network = (
-        SerialBraidNet(first.game, first.model)
-        if candidate.serial_window
-        else BraidAlphaZeroNet(first.game, first.model)
-    )
+    network = make_braid_network(first.game, first.model)
     optimizer = torch.optim.AdamW(network.parameters(), lr=1e-3, weight_decay=1e-4)
     replay = ReplayBuffer(20_000, rng)
     result = LadderResult(candidate.name, candidate.rationale, -1, 0.0)
@@ -584,44 +652,109 @@ def run_ladder(
 
 
 def render(results: list[LadderResult]) -> str:
+    """The run's own report.
+
+    Everything describing the ladder is derived from **what these results
+    recorded**, never from the module-level `STAGES`. The header used to hardcode
+    "Ten stages ... capped at 25 iterations", which survived two changes to the
+    stage list and one to the promotion rule and so described a run that had not
+    happened. Reading the current `STAGES` instead would be the same bug one level
+    down: re-rendering an old run would relabel it with today's rungs.
+    """
+    recorded: dict[int, tuple[str, int]] = {}
+    for r in results:
+        for st in r.stages:
+            recorded[st.stage] = (st.source, st.scramble)
+    rungs = ", ".join(f"{recorded[i][0]}+{recorded[i][1]}" for i in sorted(recorded))
+    matches_current = all(
+        index < len(STAGES) and STAGES[index] == rung for index, rung in recorded.items()
+    )
     lines = [
         "# Ladder: how far up the complexity grade does each candidate get?",
         "",
-        "Ten stages, monotone in the source knot's unknotting number and in scramble",
-        "depth. A candidate is promoted when it solves >= 80% of 16 held-out instances",
-        "at its current stage, and capped at 25 iterations if it cannot. Score is the",
-        "highest stage cleared.",
+        f"{len(recorded)} stages seen in this run, monotone in the source knot's",
+        "unknotting number and in scramble depth. Score is the highest stage cleared.",
+        "",
+        f"Rungs: {rungs}.",
+        "",
+    ]
+    if not matches_current:
+        lines += [
+            "> **Historical.** These rungs are not the current stage list, so the",
+            "> stage indices here do not line up with a run made today. Compare by",
+            "> rung name, not by number.",
+            "",
+        ]
+    lines += [
+        "A stage ends for one of three reasons, and which one it was is recorded:",
+        "",
+        "* `objective` — solved, at or within tolerance of the proved unknotting",
+        "  number. This is the only exit that means the stage was solved *well*.",
+        "* `plateau` — solved, but crossing changes stopped improving. Moving up is",
+        "  worth more than grinding, because training at a higher stage measurably",
+        "  improves the lower ones.",
+        "* `capped` — hit the iteration limit without clearing the promotion bar.",
         "",
         "| candidate | highest stage | reached | total iterations | seconds |",
         "|---|---:|---|---:|---:|",
     ]
     for r in sorted(results, key=lambda x: -x.highest_stage):
-        last = r.stages[-1] if r.stages else None
-        reached = f"{last.source}+{last.scramble}" if last else "-"
+        cleared = [s for s in r.stages if s.promoted]
+        last = cleared[-1] if cleared else None
+        reached = f"`{last.source}+{last.scramble}`" if last else "—"
         lines.append(
             f"| `{r.name}` | {r.highest_stage} | {reached} "
             f"| {sum(s.iterations for s in r.stages)} | {r.seconds:.0f} |"
         )
+
+    regressions = [
+        (r.name, st, key, row)
+        for r in results
+        for st in r.stages
+        for key, row in sorted((st.retrospective or {}).items(), key=lambda kv: int(kv[0]))
+        if row.get("solved", 1.0) < 0.8
+    ]
+    if regressions:
+        lines += [
+            "",
+            "## Regressions",
+            "",
+            "Rungs already cleared that the weights no longer solve, measured at the",
+            "crossing-dominant end after each promotion. Climbing is supposed to",
+            "improve the rungs below; where it does not, this is the evidence.",
+            "",
+            "| candidate | after clearing | regressed rung | solved | cc | u(K) |",
+            "|---|---|---|---:|---:|---:|",
+        ]
+        for name, st, _key, row in regressions:
+            cc = row.get("crossings", float("nan"))
+            cc = "—" if cc != cc else f"{cc:.2f}"
+            lines.append(
+                f"| `{name}` | {st.source}+{st.scramble} "
+                f"| {row['source']}+{row['scramble']} | {row['solved']:.2f} | {cc} "
+                f"| {row['optimal_crossings']} |"
+            )
+
     lines += ["", "## Per stage", ""]
-    for r in results:
+    for r in sorted(results, key=lambda x: -x.highest_stage):
         lines.append(f"### `{r.name}` — {r.rationale}")
         lines.append("")
         lines.append(
-            "| stage | instance | u(K) | it | A:B=1000:1 cc/moves "
+            "| stage | instance | u(K) | it | why | A:B=1000:1 cc/moves "
             "| 10:1 cc/moves | 1:10 cc/moves |"
         )
-        lines.append("|---:|---|---:|---:|---|---|---|")
+        lines.append("|---:|---|---:|---:|---|---|---|---|")
         for st in r.stages:
             cells = []
             for ratio in ("1000.0", "10.0", "0.1"):
                 v = st.by_ratio.get(ratio)
                 cells.append(
-                    "-" if not v else
+                    "—" if not v else
                     f"{v['crossings']:.2f} / {v['moves']:.1f} ({v['solved']:.0%})"
                 )
             lines.append(
                 f"| {st.stage} | {st.source}+{st.scramble} | {st.optimal_crossings} "
-                f"| {st.iterations} | " + " | ".join(cells) + " |"
+                f"| {st.iterations} | {st.reason} | " + " | ".join(cells) + " |"
             )
         lines.append("")
     return "\n".join(lines) + "\n"
@@ -633,3 +766,32 @@ def save(results: list[LadderResult], out: Path) -> None:
         json.dumps([asdict(r) for r in results], indent=2, default=float) + "\n"
     )
     (out / "ladder.md").write_text(render(results))
+
+
+def load(path: Path) -> list[LadderResult]:
+    """Results from a `ladder.json`, whatever stage list wrote it."""
+    return [
+        LadderResult(
+            name=row["name"],
+            rationale=row["rationale"],
+            highest_stage=row["highest_stage"],
+            seconds=row["seconds"],
+            stages=[StageResult(**s) for s in row["stages"]],
+        )
+        for row in json.loads(path.read_text())
+    ]
+
+
+def merge(root: Path) -> list[LadderResult]:
+    """Combine per-candidate output directories into one report.
+
+    Running one process per candidate is what keeps every core busy, but it leaves
+    a `ladder.json` per directory and no combined view -- so the run has no report
+    of itself, which is how a stale one survives.
+    """
+    results: list[LadderResult] = []
+    for path in sorted(root.glob("*/ladder.json")):
+        results.extend(load(path))
+    if results:
+        save(results, root)
+    return results

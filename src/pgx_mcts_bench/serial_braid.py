@@ -396,23 +396,33 @@ class SerialBraidGame:
         # The word is cyclic: gather the window with wraparound. When the word is
         # shorter than the window the same positions repeat, which is what the
         # necklace actually looks like.
-        if length > 0:
+        if length > 0 and self.config.serial_encoder:
+            # A head-relative complete scan: occupied letters first, then the
+            # environment's padding slots. The action semantics remain local and
+            # O(1); only the candidate encoder changes.
+            occupied = (head + np.arange(length)) % length
+            indexes = np.concatenate(
+                [occupied, np.arange(length, self.config.max_len)]
+            )
+        elif length > 0:
             indexes = (head + np.arange(self.window) - self._window_origin) % length
         else:
-            indexes = np.zeros(self.window, dtype=int)
+            width = self.config.max_len if self.config.serial_encoder else self.window
+            indexes = np.zeros(width, dtype=int)
         window = observation[indexes]
+        observed_width = window.shape[0]
         if self.registers:
             # Broadcast along the window, like the environment's own scalar planes.
             # Carrying the control state in the observation rather than in a
             # separate channel to the network is what keeps search, the replay
             # buffer and the training step untouched.
             planes = np.broadcast_to(
-                registers[None, :], (self.window, self.registers)
+                registers[None, :], (observed_width, self.registers)
             )
             window = np.concatenate([window, planes], axis=1)
         return Transition(
             state=(pgx_state, head, registers),
-            observation=window.reshape(1, self.window, window.shape[1]),
+            observation=window.reshape(1, observed_width, window.shape[1]),
             legal_actions=self._legal(pgx_state, head),
             reward=reward,
             terminated=bool(np.asarray(pgx_state.terminated)),

@@ -236,3 +236,60 @@ def test_registers_do_not_disturb_the_default_serial_arms() -> None:
         transition = game.reset(1)
         assert transition.observation.shape[-1] == config.game.observation_channels
         assert len(transition.state) == 3 and transition.state[2].size == 0
+
+
+def test_central_benchmark_contains_comparable_memory_arms() -> None:
+    import torch
+
+    from pgx_mcts_bench.ladder import central_benchmark_arms
+    from pgx_mcts_bench.networks import SequenceBraidNet, make_braid_network
+
+    arms = central_benchmark_arms()
+    assert [arm.name for arm in arms] == [
+        "s-head-128",
+        "s-reg4",
+        "s-reg8",
+        "s-gru128",
+        "s-fsa32",
+        "s-ff4-p5",
+        "s-burau-oracle",
+    ]
+    for arm in arms[3:]:
+        config = _config(arm, STAGES[0], 0, "cpu")
+        game = make_game(config.game)
+        transition = game.from_word([1, 2, -1], strands=3)
+        assert transition.observation.shape == (
+            1,
+            config.game.max_len,
+            config.game.observation_channels,
+        )
+        network = make_braid_network(config.game, config.model)
+        assert isinstance(network, SequenceBraidNet)
+        observation = torch.from_numpy(transition.observation).permute(2, 0, 1)[None]
+        policy, value = network(observation)
+        assert policy.shape == (1, config.game.action_size)
+        assert value.shape == (1,)
+        assert torch.isfinite(policy).all() and torch.isfinite(value).all()
+
+
+def test_learned_algebra_arms_have_finite_relation_objective() -> None:
+    import torch
+
+    from pgx_mcts_bench.ladder import invariant_learning_arms
+    from pgx_mcts_bench.networks import SequenceBraidNet, make_braid_network
+
+    for arm in invariant_learning_arms():
+        if arm.serial_encoder not in {"fsa", "finite-field"}:
+            continue
+        config = _config(arm, STAGES[0], 0, "cpu")
+        network = make_braid_network(config.game, config.model)
+        assert isinstance(network, SequenceBraidNet)
+        relation = network.regularization_loss()
+        assert relation.ndim == 0 and torch.isfinite(relation)
+        relation.backward()
+        parameters = (
+            network.transitions
+            if arm.serial_encoder == "fsa"
+            else network.field_matrices
+        )
+        assert parameters.grad is not None and torch.isfinite(parameters.grad).all()

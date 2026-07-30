@@ -108,6 +108,14 @@ class BraidGameConfig:
     # the zero-human-knowledge constraint. K registers give 2^K control states and
     # add K actions and K observation channels, both O(1) in word length.
     serial_registers: int = 0
+    # Optional automatic whole-tape accumulator. The action space remains the
+    # serial O(1) head action space, but the observation is the occupied braid
+    # word rotated to start at the head and padded to max_len. This is the common
+    # interface for recurrent, finite-state, learned finite-field, and known-
+    # representation oracle arms.
+    serial_encoder: str = ""
+    serial_encoder_states: int = 0
+    serial_encoder_prime: int = 5
 
     def to_braid_config(self):
         from rf_knots.config import BraidConfig
@@ -168,11 +176,13 @@ class BraidGameConfig:
 
     @property
     def width(self) -> int:
+        if self.serial_window and self.serial_encoder:
+            return self.max_len
         return self.serial_window or self.max_len
 
     @property
     def cells(self) -> int:
-        return self.serial_window or self.max_len
+        return self.width
 
     @property
     def max_moves(self) -> int:

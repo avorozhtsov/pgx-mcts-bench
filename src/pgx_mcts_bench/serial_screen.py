@@ -19,7 +19,7 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 
-from pgx_mcts_bench.ladder import STAGES, run_ladder, serial_arms
+from pgx_mcts_bench.ladder import run_ladder, serial_arms
 
 # The grid itself lives in `ladder.py` as `serial_arms()`, so the extended ladder
 # can race the serial and parallel formulations against each other on one stage
@@ -85,9 +85,11 @@ def run_screen(
     with ProcessPoolExecutor(max_workers=workers, initializer=_worker_init) as pool:
         for row in pool.map(_run, jobs):
             stage = row["highest_stage"]
-            reached = (
-                f"{STAGES[stage][0]}+{STAGES[stage][1]}" if stage >= 0 else "nothing"
+            top = next(
+                (s for s in row["stages"] if s["stage"] == stage and s.get("promoted")),
+                None,
             )
+            reached = f"{top['source']}+{top['scramble']}" if top else "nothing"
             log(f"  {row['name']:18s} stage {stage:2d} ({reached})  "
                 f"{row['seconds']:.0f}s")
             rows.append(row)
@@ -102,16 +104,22 @@ def _report(rows: list[dict]) -> str:
     lines = [
         "# Serial screen",
         "",
-        "Same stages and the same promotion rule as `artifacts/ladder-run`, so the",
-        "`highest stage` column is comparable with that table. Every serial",
-        "candidate scored 0 there.",
+        "Ten stages, the list in force when this screen ran. The current ladder has",
+        "17 rungs and a different promotion rule, so compare by **rung name** against",
+        "`artifacts/ladder-run` -- which used the same ten -- and not by stage number",
+        "against anything newer. Every serial candidate scored 0 in that run.",
         "",
         "| arm | what it varies | highest stage | reached | seconds |",
         "|---|---|---:|---|---:|",
     ]
     for row in rows:
         stage = row["highest_stage"]
-        reached = f"`{STAGES[stage][0]}+{STAGES[stage][1]}`" if stage >= 0 else "--"
+        # From the row's own record, never from the module-level STAGES: the stage
+        # list has changed since this screen ran, and indexing today's list with
+        # yesterday's index relabels an old run with rungs it never saw.
+        cleared = {s["stage"]: s for s in row["stages"] if s.get("promoted")}
+        top = cleared.get(stage)
+        reached = f"`{top['source']}+{top['scramble']}`" if top else "--"
         lines.append(
             f"| `{row['name']}` | {row['rationale']} | {stage} | {reached} | "
             f"{row['seconds']:.0f} |"

@@ -390,6 +390,22 @@ def braid_ladder(
 
 
 @app.command()
+def braid_ladder_merge(
+    root: Annotated[Path, typer.Argument(help="Directory holding per-candidate runs")],
+) -> None:
+    """Combine per-candidate ladder outputs into one report."""
+    from pgx_mcts_bench.ladder import merge
+
+    results = merge(root)
+    if not results:
+        typer.echo(f"No ladder.json found under {root}")
+        raise typer.Exit(1)
+    for r in sorted(results, key=lambda x: -x.highest_stage):
+        typer.echo(f"  {r.name:18s} stage {r.highest_stage:2d}  {r.seconds:.0f}s")
+    typer.echo(f"Saved: {root / 'ladder.md'}")
+
+
+@app.command()
 def braid_serial_screen(
     arms_only: Annotated[str, typer.Option("--only", help="Comma-separated arm names")] = "",
     seed: Annotated[int, typer.Option()] = 0,
