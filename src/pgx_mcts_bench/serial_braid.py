@@ -31,13 +31,33 @@ degenerate case: the necklace really does repeat.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 
 import jax
 import numpy as np
 
 from pgx_mcts_bench.config import BraidGameConfig, pick_stage
 from pgx_mcts_bench.game import Transition
+
+
+class SerialState(NamedTuple):
+    """What the serial agent carries between plies.
+
+    A tuple so `search.py` keeps treating it opaquely and every existing
+    `state[0]` / `state[1]` access still works, named so that adding a field does
+    not silently repoint the ones already there.
+
+    `colours[h]` is the colour of the strand *currently at height h under the
+    head*, not of a fixed thread: the head moves through crossings, and a crossing
+    swaps two strands, so the colours swap with them. That is what makes a colour
+    follow its strand without depending on the seam.
+    """
+
+    pgx: object
+    head: int
+    registers: np.ndarray
+    colours: np.ndarray
+    colour: int = 0
 
 # Serial action layout, with G = max_strands - 1 generators and W = act_width.
 # One block of `per_offset = 3 + 2G + 1` actions per actionable offset, then the
@@ -83,7 +103,11 @@ def shift_strides(
 
 
 def serial_action_size(
-    max_strands: int, act_width: int = 1, n_strides: int = 1, registers: int = 0
+    max_strands: int,
+    act_width: int = 1,
+    n_strides: int = 1,
+    registers: int = 0,
+    colours: int = 0,
 ) -> int:
     """Actions for a window agent.
 
@@ -96,7 +120,10 @@ def serial_action_size(
     stride set is fixed by `max_len` at *construction*, not by the current word.
     """
     positional = 3 + 2 * (max_strands - 1) + 1  # reduce/commute/braid, inserts, crossing
-    return act_width * positional + 4 + 2 * n_strides + registers
+    # Colours cost three actions however many colours there are: PAINT_LOW,
+    # PAINT_HIGH, CYCLE. Paint-per-(strand, colour) would be 20 dead actions at
+    # N=5, C=4, and dead actions are what sank the register arm.
+    return act_width * positional + 4 + 2 * n_strides + registers + (3 if colours else 0)
 
 
 def serial_action_names(max_strands: int, strides: tuple[int, ...] = (1,)) -> list[str]:
@@ -176,12 +203,18 @@ class SerialBraidGame:
             self.act_width,
             len(self.strides),
             max(config.serial_registers, 0),
+            max(config.serial_colours, 0),
         )
         self._per_offset = 3 + 2 * generators + 1
         self._singleton_base = self.act_width * self._per_offset
         self._shift_base = self._singleton_base + 4
         self.registers = max(config.serial_registers, 0)
         self._register_base = self._shift_base + 2 * len(self.strides)
+        self.colours = max(config.serial_colours, 0)
+        self._colour_base = self._register_base + self.registers
+        self._paint_low = self._colour_base
+        self._paint_high = self._colour_base + 1
+        self._cycle = self._colour_base + 2
         # Offsets are centred on the head, matching the centred window: action
         # block j acts at head + j - act_width//2. At act_width = 1 that is the
         # head itself.
@@ -213,6 +246,8 @@ class SerialBraidGame:
         return self.spec.encode(self._crossing, position=position)
 
     def describe(self, action: int) -> str:
+        if self.colours and action >= self._colour_base:
+            return ["PAINT_LOW", "PAINT_HIGH", "CYCLE"][action - self._colour_base]
         if action >= self._register_base:
             return f"TOGGLE(r{action - self._register_base})"
         if action >= self._shift_base:
@@ -240,17 +275,61 @@ class SerialBraidGame:
 
     def register_of(self, action: int) -> int | None:
         """Index of the register a TOGGLE action flips, or `None`."""
-        if action < self._register_base:
+        if not self._register_base <= action < self._colour_base:
             return None
         return action - self._register_base
+
+    def colour_action(self, action: int) -> str | None:
+        """`"low"`, `"high"`, `"cycle"`, or `None` if this is not a colour action."""
+        if not self.colours or action < self._colour_base:
+            return None
+        return ("low", "high", "cycle")[action - self._colour_base]
+
+    def _crossing_heights(self, pgx_state: object, head: int) -> tuple[int, int]:
+        """The two heights the letter under the head swaps, as 0-based indices."""
+        word = np.asarray(pgx_state._word)
+        length = max(int((word != 0).sum()), 1)
+        generator = abs(int(word[head % length]))
+        low = max(generator - 1, 0)
+        return low, min(low + 1, self.config.max_strands - 1)
+
+    def _transport(
+        self, pgx_state: object, head: int, displacement: int, colours: np.ndarray
+    ) -> np.ndarray:
+        """Carry the colours through every crossing the head moves across.
+
+        A crossing swaps the two strands it joins, so a colour attached to a height
+        has to swap with them or it stops describing the strand it was painted on.
+        Moving right across position p applies p's transposition; moving left off
+        position p-1 undoes it, and a transposition is its own inverse, so both
+        directions are the same swap.
+        """
+        if not self.colours or displacement == 0:
+            return colours
+        word = np.asarray(pgx_state._word)
+        length = max(int((word != 0).sum()), 1)
+        moved = colours.copy()
+        if displacement > 0:
+            positions = [(head + i) % length for i in range(displacement)]
+        else:
+            positions = [(head - i) % length for i in range(1, -displacement + 1)]
+        for position in positions:
+            generator = abs(int(word[position]))
+            if 1 <= generator < self.config.max_strands:
+                low = generator - 1
+                moved[low], moved[low + 1] = moved[low + 1], moved[low]
+        return moved
 
     # -- environment ----------------------------------------------------------
 
     def reset(self, seed: int) -> Transition:
         if self.generator is None:
             state = self._init(jax.random.PRNGKey(seed))
-            return self._view(state, 0, self._no_registers(), reward=0.0)
-        return self._view(self._generated(seed), 0, self._no_registers(), reward=0.0)
+            return self._view(state, 0, self._no_registers(), self._no_colours(), 0, reward=0.0)
+        return self._view(
+            self._generated(seed), 0, self._no_registers(), self._no_colours(), 0,
+            reward=0.0,
+        )
 
     def _generated(self, seed: int):
         """An instance from the graded generator, with log(A/B) sampled."""
@@ -270,11 +349,13 @@ class SerialBraidGame:
             self.env.init_from_word(word, strands, log_ratio=log_ratio),
             0,
             self._no_registers(),
+            self._no_colours(),
+            0,
             reward=0.0,
         )
 
     def step(self, state: Any, action: int) -> Transition:
-        pgx_state, head, registers = state
+        pgx_state, head, registers, colours, colour = state
         mask = self._legal(pgx_state, head)
         if not mask[action]:
             raise ValueError(f"Illegal serial action {self.describe(action)}")
@@ -287,15 +368,33 @@ class SerialBraidGame:
             flipped = registers.copy()
             flipped[slot] = 1.0 - flipped[slot]
             return self._view(
-                self._charge_budget(pgx_state), head, flipped, reward=0.0
+                self._charge_budget(pgx_state), head, flipped, colours, colour,
+                reward=0.0,
+            )
+
+        # Painting costs a ply like everything else, and so does cycling: a free
+        # palette would let the agent set an arbitrary control state between two
+        # edits, which is an oracle rather than a machine.
+        paint = self.colour_action(action)
+        if paint is not None:
+            painted, held = colours.copy(), colour
+            if paint == "cycle":
+                held = (colour + 1) % self.colours
+            else:
+                low, high = self._crossing_heights(pgx_state, head)
+                painted[low if paint == "low" else high] = colour + 1
+            return self._view(
+                self._charge_budget(pgx_state), head, registers, painted, held,
+                reward=0.0,
             )
 
         displacement = self.shift_of(action)
         if displacement is not None:
             length = max(int(np.asarray(pgx_state._word).astype(bool).sum()), 1)
             new_head = (head + displacement) % length
+            carried = self._transport(pgx_state, head, displacement, colours)
             advanced = self._charge_budget(pgx_state)
-            return self._view(advanced, new_head, registers, reward=0.0)
+            return self._view(advanced, new_head, registers, carried, colour, reward=0.0)
 
         actor = int(np.asarray(pgx_state.current_player))
         length_before = int(np.asarray(pgx_state._word).astype(bool).sum())
@@ -305,7 +404,8 @@ class SerialBraidGame:
         rewards = np.asarray(next_state.rewards, dtype=np.float32)
         length = max(int(np.asarray(next_state._word).astype(bool).sum()), 1)
         return self._view(
-            next_state, head % length, registers, reward=float(rewards[actor])
+            next_state, head % length, registers, colours, colour,
+            reward=float(rewards[actor]),
         )
 
     def _charge_budget(self, pgx_state: Any):
@@ -370,7 +470,9 @@ class SerialBraidGame:
         # Toggles are always available while the episode runs: the control state is
         # the agent's own, not a function of the word.
         if not bool(np.asarray(pgx_state.terminated)):
-            mask[self._register_base :] = True
+            mask[self._register_base : self._colour_base] = True
+            if self.colours:
+                mask[self._colour_base :] = True
         # Shifting is pointless on a word too short to move within, and it must
         # never be the only option -- PASS remains the guaranteed fallback. A
         # stride that is a multiple of the current length is a no-op on the
@@ -387,8 +489,32 @@ class SerialBraidGame:
     def _no_registers(self) -> np.ndarray:
         return np.zeros(self.registers, dtype=np.float32)
 
+    def _no_colours(self) -> np.ndarray:
+        # 0 means unpainted; a painted strand carries 1..colours.
+        return np.zeros(self.config.max_strands, dtype=np.int64)
+
+    def _colour_planes(self, colours: np.ndarray, colour: int) -> np.ndarray:
+        """One-hot the colour at each height, then the colour being held.
+
+        One-hot rather than a scalar per height: colour ids are labels, and a
+        scalar would tell the network colour 1 is nearer 2 than 3.
+        """
+        heights = np.zeros((self.config.max_strands, self.colours), dtype=np.float32)
+        for height, value in enumerate(colours[: self.config.max_strands]):
+            if 1 <= int(value) <= self.colours:
+                heights[height, int(value) - 1] = 1.0
+        held = np.zeros(self.colours, dtype=np.float32)
+        held[colour % self.colours] = 1.0
+        return np.concatenate([heights.reshape(-1), held])
+
     def _view(
-        self, pgx_state: Any, head: int, registers: np.ndarray, reward: float
+        self,
+        pgx_state: Any,
+        head: int,
+        registers: np.ndarray,
+        colours: np.ndarray,
+        colour: int,
+        reward: float,
     ) -> Transition:
         observation = np.asarray(pgx_state.observation, dtype=np.float32)  # (L, C)
         word = np.asarray(pgx_state._word)
@@ -420,8 +546,14 @@ class SerialBraidGame:
                 registers[None, :], (observed_width, self.registers)
             )
             window = np.concatenate([window, planes], axis=1)
+        if self.colours:
+            palette = self._colour_planes(colours, colour)
+            planes = np.broadcast_to(
+                palette[None, :], (observed_width, palette.shape[0])
+            )
+            window = np.concatenate([window, planes], axis=1)
         return Transition(
-            state=(pgx_state, head, registers),
+            state=SerialState(pgx_state, head, registers, colours, colour),
             observation=window.reshape(1, observed_width, window.shape[1]),
             legal_actions=self._legal(pgx_state, head),
             reward=reward,

@@ -102,6 +102,9 @@ class Candidate:
     # Binary registers in the head, one TOGGLE action each: the finite control
     # state a memoryless scanning head is missing.
     serial_registers: int = 0
+    # Colours the agent may paint onto strands, transported through crossings by
+    # the environment. Three actions regardless of the palette size.
+    serial_colours: int = 0
     serial_encoder: str = ""
     serial_encoder_states: int = 0
     serial_encoder_prime: int = 5
@@ -157,6 +160,26 @@ def memory_arms() -> list[Candidate]:
                   serial_registers=4, **base),
         Candidate("s-reg8", "head-only + 8 written registers (256 control states)",
                   serial_registers=8, **base),
+    ]
+
+
+def colour_arms() -> list[Candidate]:
+    """Painted strands: memory attached to a thread rather than to a slot.
+
+    The register arms failed because a TOGGLE never changes the word, so the extra
+    actions were branches MCTS could not make progress on -- and the cost grew with
+    the count. Colours answer both halves of that. There are three actions however
+    large the palette, and the environment *transports* a colour through every
+    crossing the head passes, so a painted strand stays painted as the diagram is
+    rewritten. That is a mechanism the agent can actually read back.
+
+    Matched to `s-head-128` in every other respect.
+    """
+    base = dict(exploration="u1", simulations=128, channels=32, train_steps=96,
+                serial_window=7, serial_act_width=1)
+    return [
+        Candidate("s-paint2", "head-only + 2 strand colours", serial_colours=2, **base),
+        Candidate("s-paint4", "head-only + 4 strand colours", serial_colours=4, **base),
     ]
 
 
@@ -233,7 +256,13 @@ def parallel_arms() -> list[Candidate]:
 
 
 def candidates() -> list[Candidate]:
-    return parallel_arms() + serial_arms() + memory_arms() + invariant_learning_arms()
+    return (
+        parallel_arms()
+        + serial_arms()
+        + memory_arms()
+        + colour_arms()
+        + invariant_learning_arms()
+    )
 
 
 @dataclass
@@ -384,6 +413,7 @@ def _config(
         serial_act_width=candidate.serial_act_width,
         serial_shift_strides=candidate.serial_shift_strides,
         serial_registers=candidate.serial_registers,
+        serial_colours=candidate.serial_colours,
         serial_encoder=candidate.serial_encoder,
         serial_encoder_states=candidate.serial_encoder_states,
         serial_encoder_prime=candidate.serial_encoder_prime,

@@ -235,7 +235,7 @@ def test_registers_do_not_disturb_the_default_serial_arms() -> None:
         assert game.registers == 0
         transition = game.reset(1)
         assert transition.observation.shape[-1] == config.game.observation_channels
-        assert len(transition.state) == 3 and transition.state[2].size == 0
+        assert transition.state.registers.size == 0
 
 
 def test_central_benchmark_contains_comparable_memory_arms() -> None:
@@ -293,3 +293,128 @@ def test_learned_algebra_arms_have_finite_relation_objective() -> None:
             else network.field_matrices
         )
         assert parameters.grad is not None and torch.isfinite(parameters.grad).all()
+
+
+# -- thread colours ------------------------------------------------------------
+
+
+def _coloured_game(colours: int = 4):
+    from dataclasses import replace as _replace
+
+    from pgx_mcts_bench.ladder import serial_arms
+
+    config = _config(serial_arms()[0], STAGES[7], 0, "cpu")
+    return make_game(_replace(config.game, serial_colours=colours))
+
+
+def test_a_colour_follows_its_strand_around_the_whole_necklace() -> None:
+    """The property the whole design rests on.
+
+    A colour is attached to a height at the head, and a crossing swaps the two
+    strands it joins -- so walking the head once around the necklace must permute
+    the colours by exactly the braid's permutation. Checked against
+    `reference.permutation`, which is an independent implementation.
+    """
+    from rf_knots.reference import permutation
+
+    game = _coloured_game()
+    transition = game.from_word([1, 2, 1, -2, 3, 2], strands=4)
+    state = transition.state
+    word = [int(x) for x in np.asarray(game.unwrap(state)._word) if int(x)]
+
+    # Distinct labels, so the transport is a permutation test rather than a
+    # coincidence between equal colours.
+    painted = np.arange(game.config.max_strands, dtype=np.int64)
+    carried = game._transport(game.unwrap(state), 0, len(word), painted)
+
+    expected = permutation(word, game.config.max_strands)
+    assert list(carried) == [int(painted[i]) for i in expected], (carried, expected)
+
+
+def test_transport_is_reversible_because_a_crossing_is_an_involution() -> None:
+    game = _coloured_game()
+    transition = game.from_word([1, 2, -1, 3, 2], strands=4)
+    pgx = game.unwrap(transition.state)
+    painted = np.arange(game.config.max_strands, dtype=np.int64)
+    for stride in (1, 2, 4):
+        there = game._transport(pgx, 0, stride, painted)
+        back = game._transport(pgx, stride, -stride, there)
+        assert np.array_equal(back, painted), (stride, there, back)
+
+
+def test_one_shift_swaps_exactly_the_two_strands_the_letter_joins() -> None:
+    game = _coloured_game()
+    transition = game.from_word([2, 1, 1, 1], strands=4)  # head sits on s2
+    state = transition.state
+    painted = np.arange(game.config.max_strands, dtype=np.int64)
+    state = state._replace(colours=painted)
+
+    right = next(
+        a for a in np.flatnonzero(transition.legal_actions) if game.shift_of(int(a)) == 1
+    )
+    after = game.step(state, int(right)).state[3]
+    # s2 joins heights 1 and 2 (0-based), and nothing else may move.
+    assert list(after) == [0, 2, 1, 3, 4], list(after)
+
+
+def test_paint_and_cycle_cost_a_ply_and_do_not_touch_the_word() -> None:
+    game = _coloured_game(colours=4)
+    transition = game.from_word([1, 2, 1, 2], strands=3)
+    names = {game.describe(i): i for i in range(game.num_actions)}
+    assert {"PAINT_LOW", "PAINT_HIGH", "CYCLE"} <= set(names)
+
+    before = game.unwrap(transition.state)
+    budget = int(np.asarray(before._budget))
+
+    cycled = game.step(transition.state, names["CYCLE"])
+    assert cycled.state.colour == 1
+    assert int(np.asarray(game.unwrap(cycled.state)._budget)) == budget - 1
+    assert np.array_equal(
+        np.asarray(game.unwrap(cycled.state)._word), np.asarray(before._word)
+    ), "a colour action must not touch the tape"
+
+    painted = game.step(cycled.state, names["PAINT_LOW"])
+    low, high = game._crossing_heights(game.unwrap(cycled.state), cycled.state.head)
+    assert painted.state.colours[low] == 2, "colour 1 held -> value 1+1 written"
+    assert painted.state.colours[high] == 0
+    # and it reaches the network, not just the state
+    assert painted.observation.shape[-1] == game.config.observation_channels
+    assert painted.observation[0, :, -4:].sum() > 0, "held colour must be observable"
+
+
+def test_cycle_wraps_through_the_whole_palette() -> None:
+    game = _coloured_game(colours=4)
+    transition = game.from_word([1, 2, 1, 2], strands=3)
+    cycle = next(i for i in range(game.num_actions) if game.describe(i) == "CYCLE")
+    state, seen = transition.state, []
+    for _ in range(5):
+        seen.append(state.colour)
+        state = game.step(state, cycle).state
+    assert seen == [0, 1, 2, 3, 0], seen
+
+
+def test_three_actions_however_many_colours() -> None:
+    """Paint-per-(strand, colour) would be 20 dead actions at N=5, C=4, and dead
+    actions are what sank the register arm."""
+    from dataclasses import replace as _replace
+
+    from pgx_mcts_bench.ladder import serial_arms
+
+    base = _config(serial_arms()[0], STAGES[7], 0, "cpu").game
+    plain = base.action_size
+    for colours in (2, 4, 8):
+        assert _replace(base, serial_colours=colours).action_size == plain + 3
+
+
+def test_colours_are_inert_when_unused() -> None:
+    """Every earlier serial number has to stay comparable."""
+    from pgx_mcts_bench.ladder import serial_arms
+
+    for candidate in serial_arms():
+        config = _config(candidate, STAGES[7], 0, "cpu")
+        assert config.game.serial_colours == 0
+        game = make_game(config.game)
+        assert game.colours == 0
+        transition = game.reset(2)
+        assert transition.observation.shape[-1] == config.game.observation_channels
+        assert transition.state.colours.size == config.game.max_strands

@@ -108,6 +108,19 @@ class BraidGameConfig:
     # the zero-human-knowledge constraint. K registers give 2^K control states and
     # add K actions and K observation channels, both O(1) in word length.
     serial_registers: int = 0
+    # Colours the agent may paint onto strands. Unlike a register, a colour is
+    # attached to a *strand* rather than to a slot, so the environment transports
+    # it: when the head crosses a letter the two strands it swaps carry their
+    # colours with them. That makes the colour follow the thread with no seam
+    # dependence and no compaction problem -- a mark on the tape would have to be
+    # re-indexed every time the word compacts, and a colour indexed from the word
+    # start would move under conjugation, which is a free move.
+    #
+    # Three actions regardless of how many colours: PAINT_LOW, PAINT_HIGH, CYCLE.
+    # Deliberately not `strands x colours` paint actions -- `s-reg8` showed that
+    # actions which cannot change the word dilute the search, and it cost the arm
+    # everything above rung 0.
+    serial_colours: int = 0
     # Optional automatic whole-tape accumulator. The action space remains the
     # serial O(1) head action space, but the observation is the occupied braid
     # word rotated to start at the head and padded to max_len. This is the common
@@ -158,6 +171,7 @@ class BraidGameConfig:
                 self.serial_width,
                 len(self.serial_strides),
                 self.serial_registers,
+                self.serial_colours,
             )
         return self._spec.num_actions
 
@@ -168,7 +182,13 @@ class BraidGameConfig:
         # broadcast scalars (the last two are log(A/B) and crossing changes so far),
         # plus one broadcast plane per head register when the serial formulation
         # carries them.
-        return 2 * (self.max_strands - 1) + 1 + 1 + 8 + self.serial_registers
+        # Colours are one-hot per height plus the colour the agent is holding.
+        # One-hot rather than a scalar: colour ids are labels, and a scalar would
+        # tell the network that colour 1 is nearer colour 2 than colour 3.
+        colours = (
+            self.serial_colours * (self.max_strands + 1) if self.serial_colours else 0
+        )
+        return 2 * (self.max_strands - 1) + 1 + 1 + 8 + self.serial_registers + colours
 
     @property
     def height(self) -> int:
