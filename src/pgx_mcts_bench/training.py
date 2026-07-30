@@ -17,10 +17,9 @@ from pgx_mcts_bench.data import GameRecord, Position, ReplayBuffer
 from pgx_mcts_bench.game import GameAdapter, make_game
 from pgx_mcts_bench.networks import (
     AlphaZeroNet,
-    BraidAlphaZeroNet,
     MuZeroNet,
     PolicyValueNet,
-    SerialBraidNet,
+    make_braid_network,
 )
 from pgx_mcts_bench.search import NeuralMCTS
 
@@ -162,7 +161,7 @@ def second_role_win_rate(records: list[GameRecord]) -> float:
 
 
 def train_alphazero_step(
-    network: AlphaZeroNet,
+    network: PolicyValueNet,
     optimizer: torch.optim.Optimizer,
     replay: ReplayBuffer,
     batch_size: int,
@@ -173,7 +172,12 @@ def train_alphazero_step(
     logits, values = network(_observations(batch, device))
     p_loss = policy_loss(logits, _policies(batch, device))
     v_loss = F.mse_loss(values, _outcomes(batch, device))
-    loss = p_loss + v_loss
+    relation = (
+        network.regularization_loss()
+        if hasattr(network, "regularization_loss")
+        else torch.zeros((), device=device)
+    )
+    loss = p_loss + v_loss + 0.1 * relation
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     nn.utils.clip_grad_norm_(network.parameters(), 5.0)
@@ -182,6 +186,7 @@ def train_alphazero_step(
         "loss": float(loss.item()),
         "policy": float(p_loss.item()),
         "value": float(v_loss.item()),
+        "relation": float(relation.item()),
     }
 
 
@@ -284,9 +289,7 @@ class TrainedAgent:
 def _new_network(kind: str, config: ExperimentConfig) -> PolicyValueNet | MuZeroNet:
     if kind == "alphazero":
         if isinstance(config.game, BraidGameConfig):
-            if config.game.serial_window:
-                return SerialBraidNet(config.game, config.model)
-            return BraidAlphaZeroNet(config.game, config.model)
+            return make_braid_network(config.game, config.model)
         return AlphaZeroNet(config.game, config.model)
     if kind == "muzero":
         return MuZeroNet(config.game, config.model)

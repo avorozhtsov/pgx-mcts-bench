@@ -314,6 +314,200 @@ class SerialBraidNet(PolicyValueNet):
         return logits, self.value(features).squeeze(-1)
 
 
+def _mod_centered(value: Tensor, prime: int) -> Tensor:
+    """Centered finite-field representative with a straight-through gradient."""
+    half = prime // 2
+    return torch.remainder(value + half, prime) - half
+
+
+class SequenceBraidNet(PolicyValueNet):
+    """Serial controller with an automatic head-relative whole-word scan.
+
+    The environment and search are identical across these arms. Only the
+    accumulator differs: GRU, soft finite automaton, learned modular matrices, or
+    a fixed Burau representation supplied as a human-knowledge oracle.
+    """
+
+    def __init__(self, game: BraidGameConfig, model: ModelConfig):
+        super().__init__()
+        self.kind = game.serial_encoder
+        self.alphabet = 2 * (game.max_strands - 1)
+        self.states = game.serial_encoder_states
+        self.prime = game.serial_encoder_prime
+        self.max_strands = game.max_strands
+        metadata = game.observation_channels
+
+        if self.kind == "gru":
+            self.gru = nn.GRU(game.observation_channels, self.states, batch_first=True)
+            encoded = self.states
+        elif self.kind == "fsa":
+            self.transitions = nn.Parameter(
+                torch.eye(self.states).repeat(self.alphabet, 1, 1)
+                + 0.05 * torch.randn(self.alphabet, self.states, self.states)
+            )
+            encoded = self.states
+        elif self.kind == "finite-field":
+            self.field_matrices = nn.Parameter(
+                torch.eye(self.states).repeat(self.alphabet, 1, 1)
+                + 0.25 * torch.randn(self.alphabet, self.states, self.states)
+            )
+            encoded = self.states * self.states
+        elif self.kind == "burau":
+            # Two fixed evaluations of the unreduced Burau representation. These
+            # are deliberately an oracle arm: known knot-theoretic algebra enters
+            # the model, unlike the learned transition arms.
+            matrices = torch.stack(
+                [self._burau_generators(game.max_strands, t) for t in (-1.0, 0.5)]
+            )
+            self.register_buffer("burau_matrices", matrices)
+            encoded = 2 * game.max_strands * game.max_strands
+        else:
+            raise ValueError(f"Unknown serial sequence encoder: {self.kind}")
+
+        self.body = nn.Sequential(
+            nn.Linear(encoded + metadata, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+        )
+        self.policy = nn.Linear(64, game.action_size)
+        self.value = nn.Sequential(nn.Linear(64, 1), nn.Tanh())
+
+    @staticmethod
+    def _burau_generators(strands: int, t: float) -> Tensor:
+        out = []
+        for token in range(2 * (strands - 1)):
+            generator = token % (strands - 1)
+            positive = token < strands - 1
+            matrix = torch.eye(strands)
+            if positive:
+                block = torch.tensor([[1.0 - t, t], [1.0, 0.0]])
+            else:
+                block = torch.tensor([[0.0, 1.0], [1.0 / t, 1.0 - 1.0 / t]])
+            matrix[generator : generator + 2, generator : generator + 2] = block
+            out.append(matrix)
+        return torch.stack(out)
+
+    def _letters_and_mask(self, observation: Tensor) -> tuple[Tensor, Tensor]:
+        letters = observation[:, : self.alphabet, 0, :].permute(0, 2, 1)
+        mask = letters.sum(dim=-1)
+        return letters, mask
+
+    def _scan_fsa(self, letters: Tensor, mask: Tensor) -> Tensor:
+        batch = letters.shape[0]
+        state = torch.zeros(batch, self.states, device=letters.device, dtype=letters.dtype)
+        state[:, 0] = 1.0
+        transitions = torch.softmax(self.transitions, dim=-1)
+        for index in range(letters.shape[1]):
+            selected = torch.einsum("ba,aij->bij", letters[:, index], transitions)
+            advanced = torch.bmm(state[:, None, :], selected).squeeze(1)
+            active = mask[:, index : index + 1]
+            state = active * advanced + (1.0 - active) * state
+        return state
+
+    def _field_operators(self) -> Tensor:
+        rounded = self.field_matrices + (
+            torch.round(self.field_matrices) - self.field_matrices
+        ).detach()
+        return _mod_centered(rounded, self.prime)
+
+    def _scan_field(self, letters: Tensor, mask: Tensor) -> Tensor:
+        batch = letters.shape[0]
+        state = torch.eye(
+            self.states, device=letters.device, dtype=letters.dtype
+        ).expand(batch, -1, -1)
+        operators = self._field_operators()
+        for index in range(letters.shape[1]):
+            selected = torch.einsum("ba,aij->bij", letters[:, index], operators)
+            advanced = _mod_centered(torch.bmm(state, selected), self.prime)
+            active = mask[:, index, None, None]
+            state = active * advanced + (1.0 - active) * state
+        return state.flatten(1) / max(self.prime // 2, 1)
+
+    def _scan_burau(self, letters: Tensor, mask: Tensor) -> Tensor:
+        batch = letters.shape[0]
+        states = torch.eye(
+            self.max_strands, device=letters.device, dtype=letters.dtype
+        ).expand(2, batch, -1, -1).clone()
+        operators = self.burau_matrices.to(dtype=letters.dtype)
+        for index in range(letters.shape[1]):
+            selected = torch.einsum("ba,eaij->ebij", letters[:, index], operators)
+            advanced = torch.matmul(states, selected)
+            active = mask[:, index][None, :, None, None]
+            states = active * advanced + (1.0 - active) * states
+        # Prevent long words at t=-1 from dominating the learned heads.
+        states = torch.sign(states) * torch.log1p(torch.abs(states))
+        return states.permute(1, 0, 2, 3).flatten(1)
+
+    def encode(self, observation: Tensor) -> Tensor:
+        letters, mask = self._letters_and_mask(observation)
+        if self.kind == "gru":
+            sequence = observation[:, :, 0, :].permute(0, 2, 1)
+            output, _ = self.gru(sequence)
+            lengths = mask.sum(dim=1).long().clamp(min=1) - 1
+            return output[torch.arange(output.shape[0], device=output.device), lengths]
+        if self.kind == "fsa":
+            return self._scan_fsa(letters, mask)
+        if self.kind == "finite-field":
+            return self._scan_field(letters, mask)
+        return self._scan_burau(letters, mask)
+
+    def regularization_loss(self) -> Tensor:
+        """Braid-group relation residual for the learned algebraic arms."""
+        if self.kind not in {"fsa", "finite-field"}:
+            return next(self.parameters()).new_zeros(())
+        operators = (
+            torch.softmax(self.transitions, dim=-1)
+            if self.kind == "fsa"
+            else self._field_operators()
+        )
+        generators = self.max_strands - 1
+        identity = torch.eye(
+            operators.shape[-1], device=operators.device, dtype=operators.dtype
+        )
+
+        def product(*items: Tensor) -> Tensor:
+            value = items[0]
+            for item in items[1:]:
+                value = value @ item
+                if self.kind == "finite-field":
+                    value = _mod_centered(value, self.prime)
+            return value
+
+        residuals = []
+        for i in range(generators):
+            residuals.extend(
+                [product(operators[i], operators[i + generators]) - identity,
+                 product(operators[i + generators], operators[i]) - identity]
+            )
+        for i in range(generators - 1):
+            residuals.append(
+                product(operators[i], operators[i + 1], operators[i])
+                - product(operators[i + 1], operators[i], operators[i + 1])
+            )
+        for i in range(generators):
+            for j in range(i + 2, generators):
+                residuals.append(
+                    product(operators[i], operators[j])
+                    - product(operators[j], operators[i])
+                )
+        return torch.stack([r.square().mean() for r in residuals]).mean()
+
+    def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
+        encoded = self.encode(observation)
+        head = observation[:, :, 0, 0]
+        features = self.body(torch.cat([encoded, head], dim=1))
+        return self.policy(features), self.value(features).squeeze(-1)
+
+
+def make_braid_network(game: BraidGameConfig, model: ModelConfig) -> PolicyValueNet:
+    if game.serial_encoder:
+        return SequenceBraidNet(game, model)
+    if game.serial_window:
+        return SerialBraidNet(game, model)
+    return BraidAlphaZeroNet(game, model)
+
+
 class Dynamics(nn.Module):
     """Learned latent transition. Go-specific: the action is encoded as a board
     point plus a pass plane, which has no analogue in a 1158-action braid space."""
