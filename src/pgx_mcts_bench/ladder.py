@@ -74,6 +74,21 @@ STAGES: list[tuple[str, int]] = [
     ("T(2,9)", 4),
     ("T(3,5)", 0),
     ("T(3,5)", 4),
+    # Beyond u = 4 the rungs are random positive braids rather than torus knots.
+    # `u = (c - s + 1) / 2` is exact for any positive braid whose closure is a
+    # knot -- torus knots are the special case, and the two formulas are checked
+    # against each other on the overlap. That buys many *different diagrams* at
+    # each unknotting number, which is the axis the ladder ran out of first: four
+    # arms cleared all seventeen torus rungs. Two knots per u, following the
+    # established shape of "same u, harder diagram".
+    ("P(2,11)#0", 0),
+    ("P(2,11)#0", 4),
+    ("P(3,12)#0", 0),
+    ("P(2,13)#0", 0),
+    ("P(2,13)#0", 4),
+    ("P(3,14)#0", 0),
+    ("P(2,15)#0", 0),
+    ("P(3,16)#0", 0),
 ]
 
 # The three cost ratios the network must serve simultaneously, as requested:
@@ -404,8 +419,10 @@ def _config(
         allow_crossing_change=True,
         multi_objective=True,
         log_ratio_range=(float(np.log(min(RATIOS))), float(np.log(max(RATIOS)))),
-        generator_max_crossings=10,
+        generator_max_crossings=16,
         generator_max_scramble=6,
+        generator_positive_braids=3,
+        generator_positive_seed=0,
         stage_source=stage[0],
         stage_scramble=stage[1],
         stage_mix=stage_mixture(frontier, mix_decay) if frontier >= 0 else (),

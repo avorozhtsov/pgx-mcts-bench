@@ -170,6 +170,8 @@ class BraidUnknotGame:
             self.generator = GradedGenerator(
                 config.to_braid_config(),
                 max_crossings=config.generator_max_crossings,
+                positive_braids=config.generator_positive_braids,
+                positive_seed=config.generator_positive_seed,
             )
 
     def reset(self, seed: int) -> Transition:

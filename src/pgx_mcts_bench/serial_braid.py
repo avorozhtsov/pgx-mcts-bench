@@ -185,7 +185,10 @@ class SerialBraidGame:
             from rf_knots.generator import GradedGenerator
 
             self.generator = GradedGenerator(
-                config.to_braid_config(), max_crossings=config.generator_max_crossings
+                config.to_braid_config(),
+                max_crossings=config.generator_max_crossings,
+                positive_braids=config.generator_positive_braids,
+                positive_seed=config.generator_positive_seed,
             )
 
         generators = config.max_strands - 1

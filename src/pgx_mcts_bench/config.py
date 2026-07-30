@@ -75,6 +75,13 @@ class BraidGameConfig:
     # number of crossing changes is known exactly for every instance.
     generator_max_crossings: int = 0
     generator_max_scramble: int = 0
+    # Random positive braids per (strands, crossings) grade, with u known exactly
+    # from u = (c - s + 1) / 2. Torus knots give one diagram per unknotting
+    # number; this gives as many as asked for, which is the axis the ladder runs
+    # out of first -- four arms cleared all 17 rungs. 0 keeps the torus-only
+    # source list, so an existing run is unaffected.
+    generator_positive_braids: int = 0
+    generator_positive_seed: int = 0
     # Pin the generator to one source knot and scramble depth. Set by the ladder
     # runner so a stage is a fixed difficulty rather than a mixture. This stays
     # the *frontier* stage even when training mixes: promotion is measured here.
