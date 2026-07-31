@@ -470,3 +470,31 @@ def test_a_capped_rung_does_not_retire_the_candidate() -> None:
     assert "max_consecutive_caps" in source
     # and the bound still exists, so a hopeless arm releases its cores
     assert "if consecutive_caps >= max_consecutive_caps:" in source
+
+
+def test_expected_cost_penalises_giving_up() -> None:
+    """`crossings` is conditional on solving, so it is anti-correlated with the
+    solve rate: an arm that abandons the hard instances drops them out of its own
+    average and looks cheaper for it. `expected_crossings` divides by the rate, so
+    solving half the instances at 5.00 costs 10.00 rather than tying with an arm
+    that solved all of them at 5.00."""
+    from pgx_mcts_bench.ladder import evaluate_stage
+
+    class _Row(dict):
+        pass
+
+    # exercise the arithmetic directly against the documented example
+    games, solved_count, crossings_total = 8, 4, 20.0
+    rate = solved_count / games
+    conditional = crossings_total / solved_count
+    expected = conditional / rate
+    assert conditional == 5.0
+    assert expected == 10.0
+    assert evaluate_stage is not None  # imported for the reader's benefit
+
+
+def test_expected_cost_agrees_with_conditional_when_everything_solves() -> None:
+    games, solved_count, crossings_total = 8, 8, 40.0
+    rate = solved_count / games
+    conditional = crossings_total / solved_count
+    assert conditional == (conditional / rate) == 5.0

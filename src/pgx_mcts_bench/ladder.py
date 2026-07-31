@@ -508,10 +508,21 @@ def evaluate_stage(
                 solved += 1
                 crossings += int(np.asarray(final._crossing_changes))
                 moves += config.game.simplify_budget - int(np.asarray(final._budget))
+        # `crossings` and `moves` are conditional on solving, which makes them
+        # anti-correlated with `solved`: an arm that gives up on the hard
+        # instances drops them out of the average, so failing more can make its
+        # cost look *better*. `expected_*` divides by the solve rate, giving the
+        # cost of *obtaining* a solution rather than the cost of the ones that
+        # happened to land. At 1.00 solved the two agree; at 0.50 solved with 5.00
+        # crossing changes the conditional figure is 5.00 and the expected one is
+        # 10.00, which is the ordering a leaderboard wants.
+        rate = solved / games
         out[ratio] = {
-            "solved": solved / games,
+            "solved": rate,
             "crossings": crossings / solved if solved else float("nan"),
             "moves": moves / solved if solved else float("nan"),
+            "expected_crossings": (crossings / solved) / rate if solved else float("nan"),
+            "expected_moves": (moves / solved) / rate if solved else float("nan"),
         }
     return out
 
@@ -842,6 +853,8 @@ def render(results: list[LadderResult]) -> str:
             cells = []
             for ratio in ("1000.0", "10.0", "0.1"):
                 v = st.by_ratio.get(ratio)
+                # cc and moves are conditional on solving; the solve rate is
+                # printed alongside because without it they cannot be read.
                 cells.append(
                     "—" if not v else
                     f"{v['crossings']:.2f} / {v['moves']:.1f} ({v['solved']:.0%})"
