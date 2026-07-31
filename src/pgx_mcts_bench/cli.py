@@ -416,6 +416,24 @@ def braid_ladder_merge(
 
 
 @app.command()
+def braid_ladder_rescore(
+    root: Annotated[Path, typer.Argument(help="Directory holding a ladder run")],
+    games: Annotated[int, typer.Option(min=1)] = 12,
+    simulations: Annotated[
+        int, typer.Option(min=0, help="Override the search budget; 0 keeps the candidate's")
+    ] = 0,
+) -> None:
+    """Re-measure every cleared rung with each candidate's final weights."""
+    from pgx_mcts_bench.ladder import rescore
+
+    out = rescore(root, games=games, simulations=simulations, log=typer.echo)
+    if not out:
+        typer.echo(f"No checkpoints found under {root}")
+        raise typer.Exit(1)
+    typer.echo(f"Saved: {root / 'rescore.json'}")
+
+
+@app.command()
 def braid_serial_screen(
     arms_only: Annotated[str, typer.Option("--only", help="Comma-separated arm names")] = "",
     seed: Annotated[int, typer.Option()] = 0,

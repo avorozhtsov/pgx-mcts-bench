@@ -876,6 +876,75 @@ def load(path: Path) -> list[LadderResult]:
     ]
 
 
+def rescore(
+    root: Path,
+    *,
+    games: int = 12,
+    simulations: int = 0,
+    device: str = "cpu",
+    log=print,
+) -> dict:
+    """Re-measure every cleared rung with each candidate's **final** weights.
+
+    A rung's `cc` is recorded once, at the moment it was promoted, and never
+    revisited -- so a leaderboard built from those numbers compares networks of
+    very different maturity and presents it as one column. That is how `u1-puct`
+    came to show 9.00 crossing changes on `T(3,4)+0` against an optimum of 3: the
+    figure was true of the network that cleared the rung and false of the network
+    that exists now, which scores exactly 3.00.
+
+    `simulations` overrides the search budget. Worth using, because the same
+    weights on `T(3,5)+0` score 14.00 at 64 simulations and 6.00 at 128 -- at the
+    crossing-dominant end of the front the optimum is a long Reidemeister path,
+    and finding it is a search problem. A single number there conflates what the
+    network prefers with what its search can reach.
+    """
+    from dataclasses import replace as _replace
+
+    by_name = {c.name: c for c in candidates()}
+    out: dict = {}
+    for path in sorted(root.glob("*/checkpoints/*.pt")) + sorted(root.glob("checkpoints/*.pt")):
+        if path.is_dir() or path.stem not in by_name:
+            continue
+        candidate = by_name[path.stem]
+        if simulations:
+            candidate = _replace(candidate, simulations=simulations)
+        saved = torch.load(path, map_location=device, weights_only=False)
+        cleared = [s for s in saved.get("stages", []) if s.get("promoted")]
+        if not cleared:
+            continue
+        first = _config(candidate, STAGES[0], 0, device)
+        network = make_braid_network(first.game, first.model)
+        network.load_state_dict(saved["network"])
+        network.eval()
+
+        rows = []
+        for row in cleared:
+            stage = (row["source"], row["scramble"])
+            if stage not in STAGES:
+                continue
+            index = STAGES.index(stage)
+            config = _config(candidate, stage, 0, device)
+            game = make_game(config.game)
+            source = next(s for s in game.generator.sources if s.name == stage[0])
+            measured = evaluate_stage(
+                game, network, config, games, 900_000 + index * 997
+            )
+            rows.append({
+                "stage": index, "source": stage[0], "scramble": stage[1],
+                "optimal_crossings": source.unknotting_number,
+                "then": row.get("crossings", float("nan")),
+                "now": measured[max(RATIOS)]["crossings"],
+                "solved": min(v["solved"] for v in measured.values()),
+                "by_ratio": {str(k): v for k, v in measured.items()},
+            })
+            log(f"    [{path.stem}] {stage[0]}+{stage[1]} u={source.unknotting_number} "
+                f"then {rows[-1]['then']:.2f} -> now {rows[-1]['now']:.2f}")
+        out[path.stem] = rows
+    (root / "rescore.json").write_text(json.dumps(out, indent=2, default=float) + "\n")
+    return out
+
+
 def merge(root: Path) -> list[LadderResult]:
     """Combine per-candidate output directories into one report.
 
