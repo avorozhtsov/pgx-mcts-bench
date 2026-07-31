@@ -544,6 +544,7 @@ def run_ladder(
     max_consecutive_caps: int = 3,
     stop_after: int = -1,
     min_iterations_per_rung: float = 0.0,
+    min_iterations_from: int = 0,
     retro_games: int = 6,
     log=print,
 ) -> LadderResult:
@@ -679,9 +680,20 @@ def run_ladder(
                     # the field. It is a measurement fix, not a performance one:
                     # the arm with the *lowest* average is also the best, and the
                     # ones training 4-5x more sit mid-table.
-                    cleared_so_far = sum(1 for s in result.stages if s.promoted) + 1
-                    spent = sum(s.iterations for s in result.stages) + iterations
-                    if spent / cleared_so_far >= min_iterations_per_rung:
+                    # The average is taken over the rungs the floor *governs*,
+                    # not over the whole climb. Averaging from rung 0 would make
+                    # an arm that cleared the cheap early rungs in two iterations
+                    # each pay that debt back on the hard ones -- `search-heavy`
+                    # would owe 65 extra iterations at rung 10 for having been
+                    # efficient at rung 3. "From rung N, average M" is the rule
+                    # that means what it says.
+                    governed = [s for s in result.stages if s.stage >= min_iterations_from]
+                    if index >= min_iterations_from:
+                        spent = sum(s.iterations for s in governed) + iterations
+                        density = spent / (len(governed) + 1)
+                    else:
+                        density = float("inf")  # below the floor's remit
+                    if density >= min_iterations_per_rung:
                         promoted, reason = True, verdict
                         break
             if not candidate.train:

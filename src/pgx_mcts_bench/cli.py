@@ -343,8 +343,11 @@ def braid_ladder(
     ] = -1,
     min_iterations_per_rung: Annotated[
         float,
-        typer.Option(help="Keep training a rung until total iterations / rungs reaches this"),
+        typer.Option(help="Keep training a rung until iterations / rungs reaches this"),
     ] = 0.0,
+    min_iterations_from: Annotated[
+        int, typer.Option(help="First rung the training floor governs")
+    ] = 0,
     retro_games: Annotated[int, typer.Option(min=0)] = 6,
     workers: Annotated[int, typer.Option(min=1)] = 1,
     device: Annotated[str, typer.Option()] = "cpu",
@@ -380,6 +383,7 @@ def braid_ladder(
                            max_consecutive_caps=max_consecutive_caps,
                            stop_after=stop_after,
                            min_iterations_per_rung=min_iterations_per_rung,
+                           min_iterations_from=min_iterations_from,
                            log=typer.echo)
             )
             save(results, out)
@@ -396,6 +400,7 @@ def braid_ladder(
                             max_consecutive_caps=max_consecutive_caps,
                             stop_after=stop_after,
                             min_iterations_per_rung=min_iterations_per_rung,
+                            min_iterations_from=min_iterations_from,
                             log=_silent): c
                 for c in chosen
             }

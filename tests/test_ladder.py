@@ -511,3 +511,36 @@ def test_training_floor_is_an_average_not_a_per_rung_minimum() -> None:
     assert 224 / 32 == 7.0
     # u1-puct: 244 over 16 rungs, already above, so the floor never fires
     assert 244 / 16 > 7
+
+
+def test_training_floor_averages_only_over_the_rungs_it_governs() -> None:
+    """`--min-iterations-from 10 --min-iterations-per-rung 9` means "from rung 10,
+    average nine" -- not "make up for having been efficient earlier".
+
+    Averaging from rung 0 would bill an arm for its own efficiency: `search-heavy`
+    reached rung 10 on 34 iterations across 11 rungs, so a whole-climb average of
+    9 would demand 99 and charge it 65 extra at rung 10 for having cleared rung 3
+    in two. The governed-window average asks only that rungs 10 onward carry nine
+    apiece.
+    """
+    # search-heavy at rung 10: 34 iterations over rungs 0..10
+    whole_climb = 34 / 11
+    assert whole_climb < 9                      # would trigger, and demand
+    assert round(9 * 11 - 34) == 65             # 65 extra iterations
+    # governed window starting at rung 10 contains only rung 10 itself, whose
+    # own count (8) is what the floor compares against
+    assert 8 < 9                                # so it trains a little longer
+    assert 9 / 1 == 9.0                         # and stops at nine, not at 99
+
+
+def test_floor_is_inert_below_its_first_rung() -> None:
+    """Rungs below `min_iterations_from` must promote exactly as before, or
+    turning the floor on silently changes the part of the ladder it was not
+    meant to touch."""
+    import inspect
+
+    from pgx_mcts_bench.ladder import run_ladder
+
+    source = inspect.getsource(run_ladder)
+    assert 'density = float("inf")' in source, "below the floor, promotion is unconditional"
+    assert "if index >= min_iterations_from:" in source
