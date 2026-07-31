@@ -82,6 +82,13 @@ class BraidGameConfig:
     # source list, so an existing run is unaffected.
     generator_positive_braids: int = 0
     generator_positive_seed: int = 0
+    # Random **mixed-sign** knots, whose u is not known. These carry no label and
+    # are scored against the ratcheting best-known bound instead. They exist
+    # because every labelled family is a structured one, and an agent can master
+    # all of them without learning anything general.
+    generator_random_crossings: tuple[int, ...] = ()
+    generator_random_per_grade: int = 1
+    generator_random_seed: int = 0
     # Pin the generator to one source knot and scramble depth. Set by the ladder
     # runner so a stage is a fixed difficulty rather than a mixture. This stays
     # the *frontier* stage even when training mixes: promotion is measured here.

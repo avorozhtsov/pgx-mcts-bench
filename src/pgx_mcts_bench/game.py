@@ -172,6 +172,9 @@ class BraidUnknotGame:
                 max_crossings=config.generator_max_crossings,
                 positive_braids=config.generator_positive_braids,
                 positive_seed=config.generator_positive_seed,
+                random_crossings=config.generator_random_crossings,
+                random_per_grade=config.generator_random_per_grade,
+                random_seed=config.generator_random_seed,
             )
 
     def reset(self, seed: int) -> Transition:

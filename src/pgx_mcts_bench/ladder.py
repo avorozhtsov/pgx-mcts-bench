@@ -81,25 +81,36 @@ STAGES: list[tuple[str, int]] = [
     # each unknotting number, which is the axis the ladder ran out of first: four
     # arms cleared all seventeen torus rungs. Two knots per u, following the
     # established shape of "same u, harder diagram".
-    ("P(2,11)#0", 0),
-    ("P(2,11)#0", 4),
-    ("P(3,12)#0", 0),
-    ("P(2,13)#0", 0),
-    ("P(2,13)#0", 4),
-    ("P(3,14)#0", 0),
-    ("P(2,15)#0", 0),
-    ("P(3,16)#0", 0),
-    # `search-heavy` cleared all twenty-five in about an hour and hit u = 7
-    # exactly, so the ceiling moved again. Positive braids make raising it a
-    # matter of taking a longer word rather than finding another torus knot.
-    ("P(2,17)#0", 0),
-    ("P(2,17)#0", 4),
-    ("P(3,18)#0", 0),
-    ("P(2,19)#0", 0),
-    ("P(2,19)#0", 4),
-    ("P(3,20)#0", 0),
-    ("P(2,21)#0", 0),
-    ("P(3,22)#0", 0),
+    # Rungs 0-16 above are the **calibration set**: every u is a theorem, so the
+    # gap to truth is measurable. From here the knots are random mixed-sign words
+    # with no label at all.
+    #
+    # The labelled families are the ones with structure, and that is exactly the
+    # problem: every torus knot and every positive braid is fibred, chiral,
+    # positive-signature, and satisfies u = g3 = g4. An agent can learn "reduce
+    # monotonically, crossing changes always pay", be right on all twenty-five of
+    # the old rungs, and have learned nothing that transfers. Ten of those rungs
+    # were not even a second family -- on two strands a positive word is
+    # sigma_1^c, so `P(2,11)` *is* `T(2,11)`.
+    #
+    # These have no theorem to reach. Their reference is the ratcheting
+    # best-known bound in `bounds.py`: the fewest crossing changes any agent has
+    # ever used, improving whenever anyone beats it. Promotion here can only end
+    # on plateau or on the cap, never on `objective`.
+    ("R(3,10)#0", 0),
+    ("R(3,10)#0", 4),
+    ("R(5,10)#0", 0),
+    ("R(3,12)#0", 0),
+    ("R(3,12)#0", 4),
+    ("R(5,12)#0", 0),
+    ("R(3,14)#0", 0),
+    ("R(5,14)#0", 0),
+    ("R(3,16)#0", 0),
+    ("R(5,16)#0", 0),
+    ("R(3,18)#0", 0),
+    ("R(5,18)#0", 0),
+    ("R(3,20)#0", 0),
+    ("R(5,20)#0", 0),
 ]
 
 # The three cost ratios the network must serve simultaneously, as requested:
@@ -410,6 +421,14 @@ def promotion_reason(
     # noise decide the ladder.
     if solve_rate < promote_at or worst_ratio < collapse_floor:
         return None
+    # `optimal < 0` means u is not known -- a random knot rather than a torus
+    # knot or positive braid. There is no theorem to reach, so the objective exit
+    # cannot fire and the rung ends on plateau or on the cap. Falling through to
+    # the tolerance test would compare against a sentinel and promote instantly.
+    if optimal < 0:
+        if len(history) >= 2 * window and min(history[-window:]) > min(history[:-window]) - 0.01:
+            return "plateau"
+        return None
     if crossings == crossings and crossings <= optimal + tolerance:
         return "objective"
     # Needs two windows of history: one to establish a best, one to fail to beat
@@ -447,6 +466,9 @@ def _config(
         generator_max_scramble=6,
         generator_positive_braids=3,
         generator_positive_seed=0,
+        generator_random_crossings=(10, 12, 14, 16, 18, 20),
+        generator_random_per_grade=1,
+        generator_random_seed=0,
         stage_source=stage[0],
         stage_scramble=stage[1],
         stage_mix=stage_mixture(frontier, mix_decay) if frontier >= 0 else (),
@@ -475,7 +497,14 @@ def _config(
 
 
 def evaluate_stage(
-    game, network, config, games: int, seed: int, ratios: tuple[float, ...] = RATIOS
+    game,
+    network,
+    config,
+    games: int,
+    seed: int,
+    ratios: tuple[float, ...] = RATIOS,
+    bounds_path: Path | None = None,
+    agent: str = "",
 ) -> dict[float, dict]:
     """Per-ratio solve rate, crossing changes and moves on held-out instances.
 
@@ -486,6 +515,7 @@ def evaluate_stage(
     """
     search = NeuralMCTS(game, network, config.search, config.train.device)
     out: dict[float, dict] = {}
+    best_claim: tuple[int, int] | None = None
     for ratio in ratios:
         log_ratio = float(np.log(ratio))
         solved = crossings = moves = 0
@@ -506,8 +536,15 @@ def evaluate_stage(
             final = game.unwrap(transition.state)
             if bool((np.asarray(final._word) == 0).all()) and int(final._n) == 1:
                 solved += 1
-                crossings += int(np.asarray(final._crossing_changes))
-                moves += config.game.simplify_budget - int(np.asarray(final._budget))
+                used = int(np.asarray(final._crossing_changes))
+                spent = config.game.simplify_budget - int(np.asarray(final._budget))
+                crossings += used
+                moves += spent
+                # Every solve is a witness for u(K) <= used, whatever rung or
+                # ratio produced it. The best across the whole evaluation is
+                # claimed once, rather than one write per episode.
+                if best_claim is None or (used, spent) < best_claim:
+                    best_claim = (used, spent)
         # `crossings` and `moves` are conditional on solving, which makes them
         # anti-correlated with `solved`: an arm that gives up on the hard
         # instances drops them out of the average, so failing more can make its
@@ -524,6 +561,23 @@ def evaluate_stage(
             "expected_crossings": (crossings / solved) / rate if solved else float("nan"),
             "expected_moves": (moves / solved) / rate if solved else float("nan"),
         }
+    if bounds_path is not None and best_claim is not None:
+        from pgx_mcts_bench import bounds
+
+        source = next(
+            s for s in game.generator.sources if s.name == config.game.stage_source
+        )
+        bounds.claim(
+            bounds_path,
+            bounds.Bound(
+                knot=bounds.knot_id(source.word, source.strands),
+                crossings=best_claim[0],
+                moves=best_claim[1],
+                agent=agent,
+                witness=list(source.word),
+                strands=source.strands,
+            ),
+        )
     return out
 
 
