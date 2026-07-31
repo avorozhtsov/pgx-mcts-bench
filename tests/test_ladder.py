@@ -418,3 +418,55 @@ def test_colours_are_inert_when_unused() -> None:
         transition = game.reset(2)
         assert transition.observation.shape[-1] == config.game.observation_channels
         assert transition.state.colours.size == config.game.max_strands
+
+
+# -- the unknot+6 wall ---------------------------------------------------------
+
+
+def test_pooled_rate_is_not_the_worst_ratio() -> None:
+    """What eliminated six of seventeen arms on rung 1 of the mixed ladder.
+
+    With twelve evaluation games and a 0.8 bar, 10/12 = 0.83 is the first passing
+    value and 9/12 = 0.75 the first failing one -- so a `min` over three ratios is
+    a conjunction of three noisy single-episode coin flips. `s-head-128` scored
+    0.58 / 0.92 / 0.58 and capped; pooled that is 0.69, still a fail, but
+    `s-reg8`'s 0.83 / 0.75 / 0.50 pools to 0.69 rather than 0.50 and no longer
+    turns on one episode of one ratio.
+    """
+    # 0.83 / 0.92 / 0.75 pools to 0.833: a pass that the min-rule would have
+    # failed on a single episode of the worst ratio.
+    assert promotion_reason(
+        (0.83 + 0.92 + 0.75) / 3, 0.2, [0.2], 0,
+        promote_at=0.8, tolerance=0.5, window=3, worst_ratio=0.75,
+    ) == "objective"
+    # but genuine collapse on one end of the front is still caught
+    assert promotion_reason(
+        (1.0 + 1.0 + 0.4) / 3, 0.2, [0.2], 0,
+        promote_at=0.8, tolerance=0.5, window=3, worst_ratio=0.4,
+    ) is None
+
+
+def test_collapse_floor_is_separate_from_the_promotion_bar() -> None:
+    pooled = (1.0 + 1.0 + 0.45) / 3
+    assert promotion_reason(
+        pooled, 0.0, [0.0], 0, promote_at=0.8, tolerance=0.5, window=3,
+        worst_ratio=0.45, collapse_floor=0.5,
+    ) is None
+    assert promotion_reason(
+        pooled, 0.0, [0.0], 0, promote_at=0.8, tolerance=0.5, window=3,
+        worst_ratio=0.45, collapse_floor=0.4,
+    ) == "objective"
+
+
+def test_a_capped_rung_does_not_retire_the_candidate() -> None:
+    """The docstring always said a stuck candidate moves up anyway; the code
+    broke out of the loop instead, so one bad rung ended an arm permanently."""
+    import inspect
+
+    from pgx_mcts_bench.ladder import run_ladder
+
+    source = inspect.getsource(run_ladder)
+    assert "consecutive_caps += 1" in source
+    assert "max_consecutive_caps" in source
+    # and the bound still exists, so a hopeless arm releases its cores
+    assert "if consecutive_caps >= max_consecutive_caps:" in source

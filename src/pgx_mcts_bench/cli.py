@@ -332,6 +332,12 @@ def braid_ladder(
         float, typer.Option(help="Promote cleanly when crossings <= u(K) + this")
     ] = 0.25,
     plateau_window: Annotated[int, typer.Option(min=1)] = 3,
+    collapse_floor: Annotated[
+        float, typer.Option(help="A single ratio below this is a collapse, not noise")
+    ] = 0.5,
+    max_consecutive_caps: Annotated[
+        int, typer.Option(min=1, help="Capped rungs in a row before a candidate stops")
+    ] = 3,
     retro_games: Annotated[int, typer.Option(min=0)] = 6,
     workers: Annotated[int, typer.Option(min=1)] = 1,
     device: Annotated[str, typer.Option()] = "cpu",
@@ -363,6 +369,8 @@ def braid_ladder(
                            eval_games=eval_games, promote_at=promote_at,
                            mix_decay=mix_decay, crossing_tolerance=crossing_tolerance,
                            plateau_window=plateau_window, retro_games=retro_games,
+                           collapse_floor=collapse_floor,
+                           max_consecutive_caps=max_consecutive_caps,
                            log=typer.echo)
             )
             save(results, out)
@@ -375,6 +383,8 @@ def braid_ladder(
                             eval_games=eval_games, promote_at=promote_at,
                             mix_decay=mix_decay, crossing_tolerance=crossing_tolerance,
                             plateau_window=plateau_window, retro_games=retro_games,
+                            collapse_floor=collapse_floor,
+                            max_consecutive_caps=max_consecutive_caps,
                             log=_silent): c
                 for c in chosen
             }

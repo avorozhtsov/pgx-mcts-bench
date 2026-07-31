@@ -89,6 +89,17 @@ STAGES: list[tuple[str, int]] = [
     ("P(3,14)#0", 0),
     ("P(2,15)#0", 0),
     ("P(3,16)#0", 0),
+    # `search-heavy` cleared all twenty-five in about an hour and hit u = 7
+    # exactly, so the ceiling moved again. Positive braids make raising it a
+    # matter of taking a longer word rather than finding another torus knot.
+    ("P(2,17)#0", 0),
+    ("P(2,17)#0", 4),
+    ("P(3,18)#0", 0),
+    ("P(2,19)#0", 0),
+    ("P(2,19)#0", 4),
+    ("P(3,20)#0", 0),
+    ("P(2,21)#0", 0),
+    ("P(3,22)#0", 0),
 ]
 
 # The three cost ratios the network must serve simultaneously, as requested:
@@ -370,6 +381,8 @@ def promotion_reason(
     promote_at: float,
     tolerance: float,
     window: int,
+    worst_ratio: float = 1.0,
+    collapse_floor: float = 0.5,
 ) -> str | None:
     """Why this stage should end now, or `None` to keep training.
 
@@ -384,7 +397,18 @@ def promotion_reason(
     improving in place, so grinding until optimal would spend budget worse than
     moving up. Hence two exits: reaching the objective, or plateauing on it.
     """
-    if solve_rate < promote_at:
+    # `solve_rate` is pooled across every evaluation episode, not the minimum of
+    # the three per-ratio rates. The minimum was a conjunction of three noisy
+    # twelve-game tests, and at promote_at = 0.8 that makes 10/12 the first
+    # passing value and 9/12 the first failing one -- so promotion turned on a
+    # single episode, three times over. On `unknot+6` it eliminated six of
+    # seventeen arms, nearly every survivor landing exactly on 0.83 = 10/12.
+    #
+    # The minimum still matters, but as a *collapse* check rather than the gate:
+    # a network serving one end of the Pareto front and abandoning another is a
+    # real failure, and `collapse_floor` catches it without letting sampling
+    # noise decide the ladder.
+    if solve_rate < promote_at or worst_ratio < collapse_floor:
         return None
     if crossings == crossings and crossings <= optimal + tolerance:
         return "objective"
@@ -419,7 +443,7 @@ def _config(
         allow_crossing_change=True,
         multi_objective=True,
         log_ratio_range=(float(np.log(min(RATIOS))), float(np.log(max(RATIOS)))),
-        generator_max_crossings=16,
+        generator_max_crossings=22,
         generator_max_scramble=6,
         generator_positive_braids=3,
         generator_positive_seed=0,
@@ -505,6 +529,8 @@ def run_ladder(
     mix_decay: float = 0.5,
     crossing_tolerance: float = 0.25,
     plateau_window: int = 3,
+    collapse_floor: float = 0.5,
+    max_consecutive_caps: int = 3,
     retro_games: int = 6,
     log=print,
 ) -> LadderResult:
@@ -570,6 +596,7 @@ def run_ladder(
             directory / f"stage{index:02d}-{when}.pt",
         )
 
+    consecutive_caps = 0
     for index, stage in enumerate(STAGES):
         if index < start_stage:
             continue
@@ -607,8 +634,11 @@ def run_ladder(
                 by_ratio = evaluate_stage(
                     game, network, config, eval_games, seed + 500_000 + index * 997
                 )
-                # Promotion needs the hardest setting solved, not the easiest.
-                solve_rate = min(v["solved"] for v in by_ratio.values())
+                rates = [v["solved"] for v in by_ratio.values()]
+                # Pooled over every episode rather than the worst ratio: see
+                # `promotion_reason`. The worst ratio is kept as a collapse check.
+                solve_rate = sum(rates) / len(rates)
+                worst_ratio = min(rates)
                 crossings = by_ratio[max(RATIOS)]["crossings"]
                 # Unsolved sorts as worst rather than as missing, so a stage that
                 # stops solving reads as "not improving" instead of dropping out
@@ -617,7 +647,8 @@ def run_ladder(
                 verdict = promotion_reason(
                     solve_rate, crossings, history, source.unknotting_number,
                     promote_at=promote_at, tolerance=crossing_tolerance,
-                    window=plateau_window,
+                    window=plateau_window, worst_ratio=worst_ratio,
+                    collapse_floor=collapse_floor,
                 )
                 if verdict is not None:
                     promoted, reason = True, verdict
@@ -678,6 +709,7 @@ def run_ladder(
             + (f"  REGRESSED: {', '.join(regressed)}" if regressed else "")
         )
         if promoted:
+            consecutive_caps = 0
             result.highest_stage = index
             if path is not None:
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -692,7 +724,22 @@ def run_ladder(
                     path,
                 )
         else:
-            break
+            # A capped rung no longer ends the candidate. The docstring has always
+            # said a stuck candidate "moves up anyway after a cap, so it spends its
+            # budget elsewhere rather than grinding"; the code broke instead, so a
+            # single bad rung retired an arm permanently. On the 25-rung ladder
+            # `unknot+6` -- rung 1 of 25, and an *unknot* -- ended six of seventeen
+            # arms before the ladder had measured anything about them.
+            #
+            # Bounded, because an arm that cannot clear three rungs in a row is not
+            # going to clear the fourth, and its cores are better spent elsewhere.
+            consecutive_caps += 1
+            if consecutive_caps >= max_consecutive_caps:
+                log(
+                    f"    [{candidate.name}] stopping: {consecutive_caps} rungs "
+                    f"capped in a row"
+                )
+                break
 
     result.seconds = time.perf_counter() - started
     return result
