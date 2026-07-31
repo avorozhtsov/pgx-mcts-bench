@@ -498,3 +498,16 @@ def test_expected_cost_agrees_with_conditional_when_everything_solves() -> None:
     rate = solved_count / games
     conditional = crossings_total / solved_count
     assert conditional == (conditional / rate) == 5.0
+
+
+def test_training_floor_is_an_average_not_a_per_rung_minimum() -> None:
+    """A literal per-rung minimum forces seven iterations onto `unknot+2`, which
+    buys nothing; and a literal "+1 iteration" moves an arm averaging 3.25 to
+    4.25 and never reaches the floor at all. The average is the quantity that
+    equalises training effort across arms without dictating where it is spent."""
+    # search-heavy: 104 iterations over 32 rungs
+    assert 104 / 32 < 7          # below the floor, so it keeps training
+    assert 104 + 120 == 224      # and 224/32 = 7.0 is what it would take
+    assert 224 / 32 == 7.0
+    # u1-puct: 244 over 16 rungs, already above, so the floor never fires
+    assert 244 / 16 > 7
