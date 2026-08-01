@@ -22,3 +22,4 @@ s-triad-wst
 s-fsa32
 s-scan-gru-tape2
 s-gru128
+s-tape2

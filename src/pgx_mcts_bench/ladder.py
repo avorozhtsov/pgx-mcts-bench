@@ -43,7 +43,8 @@ from pgx_mcts_bench.networks import load_policy_value_state_dict, make_braid_net
 from pgx_mcts_bench.search import NeuralMCTS
 from pgx_mcts_bench.training import play_selfplay_games, train_alphazero_step
 
-# (source knot, scramble moves). Monotone in u(K) and in depth.
+# (source knot, scramble moves). The calibration prefix is monotone in u(K);
+# stable mixed-sign rung identities are ordered by source-word length.
 #
 # Stages 10-12 extend the original ten, which `s-window-128` cleared outright and
 # four other arms reached the top of. They keep the same shape -- a new source
@@ -84,8 +85,10 @@ STAGES: list[tuple[str, int]] = [
     # arms cleared all seventeen torus rungs. Two knots per u, following the
     # established shape of "same u, harder diagram".
     # Rungs 0-16 above are the **calibration set**: every u is a theorem, so the
-    # gap to truth is measurable. From here the knots are random mixed-sign words
-    # with no label at all.
+    # gap to truth is measurable. From here the knots are random mixed-sign words.
+    # Their stable braid words have since been checked against the bundled knot
+    # database: exact u is attached where identification or matching proved bounds
+    # supply it, while genuinely unresolved words retain the unknown sentinel.
     #
     # The labelled families are the ones with structure, and that is exactly the
     # problem: every torus knot and every positive braid is fibred, chiral,
@@ -95,10 +98,9 @@ STAGES: list[tuple[str, int]] = [
     # were not even a second family -- on two strands a positive word is
     # sigma_1^c, so `P(2,11)` *is* `T(2,11)`.
     #
-    # These have no theorem to reach. Their reference is the ratcheting
-    # best-known bound in `bounds.py`: the fewest crossing changes any agent has
-    # ever used, improving whenever anyone beats it. Promotion here can only end
-    # on plateau or on the cap, never on `objective`.
+    # A known scheduled word can now promote on its exact objective. An unresolved
+    # word still uses the ratcheting best-known bound in `bounds.py` for reporting
+    # and can leave only on plateau or the cap.
     ("R(3,10)#0", 0),
     ("R(3,10)#0", 4),
     ("R(5,10)#0", 0),

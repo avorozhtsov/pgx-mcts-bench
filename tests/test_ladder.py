@@ -34,37 +34,47 @@ def test_progress_duration_is_compact_and_human_readable() -> None:
     assert _duration(3 * 3600 + 12 * 60) == "3h 12m"
 
 
-def test_stages_are_monotone_in_unknotting_number_and_scramble() -> None:
-    """The ladder's only structural promise, checked on each half separately.
+def test_stages_keep_the_calibration_order_and_attach_scheduled_exact_values() -> None:
+    """The torus prefix is u-monotone; the mixed-sign tail is length-ordered.
 
-    The calibration prefix has a known `u` for every rung and is ordered by it. The
-    unlabelled tail cannot be: `u` is exactly what is unknown there, which is why
-    those knots are scored against a record instead of a theorem. It is ordered by
-    crossing number, the quantity that *is* known, and the two halves are checked
-    against the promise each of them can actually make.
+    Database identification now supplies exact ``u`` for many scheduled random
+    words, but not in monotone order. That new knowledge must not reorder stable
+    rung identities or turn the remaining unknown words into guessed labels.
     """
     from rf_knots.generator import UNKNOWN_UNKNOTTING
 
     game = make_game(_config(parallel_arms()[1], STAGES[0], 0, "cpu").game)
     by_name = {s.name: s for s in game.generator.sources}
-    labelled = [(s, k) for s, k in STAGES if by_name[s].unknotting_number != UNKNOWN_UNKNOTTING]
-    unlabelled = [(s, k) for s, k in STAGES if by_name[s].unknotting_number == UNKNOWN_UNKNOTTING]
-
-    # the calibration set is contiguous and comes first, or "highest rung" mixes
-    # two different kinds of score
-    assert STAGES[: len(labelled)] == labelled, "labelled rungs must be the prefix"
-    assert unlabelled, "the ladder needs knots without a theorem to reach"
+    calibration = STAGES[:17]
+    random_tail = STAGES[17:]
 
     seen: list[tuple[int, int]] = []
-    for source, scramble in labelled:
+    for source, scramble in calibration:
         u = by_name[source].unknotting_number
+        assert u != UNKNOWN_UNKNOTTING
         assert not seen or u >= seen[-1][0], (source, scramble, u, seen[-1])
-        if seen and u == seen[-1][0] and source == labelled[len(seen) - 1][0]:
+        if seen and u == seen[-1][0] and source == calibration[len(seen) - 1][0]:
             assert scramble > seen[-1][1], (source, scramble)
         seen.append((u, scramble))
 
-    crossings = [by_name[s].crossing_number for s, _ in unlabelled]
+    crossings = [by_name[s].crossing_number for s, _ in random_tail]
     assert crossings == sorted(crossings), crossings
+    assert any(
+        by_name[source].unknotting_number == UNKNOWN_UNKNOTTING
+        for source, _ in random_tail
+    )
+    assert [by_name[source].unknotting_number for source, _ in STAGES[18:28]] == [
+        1,
+        1,
+        1,
+        1,
+        2,
+        2,
+        2,
+        4,
+        1,
+        2,
+    ]
 
 
 def test_stage_grading_is_fine_in_scramble_where_the_difficulty_is() -> None:

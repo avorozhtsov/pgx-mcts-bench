@@ -153,7 +153,7 @@ def test_newer_shallow_benchmark_does_not_hide_deeper_resume_checkpoint(
     assert rows[0].checkpoint == deep
 
 
-def test_average_gap_uses_theorem_then_achieved_min_for_unknown_rungs(
+def test_average_gap_backfills_scheduled_knot_theorem_into_old_checkpoints(
     tmp_path: Path,
 ) -> None:
     low = _stage(17, 2, crossings=3.0)
@@ -165,12 +165,26 @@ def test_average_gap_uses_theorem_then_achieved_min_for_unknown_rungs(
     by_name = {row.name: row for row in rows}
 
     assert warnings == []
-    assert by_name["low"].average_gap == 0.0
-    assert by_name["low"].top_gap == 0.0
+    assert by_name["low"].average_gap == 1.0  # stage 0 gap 0, stage 17 gap 2
+    assert by_name["low"].top_gap == 2.0
     assert by_name["low"].gap_rungs == 2
-    assert by_name["high"].average_gap == 1.5  # mean of labelled +1 and unknown +2
-    assert by_name["high"].top_gap == 2.0
+    assert by_name["high"].average_gap == 2.5  # stage 0 gap 1, stage 17 gap 4
+    assert by_name["high"].top_gap == 4.0
     assert by_name["high"].gap_rungs == 2
+
+
+def test_rung_27_displays_database_unknotting_number(tmp_path: Path) -> None:
+    record = _stage(27, 2, crossings=2.0, solve_rate=1.0)
+    assert record["source"] == "R(3,18)#0"
+    assert record["optimal_crossings"] == -1
+    _save(tmp_path, "arm", [_stage(0, 2), record])
+
+    rows, warnings = leaderboard([tmp_path])
+
+    assert warnings == []
+    row = rows[0]
+    assert row.rung_scores[-1].optimal_crossings == 2
+    assert render([row]).splitlines()[2].split()[3] == "2"
 
 
 def test_average_move_delta_uses_common_rungs_and_u1_reference(tmp_path: Path) -> None:

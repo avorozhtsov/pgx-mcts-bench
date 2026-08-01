@@ -14,6 +14,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 import torch
+from rf_knots.knot_table import scheduled_unknotting_number
 
 from pgx_mcts_bench.ladder import RATIOS, STAGES
 
@@ -88,6 +89,15 @@ def _number(value: object) -> float:
         return float("nan")
 
 
+def _optimal_crossings(record: dict) -> int:
+    """Use newly proved scheduled values to backfill historical checkpoints."""
+    recorded = int(record.get("optimal_crossings", -1))
+    if recorded >= 0:
+        return recorded
+    known = scheduled_unknotting_number(str(record.get("source", "")))
+    return -1 if known is None else known
+
+
 def load_row(path: Path) -> LeaderboardRow | None:
     """Read one candidate's standings from a trusted training checkpoint."""
     saved = torch.load(path, map_location="cpu", weights_only=False)
@@ -137,7 +147,7 @@ def load_row(path: Path) -> LeaderboardRow | None:
             if previous is None or measured_crossings < previous[0]:
                 best_crossings[stage] = (
                     measured_crossings,
-                    int(record.get("optimal_crossings", -1)),
+                    _optimal_crossings(record),
                 )
         measured_solve_rate = _number(
             ((record.get("by_ratio") or {}).get(ratio) or {}).get("solved")
