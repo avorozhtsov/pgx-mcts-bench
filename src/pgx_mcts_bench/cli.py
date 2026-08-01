@@ -197,12 +197,8 @@ def smoke(output: Path | None = None) -> None:
 
 
 BRAID_TIERS: dict[str, BraidGameConfig] = {
-    "tier0": BraidGameConfig(
-        max_len=32, max_strands=5, scramble_budget=6, simplify_budget=24
-    ),
-    "tier1": BraidGameConfig(
-        max_len=64, max_strands=8, scramble_budget=12, simplify_budget=48
-    ),
+    "tier0": BraidGameConfig(max_len=32, max_strands=5, scramble_budget=6, simplify_budget=24),
+    "tier1": BraidGameConfig(max_len=64, max_strands=8, scramble_budget=12, simplify_budget=48),
 }
 
 
@@ -323,6 +319,20 @@ def braid_ladder(
     candidates_only: Annotated[str, typer.Option("--only", help="Comma-separated names")] = "",
     seed: Annotated[int, typer.Option()] = 0,
     max_iterations: Annotated[int, typer.Option(min=1)] = 25,
+    selfplay_games: Annotated[
+        int,
+        typer.Option(
+            min=1,
+            help="Concurrent self-play roots; increase to 32-128 when benchmarking CUDA",
+        ),
+    ] = 8,
+    checkpoint_every: Annotated[
+        int,
+        typer.Option(
+            min=0,
+            help="Save current-rung replay/optimizer progress every N iterations; 0 disables",
+        ),
+    ] = 1,
     eval_games: Annotated[int, typer.Option(min=4)] = 16,
     promote_at: Annotated[float, typer.Option()] = 0.8,
     mix_decay: Annotated[
@@ -355,6 +365,13 @@ def braid_ladder(
     retro_games: Annotated[int, typer.Option(min=0)] = 6,
     workers: Annotated[int, typer.Option(min=1)] = 1,
     device: Annotated[str, typer.Option()] = "cpu",
+    use_auxiliary_value: Annotated[
+        bool,
+        typer.Option(
+            "--use-auxiliary-value",
+            help="Use the factorized ensemble value in MCTS; default is shadow-only",
+        ),
+    ] = False,
     output: Annotated[Path | None, typer.Option()] = None,
 ) -> None:
     """Climb the complexity ladder; score is the highest stage cleared."""
@@ -368,6 +385,8 @@ def braid_ladder(
     if candidates_only:
         wanted = {n.strip() for n in candidates_only.split(",") if n.strip()}
         chosen = [c for c in chosen if c.name in wanted]
+    if use_auxiliary_value:
+        chosen = [replace(candidate, use_auxiliary_value=True) for candidate in chosen]
     out = output or artifact_dir(Path.cwd(), "ladder")
     typer.echo(f"{len(chosen)} candidates over {len(STAGES)} stages, {workers} workers")
     for index, stage in enumerate(STAGES):
@@ -377,35 +396,56 @@ def braid_ladder(
     if workers <= 1:
         for candidate in chosen:
             results.append(
-                run_ladder(candidate, seed=seed, device=device,
-                           checkpoint_dir=out / "checkpoints",
-                           max_iterations_per_stage=max_iterations,
-                           eval_games=eval_games, promote_at=promote_at,
-                           mix_decay=mix_decay, crossing_tolerance=crossing_tolerance,
-                           plateau_window=plateau_window, retro_games=retro_games,
-                           collapse_floor=collapse_floor,
-                           max_consecutive_caps=max_consecutive_caps,
-                           stop_after=stop_after,
-                           min_iterations_per_rung=min_iterations_per_rung,
-                           min_iterations_from=min_iterations_from,
-                           bounds_path=bounds, log=typer.echo)
+                run_ladder(
+                    candidate,
+                    seed=seed,
+                    device=device,
+                    checkpoint_dir=out / "checkpoints",
+                    max_iterations_per_stage=max_iterations,
+                    selfplay_games=selfplay_games,
+                    checkpoint_every=checkpoint_every,
+                    eval_games=eval_games,
+                    promote_at=promote_at,
+                    mix_decay=mix_decay,
+                    crossing_tolerance=crossing_tolerance,
+                    plateau_window=plateau_window,
+                    retro_games=retro_games,
+                    collapse_floor=collapse_floor,
+                    max_consecutive_caps=max_consecutive_caps,
+                    stop_after=stop_after,
+                    min_iterations_per_rung=min_iterations_per_rung,
+                    min_iterations_from=min_iterations_from,
+                    bounds_path=bounds,
+                    log=typer.echo,
+                )
             )
             save(results, out)
     else:
         with ProcessPoolExecutor(max_workers=workers, initializer=_worker_init) as pool:
             futures = {
-                pool.submit(run_ladder, c, seed=seed, device=device,
-                            checkpoint_dir=out / "checkpoints",
-                            max_iterations_per_stage=max_iterations,
-                            eval_games=eval_games, promote_at=promote_at,
-                            mix_decay=mix_decay, crossing_tolerance=crossing_tolerance,
-                            plateau_window=plateau_window, retro_games=retro_games,
-                            collapse_floor=collapse_floor,
-                            max_consecutive_caps=max_consecutive_caps,
-                            stop_after=stop_after,
-                            min_iterations_per_rung=min_iterations_per_rung,
-                            min_iterations_from=min_iterations_from,
-                            bounds_path=bounds, log=_silent): c
+                pool.submit(
+                    run_ladder,
+                    c,
+                    seed=seed,
+                    device=device,
+                    checkpoint_dir=out / "checkpoints",
+                    max_iterations_per_stage=max_iterations,
+                    selfplay_games=selfplay_games,
+                    checkpoint_every=checkpoint_every,
+                    eval_games=eval_games,
+                    promote_at=promote_at,
+                    mix_decay=mix_decay,
+                    crossing_tolerance=crossing_tolerance,
+                    plateau_window=plateau_window,
+                    retro_games=retro_games,
+                    collapse_floor=collapse_floor,
+                    max_consecutive_caps=max_consecutive_caps,
+                    stop_after=stop_after,
+                    min_iterations_per_rung=min_iterations_per_rung,
+                    min_iterations_from=min_iterations_from,
+                    bounds_path=bounds,
+                    log=_silent,
+                ): c
                 for c in chosen
             }
             for future in as_completed(futures):
@@ -417,6 +457,82 @@ def braid_ladder(
                 )
                 save(results, out)
     typer.echo(f"Saved: {out / 'ladder.md'}")
+
+
+@app.command()
+def braid_device_benchmark(
+    candidates_only: Annotated[
+        str,
+        typer.Option(
+            "--only",
+            help="Comma-separated representatives; default covers parallel, serial, tape and GRU",
+        ),
+    ] = "u1-puct,s-w11-128,s-tape4,s-scan-gru",
+    devices: Annotated[str, typer.Option(help="Comma-separated: cpu,cuda,mps")] = "cpu,cuda",
+    actor_batches: Annotated[
+        str,
+        typer.Option(help="Comma-separated concurrent self-play root counts"),
+    ] = "8,32,64",
+    stage: Annotated[int, typer.Option(min=0)] = 8,
+    eval_games: Annotated[int, typer.Option(min=1)] = 4,
+    measured_train_steps: Annotated[int, typer.Option(min=1)] = 8,
+    torch_threads: Annotated[
+        int,
+        typer.Option(min=1, help="PyTorch CPU threads in this one-worker benchmark"),
+    ] = 1,
+    cpu_hourly: Annotated[
+        float,
+        typer.Option(help="Hourly cost of one CPU worker; default is Nebius cpu-d3/4"),
+    ] = 0.0248,
+    gpu_hourly: Annotated[
+        float,
+        typer.Option(help="Hourly GPU VM cost; default is Nebius L40S Intel 8/32"),
+    ] = 1.5484,
+    simulations: Annotated[
+        int | None,
+        typer.Option(min=1, help="Override simulations for a quick smoke test only"),
+    ] = None,
+    seed: int = 0,
+    output: Path | None = None,
+) -> None:
+    """Measure an end-to-end CPU/CUDA ladder iteration and apply the 3x GPU gate."""
+    from pgx_mcts_bench.device_benchmark import run_device_benchmark
+    from pgx_mcts_bench.ladder import STAGES, candidates
+
+    if stage >= len(STAGES):
+        raise typer.BadParameter(f"stage must be below {len(STAGES)}")
+    names = [name.strip() for name in candidates_only.split(",") if name.strip()]
+    by_name = {candidate.name: candidate for candidate in candidates()}
+    unknown = [name for name in names if name not in by_name]
+    if unknown:
+        raise typer.BadParameter(f"unknown candidates: {', '.join(unknown)}")
+    selected_devices = [name.strip() for name in devices.split(",") if name.strip()]
+    unknown_devices = set(selected_devices) - {"cpu", "cuda", "mps"}
+    if unknown_devices:
+        raise typer.BadParameter(f"unknown devices: {', '.join(sorted(unknown_devices))}")
+    try:
+        batches = [int(value.strip()) for value in actor_batches.split(",") if value.strip()]
+    except ValueError as error:
+        raise typer.BadParameter("actor batches must be comma-separated integers") from error
+    if not batches or any(value < 1 for value in batches):
+        raise typer.BadParameter("actor batches must be positive")
+    out = output or artifact_dir(Path.cwd(), "braid-device-benchmark")
+    run_device_benchmark(
+        [by_name[name] for name in names],
+        devices=selected_devices,
+        actor_batches=batches,
+        stage_index=stage,
+        eval_games=eval_games,
+        measured_train_steps=measured_train_steps,
+        seed=seed,
+        output=out,
+        simulations=simulations,
+        torch_threads=torch_threads,
+        cpu_hourly=cpu_hourly,
+        gpu_hourly=gpu_hourly,
+        log=typer.echo,
+    )
+    typer.echo(f"Saved: {out / 'device-benchmark.md'}")
 
 
 @app.command()
@@ -433,6 +549,57 @@ def braid_ladder_merge(
     for r in sorted(results, key=lambda x: -x.highest_stage):
         typer.echo(f"  {r.name:18s} stage {r.highest_stage:2d}  {r.seconds:.0f}s")
     typer.echo(f"Saved: {root / 'ladder.md'}")
+
+
+@app.command()
+def braid_ladder_leaderboard(
+    roots: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--root",
+            help=(
+                "Checkpoint root or .pt file; repeat for multiple local or server-snapshot roots"
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Print fresh standings from live ladder checkpoints."""
+    from pgx_mcts_bench.leaderboard import DEFAULT_ROOTS, leaderboard, render
+
+    selected = roots or list(DEFAULT_ROOTS)
+    rows, warnings = leaderboard(selected)
+    for warning in warnings:
+        typer.echo(f"warning: {warning}", err=True)
+    if not rows:
+        typer.echo("No promoted ladder checkpoints found", err=True)
+        raise typer.Exit(1)
+    typer.echo(render(rows), nl=False)
+
+
+@app.command()
+def braid_ladder_values(
+    roots: Annotated[
+        list[Path] | None,
+        typer.Option("--root", help="Checkpoint root; repeat for multiple roots"),
+    ] = None,
+    output: Annotated[
+        Path,
+        typer.Option(help="JSON output; a Markdown report is written beside it"),
+    ] = Path("artifacts/value-eval-r31-r40.json"),
+    seed: Annotated[int, typer.Option(help="Held-out instance seed")] = 1_337_000,
+    device: Annotated[str, typer.Option()] = "cpu",
+) -> None:
+    """Evaluate raw value heads on the ten held-out mixed-sign rungs."""
+    from pgx_mcts_bench.leaderboard import DEFAULT_ROOTS
+    from pgx_mcts_bench.value_eval import evaluate_value_heads, save
+
+    result, warnings = evaluate_value_heads(list(roots or DEFAULT_ROOTS), seed=seed, device=device)
+    for warning in warnings:
+        typer.echo(f"warning: {warning}", err=True)
+    save(result, output)
+    typer.echo(f"Evaluated {len(result['candidates'])} critics on {len(result['instances'])} rungs")
+    typer.echo(f"Saved: {output}")
+    typer.echo(f"Saved: {output.with_suffix('.md')}")
 
 
 @app.command()
@@ -557,8 +724,12 @@ def braid_multi(
                 t = game._view(state, reward=0.0)
                 while not t.terminated:
                     action = search.run(
-                        t.state, t.observation, t.legal_actions, rng,
-                        temperature=0.0, add_root_noise=False,
+                        t.state,
+                        t.observation,
+                        t.legal_actions,
+                        rng,
+                        temperature=0.0,
+                        add_root_noise=False,
                     ).action
                     t = game.step(t.state, action)
                 final = game.unwrap(t.state)

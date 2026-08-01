@@ -37,7 +37,7 @@ from pgx_mcts_bench.config import (
 )
 from pgx_mcts_bench.data import ReplayBuffer
 from pgx_mcts_bench.game import make_game
-from pgx_mcts_bench.networks import make_braid_network
+from pgx_mcts_bench.networks import load_policy_value_state_dict, make_braid_network
 from pgx_mcts_bench.search import NeuralMCTS
 from pgx_mcts_bench.training import play_selfplay_games, train_alphazero_step
 
@@ -111,7 +111,23 @@ STAGES: list[tuple[str, int]] = [
     ("R(5,18)#0", 0),
     ("R(3,20)#0", 0),
     ("R(5,20)#0", 0),
+    # Held-out continuation: larger mixed-sign sources, with +4 pairs separating
+    # source-word length from extra diagram scrambling.  These were added as one
+    # block so identity-based resume keeps every historical rung attached to the
+    # knot it actually measured.
+    ("R(3,22)#0", 0),
+    ("R(3,22)#0", 4),
+    ("R(5,22)#0", 0),
+    ("R(5,22)#0", 4),
+    ("R(3,24)#0", 0),
+    ("R(3,24)#0", 4),
+    ("R(5,24)#0", 0),
+    ("R(5,24)#0", 4),
+    ("R(5,26)#0", 0),
+    ("R(5,26)#0", 4),
 ]
+
+VALUE_EVAL_STAGES: tuple[tuple[str, int], ...] = tuple(STAGES[-10:])
 
 # The three cost ratios the network must serve simultaneously, as requested:
 # A:B = 1000:1 (crossing changes dominate -- unknotting-number minimisation),
@@ -142,9 +158,11 @@ class Candidate:
     # Colours the agent may paint onto strands, transported through crossings by
     # the environment. Three actions regardless of the palette size.
     serial_colours: int = 0
+    serial_tape_symbols: int = 0
     serial_encoder: str = ""
     serial_encoder_states: int = 0
     serial_encoder_prime: int = 5
+    use_auxiliary_value: bool = False
     train: bool = True
 
 
@@ -164,19 +182,47 @@ def serial_arms() -> list[Candidate]:
     """
     base = dict(exploration="u1", simulations=128, channels=32, train_steps=96)
     return [
-        Candidate("s-head-128", "head-only, 128 sims", serial_window=7,
-                  serial_act_width=1, **base),
-        Candidate("s-window-128", "act anywhere in a 7-window, 128 sims",
-                  serial_window=7, serial_act_width=7, **base),
-        Candidate("s-w11-128", "11-window, act anywhere, 128 sims",
-                  serial_window=11, serial_act_width=11, **base),
-        Candidate("s-head-256", "head-only, 256 sims: is depth still the wall?",
-                  serial_window=7, serial_act_width=1,
-                  exploration="u1", simulations=256, channels=32, train_steps=96),
-        Candidate("s-head-budget96", "head-only, 96 plies to pay for head motion",
-                  serial_window=7, serial_act_width=1, simplify_budget=96, **base),
-        Candidate("s-head-1stride", "ABLATION: head-only, the original single stride",
-                  serial_window=7, serial_act_width=1, serial_shift_strides=(3,), **base),
+        Candidate("s-head-128", "head-only, 128 sims", serial_window=7, serial_act_width=1, **base),
+        Candidate(
+            "s-window-128",
+            "act anywhere in a 7-window, 128 sims",
+            serial_window=7,
+            serial_act_width=7,
+            **base,
+        ),
+        Candidate(
+            "s-w11-128",
+            "11-window, act anywhere, 128 sims",
+            serial_window=11,
+            serial_act_width=11,
+            **base,
+        ),
+        Candidate(
+            "s-head-256",
+            "head-only, 256 sims: is depth still the wall?",
+            serial_window=7,
+            serial_act_width=1,
+            exploration="u1",
+            simulations=256,
+            channels=32,
+            train_steps=96,
+        ),
+        Candidate(
+            "s-head-budget96",
+            "head-only, 96 plies to pay for head motion",
+            serial_window=7,
+            serial_act_width=1,
+            simplify_budget=96,
+            **base,
+        ),
+        Candidate(
+            "s-head-1stride",
+            "ABLATION: head-only, the original single stride",
+            serial_window=7,
+            serial_act_width=1,
+            serial_shift_strides=(3,),
+            **base,
+        ),
     ]
 
 
@@ -190,13 +236,27 @@ def memory_arms() -> list[Candidate]:
     run before the learned-embedding version, and it is a fair arm under the
     zero-human-knowledge constraint: a mechanism, not a feature.
     """
-    base = dict(exploration="u1", simulations=128, channels=32, train_steps=96,
-                serial_window=7, serial_act_width=1)
+    base = dict(
+        exploration="u1",
+        simulations=128,
+        channels=32,
+        train_steps=96,
+        serial_window=7,
+        serial_act_width=1,
+    )
     return [
-        Candidate("s-reg4", "head-only + 4 written registers (16 control states)",
-                  serial_registers=4, **base),
-        Candidate("s-reg8", "head-only + 8 written registers (256 control states)",
-                  serial_registers=8, **base),
+        Candidate(
+            "s-reg4",
+            "head-only + 4 written registers (16 control states)",
+            serial_registers=4,
+            **base,
+        ),
+        Candidate(
+            "s-reg8",
+            "head-only + 8 written registers (256 control states)",
+            serial_registers=8,
+            **base,
+        ),
     ]
 
 
@@ -212,8 +272,14 @@ def colour_arms() -> list[Candidate]:
 
     Matched to `s-head-128` in every other respect.
     """
-    base = dict(exploration="u1", simulations=128, channels=32, train_steps=96,
-                serial_window=7, serial_act_width=1)
+    base = dict(
+        exploration="u1",
+        simulations=128,
+        channels=32,
+        train_steps=96,
+        serial_window=7,
+        serial_act_width=1,
+    )
     return [
         Candidate("s-paint2", "head-only + 2 strand colours", serial_colours=2, **base),
         Candidate("s-paint4", "head-only + 4 strand colours", serial_colours=4, **base),
@@ -263,6 +329,55 @@ def invariant_learning_arms() -> list[Candidate]:
     ]
 
 
+def tape_scan_arms() -> list[Candidate]:
+    """Explicit aligned memory and a forced virtual local-window scan.
+
+    All four are matched to ``s-head-128`` and start with the factorized
+    four-member value ensemble enabled.  ``scan-gru`` is deliberately not the
+    old ``gru`` arm: it consumes a sequence of centred seven-cell views, so its
+    final state is the result of an explicit full-necklace scan rather than a
+    direct letter-by-letter whole-word encoder.
+    """
+    base = dict(
+        exploration="u1",
+        simulations=128,
+        channels=32,
+        train_steps=96,
+        serial_window=7,
+        serial_act_width=1,
+        use_auxiliary_value=True,
+    )
+    return [
+        Candidate(
+            "s-tape2",
+            "head-only + aligned writable 2-symbol tape",
+            serial_tape_symbols=2,
+            **base,
+        ),
+        Candidate(
+            "s-tape4",
+            "head-only + aligned writable 4-symbol tape",
+            serial_tape_symbols=4,
+            **base,
+        ),
+        Candidate(
+            "s-scan-gru",
+            "forced virtual full scan of local windows with GRU-128",
+            serial_encoder="scan-gru",
+            serial_encoder_states=128,
+            **base,
+        ),
+        Candidate(
+            "s-scan-gru-tape2",
+            "forced local-window GRU scan + aligned writable 2-symbol tape",
+            serial_encoder="scan-gru",
+            serial_encoder_states=128,
+            serial_tape_symbols=2,
+            **base,
+        ),
+    ]
+
+
 def central_benchmark_arms() -> list[Candidate]:
     by_name = {c.name: c for c in serial_arms() + memory_arms() + invariant_learning_arms()}
     return [
@@ -285,10 +400,12 @@ def parallel_arms() -> list[Candidate]:
         Candidate("u1-puct", "AlphaZero PUCT, parallel head", exploration="u1"),
         Candidate("u3-uct", "prior-free UCT; never collapsed in earlier screens", exploration="u3"),
         Candidate("search-heavy", "128 simulations: is depth the constraint?", simulations=128),
-        Candidate("search-light", "16 simulations: the network must carry the policy",
-                  simulations=16),
-        Candidate("wide-net", "96 channels: is capacity the constraint?", channels=96,
-                  train_steps=160),
+        Candidate(
+            "search-light", "16 simulations: the network must carry the policy", simulations=16
+        ),
+        Candidate(
+            "wide-net", "96 channels: is capacity the constraint?", channels=96, train_steps=160
+        ),
     ]
 
 
@@ -299,6 +416,7 @@ def candidates() -> list[Candidate]:
         + memory_arms()
         + colour_arms()
         + invariant_learning_arms()
+        + tape_scan_arms()
     )
 
 
@@ -355,9 +473,7 @@ def stage_mixture(frontier: int, decay: float) -> tuple[tuple[str, int, float], 
         return ()
     weights = [decay ** (frontier - i) for i in range(frontier + 1)]
     total = sum(weights)
-    return tuple(
-        (STAGES[i][0], STAGES[i][1], w / total) for i, w in enumerate(weights)
-    )
+    return tuple((STAGES[i][0], STAGES[i][1], w / total) for i, w in enumerate(weights))
 
 
 def resume_point(saved_stages: list[dict]) -> tuple[int, set, list[str]]:
@@ -370,9 +486,7 @@ def resume_point(saved_stages: list[dict]) -> tuple[int, set, list[str]]:
     candidate that cleared the old ladder starts at the first *newly inserted*
     stage it has not actually done, which is the honest place to restart.
     """
-    cleared = {
-        (row["source"], row["scramble"]) for row in saved_stages if row.get("promoted")
-    }
+    cleared = {(row["source"], row["scramble"]) for row in saved_stages if row.get("promoted")}
     start = next((i for i, s in enumerate(STAGES) if s not in cleared), len(STAGES))
     # Gaps are the uncleared rungs *below the highest cleared one* -- newly
     # inserted stages that a candidate skipped past on the previous ladder.
@@ -450,15 +564,13 @@ def _config(
     *,
     frontier: int = -1,
     mix_decay: float = 0.0,
+    selfplay_games: int = 8,
 ):
     game = BraidGameConfig(
         max_len=48,
         max_strands=5,
         scramble_budget=1,
-        simplify_budget=(
-            candidate.simplify_budget
-            or (32 if not candidate.serial_window else 64)
-        ),
+        simplify_budget=(candidate.simplify_budget or (32 if not candidate.serial_window else 64)),
         allow_crossing_change=True,
         multi_objective=True,
         log_ratio_range=(float(np.log(min(RATIOS))), float(np.log(max(RATIOS)))),
@@ -466,7 +578,7 @@ def _config(
         generator_max_scramble=6,
         generator_positive_braids=3,
         generator_positive_seed=0,
-        generator_random_crossings=(10, 12, 14, 16, 18, 20),
+        generator_random_crossings=(10, 12, 14, 16, 18, 20, 22, 24, 26),
         generator_random_per_grade=1,
         generator_random_seed=0,
         stage_source=stage[0],
@@ -477,6 +589,7 @@ def _config(
         serial_shift_strides=candidate.serial_shift_strides,
         serial_registers=candidate.serial_registers,
         serial_colours=candidate.serial_colours,
+        serial_tape_symbols=candidate.serial_tape_symbols,
         serial_encoder=candidate.serial_encoder,
         serial_encoder_states=candidate.serial_encoder_states,
         serial_encoder_prime=candidate.serial_encoder_prime,
@@ -484,10 +597,14 @@ def _config(
     return ExperimentConfig(
         game=game,
         search=SearchConfig(simulations=candidate.simulations, exploration=candidate.exploration),  # type: ignore[arg-type]
-        model=ModelConfig(channels=candidate.channels, latent_channels=candidate.channels),
+        model=ModelConfig(
+            channels=candidate.channels,
+            latent_channels=candidate.channels,
+            use_auxiliary_value=candidate.use_auxiliary_value,
+        ),
         train=TrainConfig(
             iterations=1,
-            selfplay_games=8,
+            selfplay_games=selfplay_games,
             train_steps=candidate.train_steps,
             batch_size=32,
             seed=seed,
@@ -516,24 +633,43 @@ def evaluate_stage(
     search = NeuralMCTS(game, network, config.search, config.train.device)
     out: dict[float, dict] = {}
     best_claim: tuple[int, int] | None = None
+    episodes: list[dict] = []
+    source, scramble = config.game.stage_source, config.game.stage_scramble
+    src = next(s for s in game.generator.sources if s.name == source)
     for ratio in ratios:
-        log_ratio = float(np.log(ratio))
-        solved = crossings = moves = 0
         for index in range(games):
-            rng = np.random.default_rng(seed + 100_003 * (index + 1))
-            source, scramble = config.game.stage_source, config.game.stage_scramble
-            src = next(s for s in game.generator.sources if s.name == source)
+            episode_seed = seed + 100_003 * (index + 1)
+            rng = np.random.default_rng(episode_seed)
             instance = game.generator.generate(src, scramble, rng)
-            transition = game.from_word(
-                list(instance.word), instance.strands, log_ratio
-            )
-            while not transition.terminated:
-                action = search.run(
-                    transition.state, transition.observation, transition.legal_actions,
-                    rng, temperature=0.0, add_root_noise=False,
-                ).action
-                transition = game.step(transition.state, action)
-            final = game.unwrap(transition.state)
+            transition = game.from_word(list(instance.word), instance.strands, float(np.log(ratio)))
+            episodes.append({"ratio": ratio, "rng": rng, "transition": transition})
+
+    # All ratio/game pairs are independent roots. Searching them together is
+    # mathematically identical to the former nested loop, but changes the neural
+    # inference batch from one to as many as ``len(ratios) * games`` (36 in the
+    # standard ladder). That is the minimum useful shape for a GPU benchmark.
+    while True:
+        active = [i for i, episode in enumerate(episodes) if not episode["transition"].terminated]
+        if not active:
+            break
+        batch = search.run_batch(
+            states=[episodes[i]["transition"].state for i in active],
+            observations=[episodes[i]["transition"].observation for i in active],
+            legal_actions=[episodes[i]["transition"].legal_actions for i in active],
+            rngs=[episodes[i]["rng"] for i in active],
+            temperatures=[0.0] * len(active),
+            add_root_noise=False,
+        )
+        for i, result in zip(active, batch, strict=True):
+            transition = episodes[i]["transition"]
+            episodes[i]["transition"] = game.step(transition.state, result.action)
+
+    for ratio in ratios:
+        solved = crossings = moves = 0
+        for episode in episodes:
+            if episode["ratio"] != ratio:
+                continue
+            final = game.unwrap(episode["transition"].state)
             if bool((np.asarray(final._word) == 0).all()) and int(final._n) == 1:
                 solved += 1
                 used = int(np.asarray(final._crossing_changes))
@@ -564,9 +700,7 @@ def evaluate_stage(
     if bounds_path is not None and best_claim is not None:
         from pgx_mcts_bench import bounds
 
-        source = next(
-            s for s in game.generator.sources if s.name == config.game.stage_source
-        )
+        source = next(s for s in game.generator.sources if s.name == config.game.stage_source)
         bounds.claim(
             bounds_path,
             bounds.Bound(
@@ -581,6 +715,117 @@ def evaluate_stage(
     return out
 
 
+def _atomic_torch_save(payload: dict, path: Path) -> None:
+    """Write a checkpoint without exposing a half-written file to resume."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    torch.save(payload, temporary)
+    temporary.replace(path)
+
+
+def _save_ladder_progress(
+    path: Path,
+    *,
+    candidate: Candidate,
+    stage_index: int,
+    iteration: int,
+    stage_complete: bool,
+    network,
+    optimizer,
+    replay: ReplayBuffer,
+    rng: np.random.Generator,
+    result: LadderResult,
+    history: list[float],
+    by_ratio: dict,
+    solve_rate: float,
+    crossings: float,
+    consecutive_caps: int,
+) -> None:
+    payload = {
+        "version": 1,
+        "candidate": candidate.name,
+        "candidate_spec": asdict(candidate),
+        "stage_index": stage_index,
+        "source": STAGES[stage_index][0],
+        "scramble": STAGES[stage_index][1],
+        "iteration": iteration,
+        "stage_complete": stage_complete,
+        "network": network.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "replay_games": replay.games,
+        "rng_state": rng.bit_generator.state,
+        "torch_rng_state": torch.get_rng_state(),
+        "cuda_rng_states": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
+        "stages": [asdict(stage) for stage in result.stages],
+        "highest_stage": result.highest_stage,
+        "history": history,
+        "by_ratio": by_ratio,
+        "solve_rate": solve_rate,
+        "crossings": crossings,
+        "consecutive_caps": consecutive_caps,
+    }
+    _atomic_torch_save(payload, path)
+
+
+def _restore_ladder_progress(
+    saved: dict,
+    *,
+    candidate: Candidate,
+    network,
+    optimizer,
+    replay: ReplayBuffer,
+    rng: np.random.Generator,
+) -> tuple[LadderResult, int, dict | None, int]:
+    """Restore a rung checkpoint and return result/start/partial/cap count.
+
+    A partial rung is reused only if it is still the first missing rung by stage
+    identity. If the ladder changed, its trained weights and completed results
+    remain useful, but training resumes at the newly inserted gap.
+    """
+    if saved.get("version") != 1 or saved.get("candidate") != candidate.name:
+        raise ValueError("Incompatible ladder progress checkpoint")
+    if saved.get("candidate_spec") != asdict(candidate):
+        raise ValueError("Candidate configuration changed since progress checkpoint")
+    load_policy_value_state_dict(network, saved["network"])
+    optimizer.load_state_dict(saved["optimizer"])
+    replay.games = saved.get("replay_games", [])
+    replay.position_count = sum(len(game) for game in replay.games)
+    rng.bit_generator.state = saved["rng_state"]
+    torch.set_rng_state(saved["torch_rng_state"].cpu())
+    cuda_states = saved.get("cuda_rng_states", [])
+    if cuda_states and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(cuda_states)
+
+    stages = [StageResult(**row) for row in saved.get("stages", [])]
+    result = LadderResult(
+        candidate.name,
+        candidate.rationale,
+        int(saved.get("highest_stage", -1)),
+        0.0,
+        stages,
+    )
+    completed = {(row["source"], row["scramble"]) for row in saved.get("stages", [])}
+    start_stage = next(
+        (index for index, identity in enumerate(STAGES) if identity not in completed),
+        len(STAGES),
+    )
+    saved_identity = (saved.get("source"), saved.get("scramble"))
+    partial = None
+    if (
+        not saved.get("stage_complete", False)
+        and start_stage < len(STAGES)
+        and STAGES[start_stage] == saved_identity
+    ):
+        partial = {
+            "iteration": int(saved.get("iteration", 0)),
+            "history": list(saved.get("history", [])),
+            "by_ratio": dict(saved.get("by_ratio", {})),
+            "solve_rate": float(saved.get("solve_rate", float("nan"))),
+            "crossings": float(saved.get("crossings", float("nan"))),
+        }
+    return result, start_stage, partial, int(saved.get("consecutive_caps", 0))
+
+
 def run_ladder(
     candidate: Candidate,
     *,
@@ -588,6 +833,8 @@ def run_ladder(
     device: str = "cpu",
     checkpoint_dir: Path | None = None,
     max_iterations_per_stage: int = 25,
+    selfplay_games: int = 8,
+    checkpoint_every: int = 1,
     eval_every: int = 2,
     eval_games: int = 16,
     promote_at: float = 0.8,
@@ -607,8 +854,8 @@ def run_ladder(
     rng = np.random.default_rng(seed)
     torch.manual_seed(seed)
 
-    first = _config(candidate, STAGES[0], seed, device)
-    network = make_braid_network(first.game, first.model)
+    first = _config(candidate, STAGES[0], seed, device, selfplay_games=selfplay_games)
+    network = make_braid_network(first.game, first.model).to(torch.device(device))
     optimizer = torch.optim.AdamW(network.parameters(), lr=1e-3, weight_decay=1e-4)
     replay = ReplayBuffer(20_000, rng)
     result = LadderResult(candidate.name, candidate.rationale, -1, 0.0)
@@ -622,10 +869,18 @@ def run_ladder(
     # rung would be worse.
     start_stage = 0
     path = checkpoint_dir / f"{candidate.name}.pt" if checkpoint_dir else None
+    progress_path = checkpoint_dir / candidate.name / "progress.pt" if checkpoint_dir else None
+    partial: dict | None = None
+    consecutive_caps = 0
     if path is not None and path.exists():
         saved = torch.load(path, map_location=device, weights_only=False)
-        network.load_state_dict(saved["network"])
-        optimizer.load_state_dict(saved["optimizer"])
+        migrated = load_policy_value_state_dict(network, saved["network"])
+        try:
+            optimizer.load_state_dict(saved["optimizer"])
+        except ValueError:
+            if not migrated:
+                raise
+            log("    auxiliary value heads added; optimizer state restarted")
         start_stage, cleared, gaps = resume_point(saved["stages"])
         result.stages = [
             StageResult(**row)
@@ -633,8 +888,27 @@ def run_ladder(
             if (row["source"], row["scramble"]) in cleared
         ]
         result.highest_stage = start_stage - 1
-        log(f"    [{candidate.name}] resumed at stage {start_stage} "
-            f"({len(cleared)} cleared" + (f", filling {gaps}" if gaps else "") + ")")
+        log(
+            f"    [{candidate.name}] resumed at stage {start_stage} "
+            f"({len(cleared)} cleared" + (f", filling {gaps}" if gaps else "") + ")"
+        )
+
+    if progress_path is not None and progress_path.exists():
+        saved_progress = torch.load(progress_path, map_location=device, weights_only=False)
+        try:
+            result, start_stage, partial, consecutive_caps = _restore_ladder_progress(
+                saved_progress,
+                candidate=candidate,
+                network=network,
+                optimizer=optimizer,
+                replay=replay,
+                rng=rng,
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            log(f"    [{candidate.name}] ignored incompatible progress: {error}")
+        else:
+            detail = f", iteration {partial['iteration']}" if partial else ""
+            log(f"    [{candidate.name}] restored rung progress at stage {start_stage}{detail}")
 
     def snapshot(index: int, when: str, stage_result: StageResult | None = None) -> None:
         """Weights either side of a stage, kept rather than overwritten.
@@ -665,7 +939,6 @@ def run_ladder(
             directory / f"stage{index:02d}-{when}.pt",
         )
 
-    consecutive_caps = 0
     for index, stage in enumerate(STAGES):
         if index < start_stage:
             continue
@@ -681,22 +954,33 @@ def run_ladder(
         # `stage_source`/`stage_scramble` directly rather than through the
         # generator's sampler. One game object therefore serves both.
         config = _config(
-            candidate, stage, seed, device, frontier=index, mix_decay=mix_decay
+            candidate,
+            stage,
+            seed,
+            device,
+            frontier=index,
+            mix_decay=mix_decay,
+            selfplay_games=selfplay_games,
         )
         game = make_game(config.game)
         source = next(s for s in game.generator.sources if s.name == stage[0])
         search = NeuralMCTS(game, network, config.search, device)
         stage_started = time.perf_counter()
-        solve_rate = crossings = float("nan")
-        by_ratio: dict = {}
+        resumed_partial = partial if index == start_stage else None
+        solve_rate = resumed_partial["solve_rate"] if resumed_partial else float("nan")
+        crossings = resumed_partial["crossings"] if resumed_partial else float("nan")
+        by_ratio: dict = resumed_partial["by_ratio"] if resumed_partial else {}
         promoted = False
         reason = "capped"
-        iterations = 0
-        history: list[float] = []
+        iterations = resumed_partial["iteration"] if resumed_partial else 0
+        history: list[float] = resumed_partial["history"] if resumed_partial else []
 
-        for iteration in range(max_iterations_per_stage):
+        for iteration in range(iterations, max_iterations_per_stage):
             if candidate.train:
-                seeds = [seed + index * 10_000 + iteration * 100 + g for g in range(8)]
+                seeds = [
+                    seed + index * 10_000 + iteration * 1_000 + g
+                    for g in range(config.train.selfplay_games)
+                ]
                 records = play_selfplay_games(
                     game, search, [np.random.default_rng(s + 7) for s in seeds], seeds, 12
                 )
@@ -707,8 +991,13 @@ def run_ladder(
                 iterations += 1
             if not candidate.train or (iteration + 1) % eval_every == 0:
                 by_ratio = evaluate_stage(
-                    game, network, config, eval_games, seed + 500_000 + index * 997,
-                    bounds_path=bounds_path, agent=candidate.name,
+                    game,
+                    network,
+                    config,
+                    eval_games,
+                    seed + 500_000 + index * 997,
+                    bounds_path=bounds_path,
+                    agent=candidate.name,
                 )
                 rates = [v["solved"] for v in by_ratio.values()]
                 # Pooled over every episode rather than the worst ratio: see
@@ -721,9 +1010,14 @@ def run_ladder(
                 # of the plateau test entirely.
                 history.append(crossings if crossings == crossings else float("inf"))
                 verdict = promotion_reason(
-                    solve_rate, crossings, history, source.unknotting_number,
-                    promote_at=promote_at, tolerance=crossing_tolerance,
-                    window=plateau_window, worst_ratio=worst_ratio,
+                    solve_rate,
+                    crossings,
+                    history,
+                    source.unknotting_number,
+                    promote_at=promote_at,
+                    tolerance=crossing_tolerance,
+                    window=plateau_window,
+                    worst_ratio=worst_ratio,
                     collapse_floor=collapse_floor,
                 )
                 if verdict is not None:
@@ -751,7 +1045,30 @@ def run_ladder(
                         density = float("inf")  # below the floor's remit
                     if density >= min_iterations_per_rung:
                         promoted, reason = True, verdict
-                        break
+            if (
+                progress_path is not None
+                and checkpoint_every > 0
+                and iterations % checkpoint_every == 0
+            ):
+                _save_ladder_progress(
+                    progress_path,
+                    candidate=candidate,
+                    stage_index=index,
+                    iteration=iterations,
+                    stage_complete=False,
+                    network=network,
+                    optimizer=optimizer,
+                    replay=replay,
+                    rng=rng,
+                    result=result,
+                    history=history,
+                    by_ratio=by_ratio,
+                    solve_rate=solve_rate,
+                    crossings=crossings,
+                    consecutive_caps=consecutive_caps,
+                )
+            if promoted:
+                break
             if not candidate.train:
                 break
 
@@ -766,8 +1083,12 @@ def run_ladder(
                 back = _config(candidate, STAGES[earlier], seed, device)
                 back_game = make_game(back.game)
                 rows = evaluate_stage(
-                    back_game, network, back, retro_games,
-                    seed + 700_000 + earlier * 997, ratios=(cc_edge,),
+                    back_game,
+                    network,
+                    back,
+                    retro_games,
+                    seed + 700_000 + earlier * 997,
+                    ratios=(cc_edge,),
                 )[cc_edge]
                 back_source = next(
                     s for s in back_game.generator.sources if s.name == STAGES[earlier][0]
@@ -812,7 +1133,7 @@ def run_ladder(
             result.highest_stage = index
             if path is not None:
                 path.parent.mkdir(parents=True, exist_ok=True)
-                torch.save(
+                _atomic_torch_save(
                     {
                         "network": network.state_dict(),
                         "optimizer": optimizer.state_dict(),
@@ -833,11 +1154,27 @@ def run_ladder(
             # Bounded, because an arm that cannot clear three rungs in a row is not
             # going to clear the fourth, and its cores are better spent elsewhere.
             consecutive_caps += 1
+        if progress_path is not None:
+            _save_ladder_progress(
+                progress_path,
+                candidate=candidate,
+                stage_index=index,
+                iteration=iterations,
+                stage_complete=True,
+                network=network,
+                optimizer=optimizer,
+                replay=replay,
+                rng=rng,
+                result=result,
+                history=history,
+                by_ratio=by_ratio,
+                solve_rate=solve_rate,
+                crossings=crossings,
+                consecutive_caps=consecutive_caps,
+            )
+        if not promoted:
             if consecutive_caps >= max_consecutive_caps:
-                log(
-                    f"    [{candidate.name}] stopping: {consecutive_caps} rungs "
-                    f"capped in a row"
-                )
+                log(f"    [{candidate.name}] stopping: {consecutive_caps} rungs capped in a row")
                 break
 
     result.seconds = time.perf_counter() - started
@@ -944,8 +1281,7 @@ def render(results: list[LadderResult]) -> str:
                 # cc and moves are conditional on solving; the solve rate is
                 # printed alongside because without it they cannot be read.
                 cells.append(
-                    "—" if not v else
-                    f"{v['crossings']:.2f} / {v['moves']:.1f} ({v['solved']:.0%})"
+                    "—" if not v else f"{v['crossings']:.2f} / {v['moves']:.1f} ({v['solved']:.0%})"
                 )
             lines.append(
                 f"| {st.stage} | {st.source}+{st.scramble} | {st.optimal_crossings} "
@@ -1015,8 +1351,8 @@ def rescore(
         if not cleared:
             continue
         first = _config(candidate, STAGES[0], 0, device)
-        network = make_braid_network(first.game, first.model)
-        network.load_state_dict(saved["network"])
+        network = make_braid_network(first.game, first.model).to(torch.device(device))
+        load_policy_value_state_dict(network, saved["network"])
         network.eval()
 
         rows = []
@@ -1028,19 +1364,23 @@ def rescore(
             config = _config(candidate, stage, 0, device)
             game = make_game(config.game)
             source = next(s for s in game.generator.sources if s.name == stage[0])
-            measured = evaluate_stage(
-                game, network, config, games, 900_000 + index * 997
+            measured = evaluate_stage(game, network, config, games, 900_000 + index * 997)
+            rows.append(
+                {
+                    "stage": index,
+                    "source": stage[0],
+                    "scramble": stage[1],
+                    "optimal_crossings": source.unknotting_number,
+                    "then": row.get("crossings", float("nan")),
+                    "now": measured[max(RATIOS)]["crossings"],
+                    "solved": min(v["solved"] for v in measured.values()),
+                    "by_ratio": {str(k): v for k, v in measured.items()},
+                }
             )
-            rows.append({
-                "stage": index, "source": stage[0], "scramble": stage[1],
-                "optimal_crossings": source.unknotting_number,
-                "then": row.get("crossings", float("nan")),
-                "now": measured[max(RATIOS)]["crossings"],
-                "solved": min(v["solved"] for v in measured.values()),
-                "by_ratio": {str(k): v for k, v in measured.items()},
-            })
-            log(f"    [{path.stem}] {stage[0]}+{stage[1]} u={source.unknotting_number} "
-                f"then {rows[-1]['then']:.2f} -> now {rows[-1]['now']:.2f}")
+            log(
+                f"    [{path.stem}] {stage[0]}+{stage[1]} u={source.unknotting_number} "
+                f"then {rows[-1]['then']:.2f} -> now {rows[-1]['now']:.2f}"
+            )
         out[path.stem] = rows
     (root / "rescore.json").write_text(json.dumps(out, indent=2, default=float) + "\n")
     return out

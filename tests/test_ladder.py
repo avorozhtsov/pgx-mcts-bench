@@ -35,10 +35,8 @@ def test_stages_are_monotone_in_unknotting_number_and_scramble() -> None:
 
     game = make_game(_config(parallel_arms()[1], STAGES[0], 0, "cpu").game)
     by_name = {s.name: s for s in game.generator.sources}
-    labelled = [(s, k) for s, k in STAGES
-                if by_name[s].unknotting_number != UNKNOWN_UNKNOTTING]
-    unlabelled = [(s, k) for s, k in STAGES
-                  if by_name[s].unknotting_number == UNKNOWN_UNKNOTTING]
+    labelled = [(s, k) for s, k in STAGES if by_name[s].unknotting_number != UNKNOWN_UNKNOTTING]
+    unlabelled = [(s, k) for s, k in STAGES if by_name[s].unknotting_number == UNKNOWN_UNKNOTTING]
 
     # the calibration set is contiguous and comes first, or "highest rung" mixes
     # two different kinds of score
@@ -144,46 +142,43 @@ def test_resume_from_nothing_and_from_a_complete_ladder() -> None:
 
 
 def test_promotion_needs_feasibility_first() -> None:
-    assert promotion_reason(
-        0.5, 1.0, [1.0], 1, promote_at=0.8, tolerance=0.25, window=3
-    ) is None
+    assert promotion_reason(0.5, 1.0, [1.0], 1, promote_at=0.8, tolerance=0.25, window=3) is None
 
 
 def test_promotion_on_reaching_the_objective() -> None:
-    assert promotion_reason(
-        1.0, 1.2, [1.2], 1, promote_at=0.8, tolerance=0.25, window=3
-    ) == "objective"
+    assert (
+        promotion_reason(1.0, 1.2, [1.2], 1, promote_at=0.8, tolerance=0.25, window=3)
+        == "objective"
+    )
     # 4.18 against an optimum of 1 is what the old rule promoted on
-    assert promotion_reason(
-        1.0, 4.18, [4.18], 1, promote_at=0.8, tolerance=0.25, window=3
-    ) is None
+    assert promotion_reason(1.0, 4.18, [4.18], 1, promote_at=0.8, tolerance=0.25, window=3) is None
 
 
 def test_plateau_needs_two_windows_before_it_can_fire() -> None:
     """One flat window is not a plateau -- it is a stage that has just started."""
     flat = [5.0, 5.0, 5.0]
-    assert promotion_reason(
-        1.0, 5.0, flat, 1, promote_at=0.8, tolerance=0.25, window=3
-    ) is None
-    assert promotion_reason(
-        1.0, 5.0, flat * 2, 1, promote_at=0.8, tolerance=0.25, window=3
-    ) == "plateau"
+    assert promotion_reason(1.0, 5.0, flat, 1, promote_at=0.8, tolerance=0.25, window=3) is None
+    assert (
+        promotion_reason(1.0, 5.0, flat * 2, 1, promote_at=0.8, tolerance=0.25, window=3)
+        == "plateau"
+    )
 
 
 def test_still_improving_is_not_a_plateau() -> None:
     improving = [9.0, 8.0, 7.0, 6.0, 5.0, 4.0]
-    assert promotion_reason(
-        1.0, 4.0, improving, 1, promote_at=0.8, tolerance=0.25, window=3
-    ) is None
+    assert (
+        promotion_reason(1.0, 4.0, improving, 1, promote_at=0.8, tolerance=0.25, window=3) is None
+    )
 
 
 def test_unsolved_evaluations_count_as_worst_not_as_missing() -> None:
     """A stage that stops solving must read as "not improving" rather than falling
     out of the plateau test, which `nan` would do silently."""
     history = [3.0, 3.0, 3.0, float("inf"), float("inf"), float("inf")]
-    assert promotion_reason(
-        1.0, float("nan"), history, 1, promote_at=0.8, tolerance=0.25, window=3
-    ) == "plateau"
+    assert (
+        promotion_reason(1.0, float("nan"), history, 1, promote_at=0.8, tolerance=0.25, window=3)
+        == "plateau"
+    )
 
 
 # -- head registers ------------------------------------------------------------
@@ -308,11 +303,7 @@ def test_learned_algebra_arms_have_finite_relation_objective() -> None:
         relation = network.regularization_loss()
         assert relation.ndim == 0 and torch.isfinite(relation)
         relation.backward()
-        parameters = (
-            network.transitions
-            if arm.serial_encoder == "fsa"
-            else network.field_matrices
-        )
+        parameters = network.transitions if arm.serial_encoder == "fsa" else network.field_matrices
         assert parameters.grad is not None and torch.isfinite(parameters.grad).all()
 
 
@@ -370,9 +361,7 @@ def test_one_shift_swaps_exactly_the_two_strands_the_letter_joins() -> None:
     painted = np.arange(game.config.max_strands, dtype=np.int64)
     state = state._replace(colours=painted)
 
-    right = next(
-        a for a in np.flatnonzero(transition.legal_actions) if game.shift_of(int(a)) == 1
-    )
+    right = next(a for a in np.flatnonzero(transition.legal_actions) if game.shift_of(int(a)) == 1)
     after = game.step(state, int(right)).state[3]
     # s2 joins heights 1 and 2 (0-based), and nothing else may move.
     assert list(after) == [0, 2, 1, 3, 4], list(after)
@@ -390,9 +379,9 @@ def test_paint_and_cycle_cost_a_ply_and_do_not_touch_the_word() -> None:
     cycled = game.step(transition.state, names["CYCLE"])
     assert cycled.state.colour == 1
     assert int(np.asarray(game.unwrap(cycled.state)._budget)) == budget - 1
-    assert np.array_equal(
-        np.asarray(game.unwrap(cycled.state)._word), np.asarray(before._word)
-    ), "a colour action must not touch the tape"
+    assert np.array_equal(np.asarray(game.unwrap(cycled.state)._word), np.asarray(before._word)), (
+        "a colour action must not touch the tape"
+    )
 
     painted = game.step(cycled.state, names["PAINT_LOW"])
     low, high = game._crossing_heights(game.unwrap(cycled.state), cycled.state.head)
@@ -456,27 +445,65 @@ def test_pooled_rate_is_not_the_worst_ratio() -> None:
     """
     # 0.83 / 0.92 / 0.75 pools to 0.833: a pass that the min-rule would have
     # failed on a single episode of the worst ratio.
-    assert promotion_reason(
-        (0.83 + 0.92 + 0.75) / 3, 0.2, [0.2], 0,
-        promote_at=0.8, tolerance=0.5, window=3, worst_ratio=0.75,
-    ) == "objective"
+    assert (
+        promotion_reason(
+            (0.83 + 0.92 + 0.75) / 3,
+            0.2,
+            [0.2],
+            0,
+            promote_at=0.8,
+            tolerance=0.5,
+            window=3,
+            worst_ratio=0.75,
+        )
+        == "objective"
+    )
     # but genuine collapse on one end of the front is still caught
-    assert promotion_reason(
-        (1.0 + 1.0 + 0.4) / 3, 0.2, [0.2], 0,
-        promote_at=0.8, tolerance=0.5, window=3, worst_ratio=0.4,
-    ) is None
+    assert (
+        promotion_reason(
+            (1.0 + 1.0 + 0.4) / 3,
+            0.2,
+            [0.2],
+            0,
+            promote_at=0.8,
+            tolerance=0.5,
+            window=3,
+            worst_ratio=0.4,
+        )
+        is None
+    )
 
 
 def test_collapse_floor_is_separate_from_the_promotion_bar() -> None:
     pooled = (1.0 + 1.0 + 0.45) / 3
-    assert promotion_reason(
-        pooled, 0.0, [0.0], 0, promote_at=0.8, tolerance=0.5, window=3,
-        worst_ratio=0.45, collapse_floor=0.5,
-    ) is None
-    assert promotion_reason(
-        pooled, 0.0, [0.0], 0, promote_at=0.8, tolerance=0.5, window=3,
-        worst_ratio=0.45, collapse_floor=0.4,
-    ) == "objective"
+    assert (
+        promotion_reason(
+            pooled,
+            0.0,
+            [0.0],
+            0,
+            promote_at=0.8,
+            tolerance=0.5,
+            window=3,
+            worst_ratio=0.45,
+            collapse_floor=0.5,
+        )
+        is None
+    )
+    assert (
+        promotion_reason(
+            pooled,
+            0.0,
+            [0.0],
+            0,
+            promote_at=0.8,
+            tolerance=0.5,
+            window=3,
+            worst_ratio=0.45,
+            collapse_floor=0.4,
+        )
+        == "objective"
+    )
 
 
 def test_a_capped_rung_does_not_retire_the_candidate() -> None:
@@ -527,8 +554,8 @@ def test_training_floor_is_an_average_not_a_per_rung_minimum() -> None:
     4.25 and never reaches the floor at all. The average is the quantity that
     equalises training effort across arms without dictating where it is spent."""
     # search-heavy: 104 iterations over 32 rungs
-    assert 104 / 32 < 7          # below the floor, so it keeps training
-    assert 104 + 120 == 224      # and 224/32 = 7.0 is what it would take
+    assert 104 / 32 < 7  # below the floor, so it keeps training
+    assert 104 + 120 == 224  # and 224/32 = 7.0 is what it would take
     assert 224 / 32 == 7.0
     # u1-puct: 244 over 16 rungs, already above, so the floor never fires
     assert 244 / 16 > 7
@@ -546,12 +573,12 @@ def test_training_floor_averages_only_over_the_rungs_it_governs() -> None:
     """
     # search-heavy at rung 10: 34 iterations over rungs 0..10
     whole_climb = 34 / 11
-    assert whole_climb < 9                      # would trigger, and demand
-    assert round(9 * 11 - 34) == 65             # 65 extra iterations
+    assert whole_climb < 9  # would trigger, and demand
+    assert round(9 * 11 - 34) == 65  # 65 extra iterations
     # governed window starting at rung 10 contains only rung 10 itself, whose
     # own count (8) is what the floor compares against
-    assert 8 < 9                                # so it trains a little longer
-    assert 9 / 1 == 9.0                         # and stops at nine, not at 99
+    assert 8 < 9  # so it trains a little longer
+    assert 9 / 1 == 9.0  # and stops at nine, not at 99
 
 
 def test_floor_is_inert_below_its_first_rung() -> None:
@@ -565,3 +592,92 @@ def test_floor_is_inert_below_its_first_rung() -> None:
     source = inspect.getsource(run_ladder)
     assert 'density = float("inf")' in source, "below the floor, promotion is unconditional"
     assert "if index >= min_iterations_from:" in source
+
+
+def test_evaluation_batches_all_ratios_and_games(monkeypatch) -> None:
+    """The GPU path needs a 3*games inference batch, not sequential episodes."""
+    from types import SimpleNamespace
+
+    import pgx_mcts_bench.ladder as ladder
+
+    candidate = parallel_arms()[1]
+    config = _config(candidate, STAGES[0], 0, "cpu")
+    game = make_game(config.game)
+    batch_sizes: list[int] = []
+
+    class FakeSearch:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run_batch(self, *, legal_actions, **kwargs):
+            batch_sizes.append(len(legal_actions))
+            return [
+                SimpleNamespace(action=int(np.flatnonzero(legal)[0])) for legal in legal_actions
+            ]
+
+    monkeypatch.setattr(ladder, "NeuralMCTS", FakeSearch)
+    rows = ladder.evaluate_stage(game, object(), config, games=2, seed=123)
+
+    assert batch_sizes[0] == 6  # 3 ratios * 2 held-out instances
+    assert set(rows) == set(ladder.RATIOS)
+
+
+def test_partial_rung_checkpoint_restores_training_state(tmp_path) -> None:
+    import torch
+
+    from pgx_mcts_bench.data import ReplayBuffer
+    from pgx_mcts_bench.ladder import (
+        LadderResult,
+        _restore_ladder_progress,
+        _save_ladder_progress,
+    )
+    from pgx_mcts_bench.networks import make_braid_network
+
+    candidate = parallel_arms()[1]
+    config = _config(candidate, STAGES[0], 0, "cpu")
+    network = make_braid_network(config.game, config.model)
+    optimizer = torch.optim.AdamW(network.parameters())
+    rng = np.random.default_rng(7)
+    replay = ReplayBuffer(100, rng)
+    result = LadderResult(candidate.name, candidate.rationale, -1, 0.0)
+    first_parameter = next(network.parameters())
+    with torch.no_grad():
+        first_parameter.fill_(1.0)
+
+    path = tmp_path / "checkpoints" / candidate.name / "progress.pt"
+    _save_ladder_progress(
+        path,
+        candidate=candidate,
+        stage_index=0,
+        iteration=3,
+        stage_complete=False,
+        network=network,
+        optimizer=optimizer,
+        replay=replay,
+        rng=rng,
+        result=result,
+        history=[2.0],
+        by_ratio={1000.0: {"solved": 1.0}},
+        solve_rate=1.0,
+        crossings=2.0,
+        consecutive_caps=0,
+    )
+    with torch.no_grad():
+        first_parameter.zero_()
+
+    saved = torch.load(path, map_location="cpu", weights_only=False)
+    restored, start_stage, partial, caps = _restore_ladder_progress(
+        saved,
+        candidate=candidate,
+        network=network,
+        optimizer=optimizer,
+        replay=replay,
+        rng=rng,
+    )
+
+    assert torch.all(first_parameter == 1.0)
+    assert restored.name == candidate.name
+    assert start_stage == 0 and partial is not None
+    assert partial["iteration"] == 3
+    assert partial["history"] == [2.0]
+    assert caps == 0

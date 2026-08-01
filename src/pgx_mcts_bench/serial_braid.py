@@ -57,7 +57,8 @@ class SerialState(NamedTuple):
     head: int
     registers: np.ndarray
     colours: np.ndarray
-    colour: int = 0
+    colour: int
+    tape: np.ndarray
 
 # Serial action layout, with G = max_strands - 1 generators and W = act_width.
 # One block of `per_offset = 3 + 2G + 1` actions per actionable offset, then the
@@ -108,6 +109,7 @@ def serial_action_size(
     n_strides: int = 1,
     registers: int = 0,
     colours: int = 0,
+    tape_symbols: int = 0,
 ) -> int:
     """Actions for a window agent.
 
@@ -123,7 +125,14 @@ def serial_action_size(
     # Colours cost three actions however many colours there are: PAINT_LOW,
     # PAINT_HIGH, CYCLE. Paint-per-(strand, colour) would be 20 dead actions at
     # N=5, C=4, and dead actions are what sank the register arm.
-    return act_width * positional + 4 + 2 * n_strides + registers + (3 if colours else 0)
+    tape_variants = max(tape_symbols, 1)
+    return (
+        act_width * positional
+        + 4
+        + 2 * n_strides * tape_variants
+        + registers
+        + (3 if colours else 0)
+    )
 
 
 def serial_action_names(max_strands: int, strides: tuple[int, ...] = (1,)) -> list[str]:
@@ -210,12 +219,17 @@ class SerialBraidGame:
             len(self.strides),
             max(config.serial_registers, 0),
             max(config.serial_colours, 0),
+            max(config.serial_tape_symbols, 0),
         )
         self._per_offset = 3 + 2 * generators + 1
         self._singleton_base = self.act_width * self._per_offset
         self._shift_base = self._singleton_base + 4
+        self.tape_symbols = max(config.serial_tape_symbols, 0)
+        self._tape_variants = max(self.tape_symbols, 1)
         self.registers = max(config.serial_registers, 0)
-        self._register_base = self._shift_base + 2 * len(self.strides)
+        self._register_base = (
+            self._shift_base + 2 * len(self.strides) * self._tape_variants
+        )
         self.colours = max(config.serial_colours, 0)
         self._colour_base = self._register_base + self.registers
         self._paint_low = self._colour_base
@@ -257,9 +271,11 @@ class SerialBraidGame:
         if action >= self._register_base:
             return f"TOGGLE(r{action - self._register_base})"
         if action >= self._shift_base:
-            index, direction = divmod(action - self._shift_base, 2)
+            shift, symbol = divmod(action - self._shift_base, self._tape_variants)
+            index, direction = divmod(shift, 2)
             side = "RIGHT" if direction else "LEFT"
-            return f"SHIFT_{side}({self.strides[index]})"
+            write = f",WRITE({symbol})" if self.tape_symbols else ""
+            return f"SHIFT_{side}({self.strides[index]}{write})"
         if action >= self._singleton_base:
             return ["DESTABILIZE", "STABILIZE_POS", "STABILIZE_NEG", "PASS"][
                 action - self._singleton_base
@@ -276,8 +292,15 @@ class SerialBraidGame:
         """Signed head displacement of a shift action, or `None` if it is not one."""
         if not self._shift_base <= action < self._register_base:
             return None
-        index, direction = divmod(action - self._shift_base, 2)
+        shift, _ = divmod(action - self._shift_base, self._tape_variants)
+        index, direction = divmod(shift, 2)
         return self.strides[index] if direction else -self.strides[index]
+
+    def tape_write_of(self, action: int) -> int | None:
+        """Symbol written at the old head by a shift, or ``None`` without tape."""
+        if not self.tape_symbols or not self._shift_base <= action < self._register_base:
+            return None
+        return (action - self._shift_base) % self._tape_variants
 
     def register_of(self, action: int) -> int | None:
         """Index of the register a TOGGLE action flips, or `None`."""
@@ -331,10 +354,13 @@ class SerialBraidGame:
     def reset(self, seed: int) -> Transition:
         if self.generator is None:
             state = self._init(jax.random.PRNGKey(seed))
-            return self._view(state, 0, self._no_registers(), self._no_colours(), 0, reward=0.0)
+            return self._view(
+                state, 0, self._no_registers(), self._no_colours(), 0,
+                self._no_tape(), reward=0.0,
+            )
         return self._view(
             self._generated(seed), 0, self._no_registers(), self._no_colours(), 0,
-            reward=0.0,
+            self._no_tape(), reward=0.0,
         )
 
     def _generated(self, seed: int):
@@ -357,11 +383,12 @@ class SerialBraidGame:
             self._no_registers(),
             self._no_colours(),
             0,
+            self._no_tape(),
             reward=0.0,
         )
 
     def step(self, state: Any, action: int) -> Transition:
-        pgx_state, head, registers, colours, colour = state
+        pgx_state, head, registers, colours, colour, tape = state
         mask = self._legal(pgx_state, head)
         if not mask[action]:
             raise ValueError(f"Illegal serial action {self.describe(action)}")
@@ -375,7 +402,7 @@ class SerialBraidGame:
             flipped[slot] = 1.0 - flipped[slot]
             return self._view(
                 self._charge_budget(pgx_state), head, flipped, colours, colour,
-                reward=0.0,
+                tape, reward=0.0,
             )
 
         # Painting costs a ply like everything else, and so does cycling: a free
@@ -391,7 +418,7 @@ class SerialBraidGame:
                 painted[low if paint == "low" else high] = colour + 1
             return self._view(
                 self._charge_budget(pgx_state), head, registers, painted, held,
-                reward=0.0,
+                tape, reward=0.0,
             )
 
         displacement = self.shift_of(action)
@@ -399,20 +426,82 @@ class SerialBraidGame:
             length = max(int(np.asarray(pgx_state._word).astype(bool).sum()), 1)
             new_head = (head + displacement) % length
             carried = self._transport(pgx_state, head, displacement, colours)
+            written = tape.copy()
+            symbol = self.tape_write_of(action)
+            if symbol is not None and length > 0:
+                written[head % length] = symbol
             advanced = self._charge_budget(pgx_state)
-            return self._view(advanced, new_head, registers, carried, colour, reward=0.0)
+            return self._view(
+                advanced, new_head, registers, carried, colour, written, reward=0.0
+            )
 
         actor = int(np.asarray(pgx_state.current_player))
         length_before = int(np.asarray(pgx_state._word).astype(bool).sum())
         next_state = self._step(
             pgx_state, np.int32(self.underlying_action(action, head, length_before))
         )
+        moved_tape = self._rewrite_tape(pgx_state, action, head, tape)
         rewards = np.asarray(next_state.rewards, dtype=np.float32)
         length = max(int(np.asarray(next_state._word).astype(bool).sum()), 1)
         return self._view(
-            next_state, head % length, registers, colours, colour,
+            next_state, head % length, registers, colours, colour, moved_tape,
             reward=float(rewards[actor]),
         )
+
+    def _rewrite_tape(
+        self, pgx_state: Any, action: int, head: int, tape: np.ndarray
+    ) -> np.ndarray:
+        """Apply the braid rewrite's positional transport to the annotation tape."""
+        if not self.tape_symbols:
+            return tape
+        from rf_knots.actions import (
+            BRAID,
+            COMMUTE,
+            DESTABILIZE,
+            INSERT,
+            REDUCE,
+            STABILIZE_NEG,
+            STABILIZE_POS,
+        )
+
+        underlying = self.underlying_action(
+            action, head, int(np.asarray(pgx_state._word).astype(bool).sum())
+        )
+        assert underlying is not None
+        kind, position, _, _ = self.spec.decode(underlying)
+        word = np.asarray(pgx_state._word)
+        length = int((word != 0).sum())
+        out = tape.copy()
+
+        def delete(positions: set[int]) -> np.ndarray:
+            kept = [out[i] for i in range(length) if i not in positions]
+            return np.asarray(
+                kept + [0] * (self.config.max_len - len(kept)), dtype=np.int64
+            )
+
+        if kind == REDUCE:
+            return delete({position % length, (position + 1) % length})
+        if kind == COMMUTE:
+            left, right = position % length, (position + 1) % length
+            out[left], out[right] = out[right], out[left]
+        elif kind == BRAID:
+            indexes = [(position + offset) % length for offset in range(3)]
+            values = [out[index] for index in indexes][::-1]
+            for index, value in zip(indexes, values, strict=True):
+                out[index] = value
+        elif kind == INSERT:
+            values = list(out[:length])
+            values[position:position] = [0, 0]
+            out = np.asarray(
+                values + [0] * (self.config.max_len - len(values)), dtype=np.int64
+            )
+        elif kind == DESTABILIZE:
+            top = int(np.asarray(pgx_state._n)) - 1
+            position = int(np.flatnonzero(np.abs(word[:length]) == top)[0])
+            return delete({position})
+        elif kind in (STABILIZE_POS, STABILIZE_NEG):
+            out[length] = 0
+        return out
 
     def _charge_budget(self, pgx_state: Any):
         """Spend one ply without touching the word.
@@ -486,8 +575,8 @@ class SerialBraidGame:
         if length > 1 and not bool(np.asarray(pgx_state.terminated)):
             for index, stride in enumerate(self.strides):
                 if stride % length:
-                    mask[self._shift_base + 2 * index] = True
-                    mask[self._shift_base + 2 * index + 1] = True
+                    start = self._shift_base + 2 * index * self._tape_variants
+                    mask[start : start + 2 * self._tape_variants] = True
         if not mask.any():
             mask[self._singleton_base + 3] = True
         return mask
@@ -498,6 +587,9 @@ class SerialBraidGame:
     def _no_colours(self) -> np.ndarray:
         # 0 means unpainted; a painted strand carries 1..colours.
         return np.zeros(self.config.max_strands, dtype=np.int64)
+
+    def _no_tape(self) -> np.ndarray:
+        return np.zeros(self.config.max_len, dtype=np.int64)
 
     def _colour_planes(self, colours: np.ndarray, colour: int) -> np.ndarray:
         """One-hot the colour at each height, then the colour being held.
@@ -520,6 +612,7 @@ class SerialBraidGame:
         registers: np.ndarray,
         colours: np.ndarray,
         colour: int,
+        tape: np.ndarray,
         reward: float,
     ) -> Transition:
         observation = np.asarray(pgx_state.observation, dtype=np.float32)  # (L, C)
@@ -558,8 +651,12 @@ class SerialBraidGame:
                 palette[None, :], (observed_width, palette.shape[0])
             )
             window = np.concatenate([window, planes], axis=1)
+        if self.tape_symbols:
+            tape_window = tape[indexes]
+            one_hot = np.eye(self.tape_symbols, dtype=np.float32)[tape_window]
+            window = np.concatenate([window, one_hot], axis=1)
         return Transition(
-            state=SerialState(pgx_state, head, registers, colours, colour),
+            state=SerialState(pgx_state, head, registers, colours, colour, tape),
             observation=window.reshape(1, observed_width, window.shape[1]),
             legal_actions=self._legal(pgx_state, head),
             reward=reward,

@@ -135,6 +135,12 @@ class BraidGameConfig:
     # actions which cannot change the word dilute the search, and it cost the arm
     # everything above rung 0.
     serial_colours: int = 0
+    # An explicit symbol tape aligned one-for-one with the occupied braid word.
+    # A shift writes one of K symbols at the cell it leaves, then moves the head.
+    # Rewrites transport, insert, and delete symbols with their corresponding
+    # crossings, so the annotation remains a replayable part of the Markov state.
+    # 0 disables it; useful experimental alphabets are 2 and 4 (symbol 0 blank).
+    serial_tape_symbols: int = 0
     # Optional automatic whole-tape accumulator. The action space remains the
     # serial O(1) head action space, but the observation is the occupied braid
     # word rotated to start at the head and padded to max_len. This is the common
@@ -186,6 +192,7 @@ class BraidGameConfig:
                 len(self.serial_strides),
                 self.serial_registers,
                 self.serial_colours,
+                self.serial_tape_symbols,
             )
         return self._spec.num_actions
 
@@ -202,7 +209,16 @@ class BraidGameConfig:
         colours = (
             self.serial_colours * (self.max_strands + 1) if self.serial_colours else 0
         )
-        return 2 * (self.max_strands - 1) + 1 + 1 + 8 + self.serial_registers + colours
+        tape = max(self.serial_tape_symbols, 0)
+        return (
+            2 * (self.max_strands - 1)
+            + 1
+            + 1
+            + 8
+            + self.serial_registers
+            + colours
+            + tape
+        )
 
     @property
     def height(self) -> int:
@@ -289,6 +305,17 @@ class ModelConfig:
     # appending a channel, so the two ends of the Pareto front can behave like
     # different networks inside one set of weights.
     film_on_ratio: bool = True
+    # Shadow factorized critic. Four independently initialized towers are trained
+    # with deterministic per-episode bootstrap masks while MCTS continues to use
+    # the legacy scalar value. Auxiliary gradients are initially kept out of the
+    # shared encoder so checkpoint migration cannot damage an established policy.
+    auxiliary_value_members: int = 4
+    auxiliary_value_width: int = 64
+    auxiliary_value_loss_weight: float = 0.1
+    auxiliary_backprop_to_encoder: bool = False
+    # Deliberate, checkpointed cut-over switch. False keeps MCTS on the legacy
+    # scalar while the auxiliary critic trains and is evaluated in shadow mode.
+    use_auxiliary_value: bool = False
 
 
 @dataclass(frozen=True)

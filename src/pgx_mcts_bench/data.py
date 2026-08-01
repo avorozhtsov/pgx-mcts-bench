@@ -17,6 +17,14 @@ class Position:
     reward: float = 0.0
     next_terminated: bool = False
     outcome: float = 0.0
+    # Shadow factorized-value targets. ``solved < 0`` means this position came
+    # from an old checkpoint or a game without braid cost labels.
+    solved: float = -1.0
+    final_crossing_changes: float = float("nan")
+    final_moves: float = float("nan")
+    # All positions from one episode share this seed, giving the four auxiliary
+    # members a deterministic per-episode bootstrap mask.
+    episode_seed: int = 0
 
 
 GameRecord = list[Position]

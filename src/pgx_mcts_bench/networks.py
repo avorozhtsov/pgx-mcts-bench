@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 from torch import Tensor, nn
+from torch.nn import functional as F
 
 from pgx_mcts_bench.config import AnyGameConfig, BraidGameConfig, ModelConfig
 
@@ -113,6 +114,19 @@ class PolicyValueNet(nn.Module):
     def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
         raise NotImplementedError
 
+    def forward_with_auxiliary(
+        self, observation: Tensor
+    ) -> tuple[Tensor, Tensor, tuple[Tensor, Tensor, Tensor] | None]:
+        policy, value = self(observation)
+        return policy, value, None
+
+    def composed_auxiliary_value(
+        self,
+        observation: Tensor,
+        auxiliary: tuple[Tensor, Tensor, Tensor],
+    ) -> Tensor:
+        raise NotImplementedError
+
 
 class AlphaZeroNet(PolicyValueNet):
     def __init__(self, game: AnyGameConfig, model: ModelConfig):
@@ -158,6 +172,108 @@ class FiLM(nn.Module):
         return (1.0 + gamma)[:, :, None, None] * hidden + beta[:, :, None, None]
 
 
+def _inverse_softplus(value: float) -> float:
+    return float(torch.log(torch.expm1(torch.tensor(value))).item())
+
+
+class AuxiliaryValueMember(nn.Module):
+    """One bootstrap member for solve probability and conditional costs."""
+
+    def __init__(self, features: int, width: int):
+        super().__init__()
+        hidden = max(width // 2, 16)
+        self.solve = nn.Sequential(
+            nn.Linear(features, width),
+            nn.SiLU(),
+            nn.Linear(width, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, 1),
+        )
+        self.cost = nn.Sequential(
+            nn.Linear(features, width),
+            nn.SiLU(),
+            nn.Linear(width, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, 2),
+        )
+        # Neutral solve prior and modest positive cost priors. Small weights keep
+        # members distinct without injecting large random outputs at migration.
+        nn.init.normal_(self.solve[-1].weight, std=1e-3)
+        nn.init.zeros_(self.solve[-1].bias)
+        nn.init.normal_(self.cost[-1].weight, std=1e-3)
+        with torch.no_grad():
+            self.cost[-1].bias.copy_(
+                torch.tensor([_inverse_softplus(1.0), _inverse_softplus(8.0)])
+            )
+
+    def forward(self, features: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        solve_logit = self.solve(features).squeeze(-1)
+        costs = F.softplus(self.cost(features))
+        return solve_logit, costs[:, 0], costs[:, 1]
+
+
+class AuxiliaryValueHeads(nn.Module):
+    def __init__(self, features: int, width: int, members: int):
+        super().__init__()
+        if members < 1:
+            raise ValueError("auxiliary_value_members must be positive")
+        self.members = nn.ModuleList(
+            AuxiliaryValueMember(features, width) for _ in range(members)
+        )
+
+    def forward(self, features: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        outputs = [member(features) for member in self.members]
+        return tuple(torch.stack(items, dim=1) for items in zip(*outputs, strict=True))  # type: ignore[return-value]
+
+
+class BraidPolicyValueNet(PolicyValueNet):
+    """Common shadow-critic plumbing for every braid representation."""
+
+    def _init_auxiliary(
+        self, features: int, game: BraidGameConfig, model: ModelConfig
+    ) -> None:
+        self.auxiliary = AuxiliaryValueHeads(
+            features, model.auxiliary_value_width, model.auxiliary_value_members
+        )
+        self.auxiliary_members = model.auxiliary_value_members
+        self.auxiliary_loss_weight = model.auxiliary_value_loss_weight
+        self.auxiliary_backprop = model.auxiliary_backprop_to_encoder
+        self.use_auxiliary_value = model.use_auxiliary_value
+        self.auxiliary_budget = float(game.simplify_budget)
+        self.auxiliary_ratio_channel = 2 * (game.max_strands - 1) + 1 + 1 + 6
+
+    def _auxiliary(self, features: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        if not self.auxiliary_backprop:
+            features = features.detach()
+        return self.auxiliary(features)
+
+    def composed_auxiliary_value(
+        self,
+        observation: Tensor,
+        auxiliary: tuple[Tensor, Tensor, Tensor],
+    ) -> Tensor:
+        solve_logits, crossings, moves = auxiliary
+        probability = solve_logits.sigmoid()
+        ratio = torch.exp(
+            5.0 * observation[:, self.auxiliary_ratio_channel, 0, 0]
+        )[:, None]
+        normalized_cost = (ratio * crossings + moves) / (
+            (ratio + 1.0) * self.auxiliary_budget
+        )
+        normalized_cost = normalized_cost.clamp(0.0, 1.0)
+        member_values = -1.0 + 2.0 * probability * (1.0 - normalized_cost)
+        return member_values.mean(dim=1)
+
+    def _search_value(
+        self, observation: Tensor, legacy: Tensor, features: Tensor
+    ) -> Tensor:
+        if not self.use_auxiliary_value:
+            return legacy
+        return self.composed_auxiliary_value(
+            observation, self._auxiliary(features)
+        )
+
+
 class BraidPolicyHead(nn.Module):
     """Positional policy head matching the braid action-space layout exactly.
 
@@ -198,7 +314,7 @@ class BraidPolicyHead(nn.Module):
         return logits
 
 
-class BraidAlphaZeroNet(PolicyValueNet):
+class BraidAlphaZeroNet(BraidPolicyValueNet):
     """AlphaZero network for the braid environment.
 
     The observation is a `1 x L` one-row image, so the shared residual stack
@@ -229,8 +345,9 @@ class BraidAlphaZeroNet(PolicyValueNet):
             nn.Linear(32, 1),
             nn.Tanh(),
         )
+        self._init_auxiliary(2 * model.channels, game, model)
 
-    def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
+    def _forward_core(self, observation: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         hidden = self.representation(observation)
         if self.film is not None:
             log_ratio = observation[:, self.ratio_channel, 0, 0]
@@ -244,10 +361,20 @@ class BraidAlphaZeroNet(PolicyValueNet):
         masked_mean = (projected * occupied).sum(dim=(2, 3), keepdim=True) / count
         masked_max = (projected + (occupied - 1.0) * 1e4).amax(dim=(2, 3))
         summary = torch.cat([masked_mean.flatten(1), masked_max], dim=1)
-        return self.policy_head(hidden), self.value_head(summary).squeeze(-1)
+        return self.policy_head(hidden), self.value_head(summary).squeeze(-1), summary
+
+    def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
+        policy, legacy, features = self._forward_core(observation)
+        return policy, self._search_value(observation, legacy, features)
+
+    def forward_with_auxiliary(
+        self, observation: Tensor
+    ) -> tuple[Tensor, Tensor, tuple[Tensor, Tensor, Tensor]]:
+        policy, value, features = self._forward_core(observation)
+        return policy, value, self._auxiliary(features)
 
 
-class SerialBraidNet(PolicyValueNet):
+class SerialBraidNet(BraidPolicyValueNet):
     """Network for the moving-window formulation.
 
     The observation is a `1 x w` window and the action space is `O(1)` in `L`,
@@ -289,8 +416,9 @@ class SerialBraidNet(PolicyValueNet):
         )
         self.global_policy = nn.Linear(64, self.n_global)
         self.value = nn.Sequential(nn.Linear(64, 1), nn.Tanh())
+        self._init_auxiliary(64, game, model)
 
-    def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
+    def _forward_core(self, observation: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         hidden = self.representation(observation)
         if self.film is not None:
             hidden = self.film(hidden, observation[:, self.ratio_channel, 0, 0])
@@ -311,7 +439,17 @@ class SerialBraidNet(PolicyValueNet):
         )
         features = self.body(summary)
         logits = torch.cat([positional, self.global_policy(features)], dim=1)
-        return logits, self.value(features).squeeze(-1)
+        return logits, self.value(features).squeeze(-1), features
+
+    def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
+        policy, legacy, features = self._forward_core(observation)
+        return policy, self._search_value(observation, legacy, features)
+
+    def forward_with_auxiliary(
+        self, observation: Tensor
+    ) -> tuple[Tensor, Tensor, tuple[Tensor, Tensor, Tensor]]:
+        policy, value, features = self._forward_core(observation)
+        return policy, value, self._auxiliary(features)
 
 
 def _mod_centered(value: Tensor, prime: int) -> Tensor:
@@ -320,7 +458,7 @@ def _mod_centered(value: Tensor, prime: int) -> Tensor:
     return torch.remainder(value + half, prime) - half
 
 
-class SequenceBraidNet(PolicyValueNet):
+class SequenceBraidNet(BraidPolicyValueNet):
     """Serial controller with an automatic head-relative whole-word scan.
 
     The environment and search are identical across these arms. Only the
@@ -339,6 +477,14 @@ class SequenceBraidNet(PolicyValueNet):
 
         if self.kind == "gru":
             self.gru = nn.GRU(game.observation_channels, self.states, batch_first=True)
+            encoded = self.states
+        elif self.kind == "scan-gru":
+            self.scan_window = game.serial_window
+            # The final feature is an explicit "forced scan" bit. It separates
+            # these virtual perception updates from ordinary decision features
+            # without adding an environment action or consuming move budget.
+            scan_features = game.observation_channels * self.scan_window + 1
+            self.gru = nn.GRU(scan_features, self.states, batch_first=True)
             encoded = self.states
         elif self.kind == "fsa":
             self.transitions = nn.Parameter(
@@ -372,6 +518,7 @@ class SequenceBraidNet(PolicyValueNet):
         )
         self.policy = nn.Linear(64, game.action_size)
         self.value = nn.Sequential(nn.Linear(64, 1), nn.Tanh())
+        self._init_auxiliary(64, game, model)
 
     @staticmethod
     def _burau_generators(strands: int, t: float) -> Tensor:
@@ -446,6 +593,29 @@ class SequenceBraidNet(PolicyValueNet):
             output, _ = self.gru(sequence)
             lengths = mask.sum(dim=1).long().clamp(min=1) - 1
             return output[torch.arange(output.shape[0], device=output.device), lengths]
+        if self.kind == "scan-gru":
+            sequence = observation[:, :, 0, :].permute(0, 2, 1)
+            batch, capacity, channels = sequence.shape
+            lengths = mask.sum(dim=1).long().clamp(min=1, max=capacity)
+            centres = torch.arange(capacity, device=sequence.device)[None, :, None]
+            offsets = torch.arange(
+                -(self.scan_window // 2),
+                self.scan_window // 2 + 1,
+                device=sequence.device,
+            )[None, None, :]
+            indexes = torch.remainder(centres + offsets, lengths[:, None, None])
+            source = sequence[:, None, :, :].expand(-1, capacity, -1, -1)
+            gathered = torch.gather(
+                source,
+                2,
+                indexes[:, :, :, None].expand(-1, -1, -1, channels),
+            ).flatten(2)
+            scan_bit = torch.ones(
+                batch, capacity, 1, device=sequence.device, dtype=sequence.dtype
+            )
+            output, _ = self.gru(torch.cat([gathered, scan_bit], dim=-1))
+            final = lengths - 1
+            return output[torch.arange(batch, device=output.device), final]
         if self.kind == "fsa":
             return self._scan_fsa(letters, mask)
         if self.kind == "finite-field":
@@ -493,11 +663,44 @@ class SequenceBraidNet(PolicyValueNet):
                 )
         return torch.stack([r.square().mean() for r in residuals]).mean()
 
-    def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
+    def _forward_core(self, observation: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         encoded = self.encode(observation)
         head = observation[:, :, 0, 0]
         features = self.body(torch.cat([encoded, head], dim=1))
-        return self.policy(features), self.value(features).squeeze(-1)
+        return self.policy(features), self.value(features).squeeze(-1), features
+
+    def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
+        policy, legacy, features = self._forward_core(observation)
+        return policy, self._search_value(observation, legacy, features)
+
+    def forward_with_auxiliary(
+        self, observation: Tensor
+    ) -> tuple[Tensor, Tensor, tuple[Tensor, Tensor, Tensor]]:
+        policy, value, features = self._forward_core(observation)
+        return policy, value, self._auxiliary(features)
+
+
+def load_policy_value_state_dict(
+    network: PolicyValueNet, state_dict: dict[str, Tensor]
+) -> bool:
+    """Load old braid checkpoints while initializing only new auxiliary towers.
+
+    Returns ``True`` when an old checkpoint was migrated. Any missing or extra
+    parameter outside ``auxiliary.*`` remains an error.
+    """
+    if not isinstance(network, BraidPolicyValueNet):
+        network.load_state_dict(state_dict)
+        return False
+    incompatible = network.load_state_dict(state_dict, strict=False)
+    bad_missing = [key for key in incompatible.missing_keys if not key.startswith("auxiliary.")]
+    bad_unexpected = [
+        key for key in incompatible.unexpected_keys if not key.startswith("auxiliary.")
+    ]
+    if bad_missing or bad_unexpected:
+        raise RuntimeError(
+            f"Incompatible checkpoint; missing={bad_missing}, unexpected={bad_unexpected}"
+        )
+    return bool(incompatible.missing_keys)
 
 
 def make_braid_network(game: BraidGameConfig, model: ModelConfig) -> PolicyValueNet:
