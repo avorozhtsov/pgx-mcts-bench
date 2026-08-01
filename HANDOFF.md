@@ -62,62 +62,70 @@ every table in this project.
 
 ## Running now
 
+There is **no active promotion queue**. Do not infer one from old queue files or
+from the presence of ladder worker processes.
+
 | where | what |
 |---|---|
-| local, 4 slots | **leaders**, open-ended on unlabelled rungs: `u1-puct`, `wide-net`, `search-heavy`, `s-head-256`, `s-reg4` |
-| local, 4 slots | **climbers**, `--stop-after 16`: the other eleven, climbing to the top of the calibration set then exiting |
-| server, 3 containers | `s-burau-oracle`, `s-head-1stride`, `s-reg8` |
+| local | Drain only. `s-paint2`, `s-fsa32`, `s-gru128`, and `s-head-128` are finishing the checkpoint that was already in progress. Their queue controller is gone, and the monitor stops each process group as soon as its target checkpoint appears. |
+| local | Three tape/scan workers are finishing rung 0 for `s-tape2`, `s-tape4`, and `s-scan-gru-tape2`. Their scheduler is paused so it cannot dispatch the fourth candidate or another rung; the pool is stopped after all three checkpoint files appear. |
+| local | `u1-puct` reached `stage26-after.pt` and has already stopped. `wide-net`, `search-heavy`, `s-head-256`, `s-reg4`, and `s-ff4-p5` are deliberately not running. |
+| Nebius | One isolated preemptible L40S VM, `braid-gpu-gate-20260801`, is running `braid-device-benchmark`. It compares CPU and CUDA at actor batches 8/32/64 for `u1-puct`, `s-w11-128`, `s-tape4`, and `s-scan-gru`. This is a throughput/cost gate, **not ladder training**. |
 
-Queue scripts live in the session scratchpad (`queue-lead.py`, `queue-climb.py`,
-`jobs-*.jsonl`). One job per candidate, process-group isolation so SIGTERM kills
-the tree, start rate-limited to one per 20s — a gate on `getloadavg` cannot see a
-job launched five seconds ago and will happily burst-start eight onto a full
-machine.
+The Nebius benchmark has a five-minute read-only heartbeat. It reports phase
+changes, process failure, preemption, result completion, and spend thresholds.
+It must not start or restart work. The authorized cap for the disposable gate VM
+is $20; retrieve the reports and delete the VM when the gate finishes.
 
-The split exists because **slowest-first only works when jobs terminate.** The
-leaders are on rungs that can only end at the cap, so they held all eight slots
-for nine hours and eight arms never started. Bounded targets for the climbers fix
-that.
+The production LocusCanvas host is no longer a benchmark execution target. Do
+not schedule knot training there and do not carry its historical `--cpus=1.2`
+cap into Nebius sizing. The old host log remains an artifact of the earlier run,
+not current operational guidance.
 
-### The server
+The reproducible, account-neutral Nebius lifecycle is in
+[`docs/nebius-device-gate.md`](docs/nebius-device-gate.md): dedicated
+least-privilege service account, registry image, preemptible VM, device gate,
+artifact retrieval, and teardown. It intentionally contains no project IDs,
+addresses, SSH keys, or tokens.
 
-`locuscanvas.com` / `89.169.108.199`, user `artemvorozhtsov`, key `~/.ssh/id_ed25519`,
-passwordless sudo. Full details in `pgx-mcts-bench/artifacts/oracle/locuscanvas_log.md`.
+### What happens next
 
-**It runs the user's production stack.** `locuscanvas-postgres` and
-`locuscanvas-persona-backend` have been in restart loops since the machine last
-booted — a permissions failure on `/var/run/postgresql`, unrelated to the training
-containers and untouched. Training is capped at `--cpus=1.2` with
-`OMP_NUM_THREADS=1` each so it cannot starve the web services.
+1. Finish the device gate and copy its JSON and Markdown reports locally.
+2. Choose CPU, GPU, or a hybrid configuration from equal-work time and cost.
+3. Delete the benchmark VM and its temporary IAM resources.
+4. Select the top nine conceptually different candidates plus five interesting
+   candidates (`s-tape4`, not `s-tape2`, is the preferred tape representative).
+5. Transfer their completed checkpoints and explicitly start promotion to rung
+   18. Promotion has **not** started yet.
 
 ## Open, in rough order of value
 
-1. **A second seed.** Every number in every table is one seed. `--stop-after 16`
-   makes a clean replication cheap: 15 arms over the calibration set only. The
-   jobs file (`jobs-seed1.jsonl`) already exists and was never run.
-2. **Add `--bounds` to the running jobs** so the ratchet accumulates instead of
-   needing to be re-seeded by hand.
+1. **Finish the Nebius device gate and choose the rental shape.** Compare
+   equal-work iteration time and cost, not forward-pass latency. The small models
+   may leave an L40S under-filled; CPU or a hybrid split remains a live outcome.
+2. **Promote the selected portfolio to rung 18.** Start only after the device
+   decision, checkpoint transfer, and an explicit launch. The intended portfolio
+   is nine top but conceptually different candidates plus five interesting ones.
 3. **Store the unknotting sequence as the witness.** `bounds.py` currently records
    the knot's defining word, so a bound can be attributed but not re-verified.
    Until then these are trusted claims, not checkable ones.
-4. **Run `braid-ladder-rescore`.** Recorded `cc` is measured once, at promotion,
+4. **Add `--bounds` to the promotion jobs** so the ratchet accumulates instead of
+   needing to be re-seeded by hand.
+5. **Run `braid-ladder-rescore`.** Recorded `cc` is measured once, at promotion,
    with the weights of that moment. The rescore re-measures with current weights
    and has already shown drift larger than the gaps between adjacent rows —
    `s-gru128` moved 2.10 → 3.33 on one rung. It was killed by a restart and never
    completed.
-5. **`s-burau-oracle` has not cleared rung 9 in nine hours.** Meanwhile
-   `s-head-1stride` — plain window, worst stride set, no accumulator — went from
-   rung 1 to 14 on the same box. If the oracle caps, that is evidence against the
-   whole whole-tape-accumulator direction, and it applies with more force to
-   `s-fsa32`, `s-gru128` and `s-ff4-p5`, which are *learning* what it is handed.
-6. **Certified lower bounds** (`|σ|/2`, `|s|/2`, `|τ|`) with branch-and-bound —
+6. **Run a second seed after portfolio selection.** Every current leaderboard
+   number is one seed. Replicate the selected set rather than spending on every
+   discarded arm; the old `jobs-seed1.jsonl` is input material, not an active
+   queue.
+7. **Certified lower bounds** (`|σ|/2`, `|s|/2`, `|τ|`) with branch-and-bound —
    what turns an upper bound into `u(K) = n`. Unaffected by the zero-knowledge
    constraint: bounds verify output, they are not features. **Partly done:**
    `rf_knots.invariants` computes `|σ|/2` per knot and names the knot against a
    table of 2870, which is where the exact `u` on 19 rungs came from. What is
    missing is `|s|/2`, `|τ|`, and any of it being wired into the search.
-7. **Batch the MCTS leaf evaluations.** 7.8× measured on this laptop, and the
-   prerequisite for a GPU ever being worth renting.
 
 ## Process notes
 
