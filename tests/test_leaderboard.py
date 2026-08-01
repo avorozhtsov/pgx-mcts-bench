@@ -14,6 +14,7 @@ def _stage(
     iterations: int,
     *,
     crossings: float = 1.0,
+    solve_rate: float = 0.5,
     moves_10: float = 10.0,
     crossings_10: float | None = None,
 ) -> dict:
@@ -28,8 +29,8 @@ def _stage(
         "by_ratio": {
             "1000.0": {
                 "crossings": crossings,
-                "solved": 0.5,
-                "expected_crossings": crossings / 0.5,
+                "solved": solve_rate,
+                "expected_crossings": crossings / solve_rate,
             },
             "10.0": {
                 "crossings": crossings if crossings_10 is None else crossings_10,
@@ -107,11 +108,49 @@ def test_newest_snapshot_wins_and_render_has_iteration_columns(tmp_path: Path) -
     assert len(rows) == 1
     assert rows[0].checkpoint == server
     table = render(rows)
-    assert "avgΔ(n)" in table
-    assert "avgΔmv(n)" in table
-    assert "avgΔL10:1(n)" in table
+    assert " n  avg_sr   avgΔ  avgΔmv" in table
+    assert "avgΔ(n)" not in table
+    assert "avgΔmv(n)" not in table
+    assert "avg_sr" in table
+    assert "cc/sr" not in table
+    assert "avgΔL10:1" in table
+    assert "avgΔL10:1(n)" not in table
     assert "it/r" in table
     assert table.rstrip().endswith("4   4.00")
+
+
+def test_average_solve_rate_uses_all_available_rungs(tmp_path: Path) -> None:
+    _save(
+        tmp_path,
+        "arm",
+        [
+            _stage(0, 2, solve_rate=1.0),
+            _stage(1, 2, solve_rate=0.5),
+            _stage(2, 2, solve_rate=0.75),
+        ],
+    )
+
+    rows, warnings = leaderboard([tmp_path])
+
+    assert warnings == []
+    assert rows[0].solve_rate == 0.75
+    assert rows[0].average_solve_rate == 0.75
+    assert rows[0].solve_rate_rungs == 3
+
+
+def test_newer_shallow_benchmark_does_not_hide_deeper_resume_checkpoint(
+    tmp_path: Path,
+) -> None:
+    deep = _save(tmp_path / "ladder", "same-arm", [_stage(0, 2), _stage(1, 4)])
+    shallow = _save(tmp_path / "device-benchmark", "same-arm", [_stage(0, 1)])
+    os.utime(deep, ns=(1, 1))
+    os.utime(shallow, ns=(2, 2))
+
+    rows, warnings = leaderboard([tmp_path])
+
+    assert warnings == []
+    assert len(rows) == 1
+    assert rows[0].checkpoint == deep
 
 
 def test_average_gap_uses_theorem_then_achieved_min_for_unknown_rungs(

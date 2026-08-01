@@ -17,11 +17,11 @@ import torch
 
 from pgx_mcts_bench.ladder import RATIOS, STAGES
 
-DEFAULT_ROOTS = (
-    Path("artifacts/deep-ladder"),
-    Path("artifacts/oracle-sync"),
-    Path("artifacts/oracle"),
-)
+# The artifact tree contains local runs, copied server snapshots, and newly added
+# candidate families.  Discovery plus per-candidate selection below is safer
+# than maintaining a list of run names that becomes stale whenever a new root is
+# copied in.
+DEFAULT_ROOTS = (Path("artifacts"),)
 
 # Negative-result arms remain reproducible and their checkpoints remain intact,
 # but they no longer compete in the live standings.  Their post-mortems belong
@@ -34,6 +34,7 @@ class RungScore:
     stage: int
     crossings: float
     optimal_crossings: int
+    solve_rate: float = float("nan")
     moves_10: float = float("nan")
     loss_10: float = float("nan")
 
@@ -49,6 +50,8 @@ class LeaderboardRow:
     iterations_per_rung: float
     crossings: float
     solve_rate: float
+    average_solve_rate: float
+    solve_rate_rungs: int
     expected_crossings: float
     rung_scores: tuple[RungScore, ...]
     top_gap: float = float("nan")
@@ -121,6 +124,7 @@ def load_row(path: Path) -> LeaderboardRow | None:
     # resume may revisit a rung; "achieved" means the best result actually
     # recorded there, while total_it still counts every attempt.
     best_crossings: dict[int, tuple[float, int]] = {}
+    best_solve_rates: dict[int, float] = {}
     best_moves: dict[int, float] = {}
     best_loss_10: dict[int, float] = {}
     for record in records:
@@ -135,6 +139,13 @@ def load_row(path: Path) -> LeaderboardRow | None:
                     measured_crossings,
                     int(record.get("optimal_crossings", -1)),
                 )
+        measured_solve_rate = _number(
+            ((record.get("by_ratio") or {}).get(ratio) or {}).get("solved")
+        )
+        if not math.isnan(measured_solve_rate):
+            best_solve_rates[stage] = max(
+                best_solve_rates.get(stage, -float("inf")), measured_solve_rate
+            )
         ratio_10 = (record.get("by_ratio") or {}).get("10.0") or {}
         measured_moves = _number(ratio_10.get("moves"))
         if not math.isnan(measured_moves):
@@ -145,12 +156,15 @@ def load_row(path: Path) -> LeaderboardRow | None:
             best_loss_10[stage] = min(
                 best_loss_10.get(stage, float("inf")), measured_loss_10
             )
-    measured_stages = sorted(set(best_crossings) | set(best_moves) | set(best_loss_10))
+    measured_stages = sorted(
+        set(best_crossings) | set(best_solve_rates) | set(best_moves) | set(best_loss_10)
+    )
     rung_scores = tuple(
         RungScore(
             stage=stage,
             crossings=best_crossings.get(stage, (float("nan"), -1))[0],
             optimal_crossings=best_crossings.get(stage, (float("nan"), -1))[1],
+            solve_rate=best_solve_rates.get(stage, float("nan")),
             moves_10=best_moves.get(stage, float("nan")),
             loss_10=best_loss_10.get(stage, float("nan")),
         )
@@ -166,6 +180,12 @@ def load_row(path: Path) -> LeaderboardRow | None:
         iterations_per_rung=total_iterations / rungs_cleared,
         crossings=crossings,
         solve_rate=solve_rate,
+        average_solve_rate=(
+            sum(best_solve_rates.values()) / len(best_solve_rates)
+            if best_solve_rates
+            else float("nan")
+        ),
+        solve_rate_rungs=len(best_solve_rates),
         expected_crossings=expected,
         rung_scores=rung_scores,
     )
@@ -173,7 +193,7 @@ def load_row(path: Path) -> LeaderboardRow | None:
 
 def leaderboard(roots: Iterable[Path]) -> tuple[list[LeaderboardRow], list[str]]:
     """Load and rank the newest valid checkpoint for each candidate."""
-    newest: dict[str, tuple[int, LeaderboardRow]] = {}
+    best: dict[str, tuple[tuple[int, int, int], LeaderboardRow]] = {}
     warnings: list[str] = []
     for path in discover_checkpoints(roots):
         try:
@@ -186,11 +206,15 @@ def leaderboard(roots: Iterable[Path]) -> tuple[list[LeaderboardRow], list[str]]
         if row.name in RETIRED_CANDIDATES:
             continue
         modified = path.stat().st_mtime_ns
-        previous = newest.get(row.name)
-        if previous is None or modified > previous[0]:
-            newest[row.name] = (modified, row)
+        # A fresh smoke/device checkpoint must not hide a deeper resumable run.
+        # Prefer progress first, then coverage, and use modification time only
+        # to choose between equally advanced snapshots.
+        rank = (row.highest_stage, row.rungs_cleared, modified)
+        previous = best.get(row.name)
+        if previous is None or rank > previous[0]:
+            best[row.name] = (rank, row)
 
-    rows = [entry[1] for entry in newest.values()]
+    rows = [entry[1] for entry in best.values()]
 
     # Labelled rungs use their theorem. Unknown rungs use the best achieved cc in
     # the discovered population, turning the reference into a live ratchet.
@@ -307,8 +331,8 @@ def _percent(value: float) -> str:
 def render(rows: list[LeaderboardRow]) -> str:
     """Render a fixed-width table that stays compact in terminals and chat."""
     lines = [
-        "candidate            r  top           u    sr    cc  cc/sr   gap  "
-        "avgΔ(n)  avgΔmv(n)  avgΔL10:1(n)   it   it/r",
+        "candidate            r  top           u    sr    cc   gap   n  "
+        "avg_sr   avgΔ  avgΔmv  avgΔL10:1   it   it/r",
         "─" * 124,
     ]
     for row in rows:
@@ -321,11 +345,12 @@ def render(rows: list[LeaderboardRow]) -> str:
         lines.append(
             f"{row.name:<20} {row.highest_stage:>2}  {row.highest_rung:<12} {u:>2}  "
             f"{_decimal(row.solve_rate):>4}  {_decimal(row.crossings):>4}  "
-            f"{_decimal(row.expected_crossings):>5}  "
             f"{_decimal(row.top_gap):>5}  "
-            f"{_decimal(row.average_gap):>5}({row.gap_rungs:>2}) "
-            f"{_decimal(row.average_move_delta):>7}({row.move_delta_rungs:>2}) "
-            f"{_decimal(row.average_loss_10_delta):>9}({row.loss_10_delta_rungs:>2}) "
+            f"{row.gap_rungs:>2}  "
+            f"{_decimal(row.average_solve_rate):>6}  "
+            f"{_decimal(row.average_gap):>5}  "
+            f"{_decimal(row.average_move_delta):>7}  "
+            f"{_decimal(row.average_loss_10_delta):>11} "
             f"{row.total_iterations:>4} {row.iterations_per_rung:>6.2f}"
         )
     return "\n".join(lines) + "\n"
