@@ -255,6 +255,7 @@ def _worker_init() -> None:
     import torch
 
     torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
     enable_jax_compilation_cache()
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
@@ -25,6 +26,13 @@ class Position:
     # All positions from one episode share this seed, giving the four auxiliary
     # members a deterministic per-episode bootstrap mask.
     episode_seed: int = 0
+    # A solved trajectory discovered by another scientist. Its realized costs
+    # are certified upper bounds, not equality labels for this network.
+    shared_witness: bool = False
+    # Distillation-only exact serial state and the parallel teacher edit. They
+    # define a bounded option target; ordinary self-play leaves both unset.
+    option_state: Any = None
+    target_external_action: int = -1
 
 
 GameRecord = list[Position]

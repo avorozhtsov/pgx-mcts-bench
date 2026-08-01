@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
@@ -32,6 +32,140 @@ from pgx_mcts_bench.training import (
 )
 
 app = typer.Typer(no_args_is_help=True)
+
+
+@app.command("braid-adaptive-scientists")
+def braid_adaptive_scientists(
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    scientist: Annotated[
+        list[str] | None,
+        typer.Option(help="Repeat NAME=RUNG23_CHECKPOINT; defaults to the deep-ladder trio"),
+    ] = None,
+    rounds: Annotated[int, typer.Option(min=1)] = 20,
+    pool_size: Annotated[int, typer.Option(min=1)] = 200,
+    alpha: Annotated[float, typer.Option(min=0.0)] = 1.0,
+    proposal_temperature: Annotated[float, typer.Option(min=0.0)] = 1.0,
+    group_temperature: Annotated[float, typer.Option(min=0.0)] = 1.0,
+    starvation_rounds: Annotated[
+        int, typer.Option(min=0, help="0 uses the fairness guarantee 2*N")
+    ] = 0,
+    selfplay_games: Annotated[int, typer.Option(min=1)] = 2,
+    train_steps: Annotated[int, typer.Option(min=0)] = 16,
+    batch_size: Annotated[int, typer.Option(min=1)] = 32,
+    simulations: Annotated[
+        int, typer.Option(min=0, help="0 preserves each rung-23 candidate setting")
+    ] = 0,
+    seed: int = 0,
+    device: str = "cpu",
+    require_factorized: Annotated[
+        bool,
+        typer.Option("--require-factorized/--allow-legacy-proxy"),
+    ] = False,
+) -> None:
+    """Grow a shared curriculum proposed by diverse rung-23 scientists."""
+    from pgx_mcts_bench.adaptive_scientists import (
+        default_rung23_checkpoints,
+        run_adaptive_scientists,
+    )
+
+    if scientist:
+        checkpoints: dict[str, Path] = {}
+        for value in scientist:
+            if "=" not in value:
+                raise typer.BadParameter("--scientist must be NAME=CHECKPOINT")
+            name, raw_path = value.split("=", 1)
+            path = Path(raw_path)
+            if not path.is_file():
+                raise typer.BadParameter(f"checkpoint does not exist: {path}")
+            checkpoints[name] = path
+    else:
+        checkpoints = default_rung23_checkpoints(Path.cwd())
+        missing = [path for path in checkpoints.values() if not path.is_file()]
+        if missing:
+            raise typer.BadParameter(f"default checkpoint does not exist: {missing[0]}")
+    report = run_adaptive_scientists(
+        checkpoints, output, rounds=rounds, pool_size=pool_size, alpha=alpha,
+        proposal_temperature=proposal_temperature, group_temperature=group_temperature,
+        starvation_rounds=starvation_rounds, selfplay_games=selfplay_games,
+        train_steps=train_steps, batch_size=batch_size, simulations=simulations,
+        seed=seed, device=device, require_factorized=require_factorized,
+    )
+    typer.echo(json.dumps(report, indent=2))
+
+
+@app.command("braid-triad-build")
+def braid_triad_build(
+    window: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    scan: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    tape: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(dir_okay=False)],
+    device: str = "cpu",
+) -> None:
+    """Assemble s-triad-wst from the fixed r18/r10/r8 parent snapshots."""
+    from pgx_mcts_bench.triad import build_triad_checkpoint
+
+    report = build_triad_checkpoint(window, scan, tape, output, device=device)
+    typer.echo(json.dumps(asdict(report), indent=2))
+
+
+@app.command("braid-triad-frontier")
+def braid_triad_frontier(
+    checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    eval_games: Annotated[int, typer.Option(min=1)] = 12,
+    seed: int = 0,
+    device: str = "cpu",
+    start_rung: Annotated[int, typer.Option(min=0)] = 0,
+    stop_rung: int = -1,
+    stop_at_first_failure: Annotated[
+        bool,
+        typer.Option("--stop-at-first-failure/--all-rungs"),
+    ] = True,
+) -> None:
+    """Find the first rung where the frozen triad should begin training."""
+    from pgx_mcts_bench.triad import evaluate_frozen_triad
+
+    report = evaluate_frozen_triad(
+        checkpoint,
+        output,
+        eval_games=eval_games,
+        seed=seed,
+        device=device,
+        stop_at_first_failure=stop_at_first_failure,
+        start_rung=start_rung,
+        stop_rung=stop_rung,
+        log=typer.echo,
+    )
+    typer.echo(f"Recommended first training rung: {report['recommended_training_rung']}")
+
+
+@app.command("braid-distill-u1")
+def braid_distill_u1(
+    teacher: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    episodes: Annotated[int, typer.Option(min=1)] = 128,
+    train_steps: Annotated[int, typer.Option(min=1)] = 2_000,
+    seed: int = 0,
+    device: str = "cpu",
+    internal_horizon: Annotated[int, typer.Option(min=1)] = 5,
+    option_beam_width: Annotated[int, typer.Option(min=1)] = 8,
+    option_batch_size: Annotated[int, typer.Option(min=1)] = 4,
+) -> None:
+    """Distill the latest parallel u1 policy and factorized values into serial students."""
+    from pgx_mcts_bench.distill import run_distillation
+
+    report = run_distillation(
+        teacher,
+        output,
+        episodes=episodes,
+        train_steps=train_steps,
+        seed=seed,
+        device=device,
+        internal_horizon=internal_horizon,
+        option_beam_width=option_beam_width,
+        option_batch_size=option_batch_size,
+    )
+    typer.echo(json.dumps(asdict(report), indent=2))
 
 
 def _config(
@@ -384,6 +518,10 @@ def braid_ladder(
     chosen = candidates()
     if candidates_only:
         wanted = {n.strip() for n in candidates_only.split(",") if n.strip()}
+        known = {candidate.name for candidate in chosen}
+        unknown = sorted(wanted - known)
+        if unknown:
+            raise typer.BadParameter(f"unknown candidate(s): {', '.join(unknown)}")
         chosen = [c for c in chosen if c.name in wanted]
     if use_auxiliary_value:
         chosen = [replace(candidate, use_auxiliary_value=True) for candidate in chosen]
@@ -394,6 +532,11 @@ def braid_ladder(
 
     results = []
     if workers <= 1:
+        # A one-candidate container does not enter ProcessPoolExecutor, so its
+        # initializer would otherwise never run.  That left Torch/BLAS free to
+        # create one thread per vCPU for every queued candidate, defeating the
+        # host-level CPU queue and producing severe oversubscription.
+        _worker_init()
         for candidate in chosen:
             results.append(
                 run_ladder(

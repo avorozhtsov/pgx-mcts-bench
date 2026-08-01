@@ -21,6 +21,8 @@ promotion signal is held out rather than measured on what was just trained on.
 from __future__ import annotations
 
 import json
+import signal
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -159,9 +161,12 @@ class Candidate:
     # the environment. Three actions regardless of the palette size.
     serial_colours: int = 0
     serial_tape_symbols: int = 0
+    serial_tape_preserve_shift: bool = False
     serial_encoder: str = ""
     serial_encoder_states: int = 0
     serial_encoder_prime: int = 5
+    serial_ensemble: str = ""
+    serial_internal_horizon: int = 0
     use_auxiliary_value: bool = False
     train: bool = True
 
@@ -378,6 +383,74 @@ def tape_scan_arms() -> list[Candidate]:
     ]
 
 
+def distilled_arms() -> list[Candidate]:
+    """Serial students initialized by behavioural distillation from ``u1-puct``.
+
+    The names deliberately differ from the raw serial arms: a distilled checkpoint
+    is an initialization, not evidence that the corresponding raw candidate cleared
+    any rung.  All four start with the factorized critic active because distillation
+    supplies solve, conditional crossing-change, and conditional move targets.
+    """
+    base = dict(
+        exploration="u1",
+        simulations=128,
+        channels=32,
+        train_steps=96,
+        serial_window=7,
+        serial_act_width=1,
+        use_auxiliary_value=True,
+        serial_internal_horizon=5,
+    )
+    return [
+        Candidate("d-head128-u1", "head-only student distilled from u1-puct", **base),
+        Candidate(
+            "d-gru128-u1",
+            "GRU-128 serial student distilled from u1-puct",
+            serial_encoder="gru",
+            serial_encoder_states=128,
+            **base,
+        ),
+        Candidate(
+            "d-fsa32-u1",
+            "32-state soft-FSA serial student distilled from u1-puct",
+            serial_encoder="fsa",
+            serial_encoder_states=32,
+            **base,
+        ),
+        Candidate(
+            "d-tape4-u1",
+            "aligned 4-symbol tape student distilled from u1-puct",
+            serial_tape_symbols=4,
+            **base,
+        ),
+    ]
+
+
+def ensemble_arms() -> list[Candidate]:
+    """Checkpoint-composed local/global/memory policy ensemble.
+
+    ``s-triad-wst`` is initialized separately from fixed parent snapshots.  The
+    ladder candidate defines its shared semantic environment and trainable
+    mixer; it does not imply that the child has inherited any parent's rung.
+    """
+    return [
+        Candidate(
+            "s-triad-wst",
+            "normalized frozen ensemble: window-128 + scan-GRU + tape4",
+            exploration="u1",
+            simulations=128,
+            channels=32,
+            train_steps=96,
+            serial_window=7,
+            serial_act_width=7,
+            serial_tape_symbols=4,
+            serial_tape_preserve_shift=True,
+            serial_ensemble="window-scan-tape",
+            use_auxiliary_value=True,
+        )
+    ]
+
+
 def central_benchmark_arms() -> list[Candidate]:
     by_name = {c.name: c for c in serial_arms() + memory_arms() + invariant_learning_arms()}
     return [
@@ -417,6 +490,8 @@ def candidates() -> list[Candidate]:
         + colour_arms()
         + invariant_learning_arms()
         + tape_scan_arms()
+        + distilled_arms()
+        + ensemble_arms()
     )
 
 
@@ -590,9 +665,12 @@ def _config(
         serial_registers=candidate.serial_registers,
         serial_colours=candidate.serial_colours,
         serial_tape_symbols=candidate.serial_tape_symbols,
+        serial_tape_preserve_shift=candidate.serial_tape_preserve_shift,
         serial_encoder=candidate.serial_encoder,
         serial_encoder_states=candidate.serial_encoder_states,
         serial_encoder_prime=candidate.serial_encoder_prime,
+        serial_ensemble=candidate.serial_ensemble,
+        serial_internal_horizon=candidate.serial_internal_horizon,
     )
     return ExperimentConfig(
         game=game,
@@ -723,6 +801,66 @@ def _atomic_torch_save(payload: dict, path: Path) -> None:
     temporary.replace(path)
 
 
+def _atomic_json_save(payload: dict, path: Path) -> None:
+    """Publish live progress without exposing a partly written status file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, indent=2, default=float) + "\n")
+    temporary.replace(path)
+
+
+def _duration(seconds: float | None) -> str:
+    if seconds is None:
+        return "pending"
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    minutes, remainder = divmod(int(seconds + 0.5), 60)
+    if minutes < 60:
+        return f"{minutes}m {remainder:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m"
+
+
+def _publish_ladder_status(
+    *,
+    path: Path | None,
+    candidate_name: str,
+    stage_index: int,
+    stage: tuple[str, int],
+    phase: str,
+    current_iteration: int,
+    iteration_cap: int,
+    iteration_durations: list[float],
+    phase_seconds: float | None = None,
+) -> None:
+    if path is None:
+        return
+    estimated_iteration = (
+        sum(iteration_durations[-3:]) / len(iteration_durations[-3:])
+        if iteration_durations
+        else None
+    )
+    remaining = max(0, iteration_cap - current_iteration)
+    _atomic_json_save(
+        {
+            "candidate": candidate_name,
+            "stage": stage_index,
+            "source": stage[0],
+            "scramble": stage[1],
+            "phase": phase,
+            "iteration": current_iteration,
+            "iteration_cap": iteration_cap,
+            "phase_seconds": phase_seconds,
+            "estimated_iteration_seconds": estimated_iteration,
+            "estimated_rung_seconds": (
+                estimated_iteration * remaining if estimated_iteration is not None else None
+            ),
+            "updated_at_unix": time.time(),
+        },
+        path,
+    )
+
+
 def _save_ladder_progress(
     path: Path,
     *,
@@ -740,9 +878,12 @@ def _save_ladder_progress(
     solve_rate: float,
     crossings: float,
     consecutive_caps: int,
+    phase: str = "iteration-complete",
+    train_step: int = 0,
+    selfplay_complete: bool = False,
 ) -> None:
     payload = {
-        "version": 1,
+        "version": 2,
         "candidate": candidate.name,
         "candidate_spec": asdict(candidate),
         "stage_index": stage_index,
@@ -763,6 +904,9 @@ def _save_ladder_progress(
         "solve_rate": solve_rate,
         "crossings": crossings,
         "consecutive_caps": consecutive_caps,
+        "phase": phase,
+        "train_step": train_step,
+        "selfplay_complete": selfplay_complete,
     }
     _atomic_torch_save(payload, path)
 
@@ -782,7 +926,7 @@ def _restore_ladder_progress(
     identity. If the ladder changed, its trained weights and completed results
     remain useful, but training resumes at the newly inserted gap.
     """
-    if saved.get("version") != 1 or saved.get("candidate") != candidate.name:
+    if saved.get("version") not in (1, 2) or saved.get("candidate") != candidate.name:
         raise ValueError("Incompatible ladder progress checkpoint")
     if saved.get("candidate_spec") != asdict(candidate):
         raise ValueError("Candidate configuration changed since progress checkpoint")
@@ -822,6 +966,9 @@ def _restore_ladder_progress(
             "by_ratio": dict(saved.get("by_ratio", {})),
             "solve_rate": float(saved.get("solve_rate", float("nan"))),
             "crossings": float(saved.get("crossings", float("nan"))),
+            "phase": str(saved.get("phase", "iteration-complete")),
+            "train_step": int(saved.get("train_step", 0)),
+            "selfplay_complete": bool(saved.get("selfplay_complete", False)),
         }
     return result, start_stage, partial, int(saved.get("consecutive_caps", 0))
 
@@ -870,6 +1017,19 @@ def run_ladder(
     start_stage = 0
     path = checkpoint_dir / f"{candidate.name}.pt" if checkpoint_dir else None
     progress_path = checkpoint_dir / candidate.name / "progress.pt" if checkpoint_dir else None
+    interrupt_path = checkpoint_dir / candidate.name / "interrupt.pt" if checkpoint_dir else None
+    status_path = checkpoint_dir / candidate.name / "status.json" if checkpoint_dir else None
+    termination = {"requested": False, "signal": int(signal.SIGTERM)}
+
+    def request_termination(signum, _frame) -> None:
+        # Python runs this callback between bytecode instructions, but checkpoint
+        # serialization still does not belong in a signal handler.  The training
+        # loop observes this flag after its next safe unit of work.
+        termination["requested"] = True
+        termination["signal"] = int(signum)
+
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGTERM, request_termination)
     partial: dict | None = None
     consecutive_caps = 0
     if path is not None and path.exists():
@@ -893,8 +1053,17 @@ def run_ladder(
             f"({len(cleared)} cleared" + (f", filling {gaps}" if gaps else "") + ")"
         )
 
-    if progress_path is not None and progress_path.exists():
-        saved_progress = torch.load(progress_path, map_location=device, weights_only=False)
+    progress_candidates = [
+        candidate_path
+        for candidate_path in (progress_path, interrupt_path)
+        if candidate_path is not None and candidate_path.exists()
+    ]
+    progress_candidates.sort(
+        key=lambda candidate_path: candidate_path.stat().st_mtime_ns,
+        reverse=True,
+    )
+    for saved_progress_path in progress_candidates:
+        saved_progress = torch.load(saved_progress_path, map_location=device, weights_only=False)
         try:
             result, start_stage, partial, consecutive_caps = _restore_ladder_progress(
                 saved_progress,
@@ -905,10 +1074,18 @@ def run_ladder(
                 rng=rng,
             )
         except (KeyError, TypeError, ValueError) as error:
-            log(f"    [{candidate.name}] ignored incompatible progress: {error}")
+            log(
+                f"    [{candidate.name}] ignored incompatible "
+                f"{saved_progress_path.name}: {error}"
+            )
         else:
             detail = f", iteration {partial['iteration']}" if partial else ""
-            log(f"    [{candidate.name}] restored rung progress at stage {start_stage}{detail}")
+            phase = f", phase {partial['phase']}" if partial else ""
+            log(
+                f"    [{candidate.name}] restored {saved_progress_path.name} "
+                f"at stage {start_stage}{detail}{phase}"
+            )
+            break
 
     def snapshot(index: int, when: str, stage_result: StageResult | None = None) -> None:
         """Weights either side of a stage, kept rather than overwritten.
@@ -938,6 +1115,72 @@ def run_ladder(
             },
             directory / f"stage{index:02d}-{when}.pt",
         )
+
+    def terminate_if_requested(
+        *,
+        stage_index: int,
+        iteration: int,
+        phase: str,
+        train_step: int,
+        selfplay_complete: bool,
+        stage_complete: bool,
+        history: list[float],
+        by_ratio: dict,
+        solve_rate: float,
+        crossings: float,
+        iteration_durations: list[float],
+    ) -> None:
+        if not termination["requested"]:
+            return
+        if interrupt_path is not None:
+            _publish_ladder_status(
+                path=status_path,
+                candidate_name=candidate.name,
+                stage_index=stage_index,
+                stage=STAGES[stage_index],
+                phase="interrupt-checkpoint",
+                current_iteration=iteration,
+                iteration_cap=max_iterations_per_stage,
+                iteration_durations=iteration_durations,
+            )
+            _save_ladder_progress(
+                interrupt_path,
+                candidate=candidate,
+                stage_index=stage_index,
+                iteration=iteration,
+                stage_complete=stage_complete,
+                network=network,
+                optimizer=optimizer,
+                replay=replay,
+                rng=rng,
+                result=result,
+                history=history,
+                by_ratio=by_ratio,
+                solve_rate=solve_rate,
+                crossings=crossings,
+                consecutive_caps=consecutive_caps,
+                phase=phase,
+                train_step=train_step,
+                selfplay_complete=selfplay_complete,
+            )
+            _publish_ladder_status(
+                path=status_path,
+                candidate_name=candidate.name,
+                stage_index=stage_index,
+                stage=STAGES[stage_index],
+                phase="interrupted",
+                current_iteration=iteration,
+                iteration_cap=max_iterations_per_stage,
+                iteration_durations=iteration_durations,
+            )
+            log(
+                f"    [{candidate.name}] SIGTERM checkpoint saved: {interrupt_path} "
+                f"(rung {stage_index}, iteration {iteration}, phase {phase}, "
+                f"train step {train_step})"
+            )
+        else:
+            log(f"    [{candidate.name}] SIGTERM requested without a checkpoint directory")
+        raise SystemExit(128 + termination["signal"])
 
     for index, stage in enumerate(STAGES):
         if index < start_stage:
@@ -974,22 +1217,158 @@ def run_ladder(
         reason = "capped"
         iterations = resumed_partial["iteration"] if resumed_partial else 0
         history: list[float] = resumed_partial["history"] if resumed_partial else []
+        iteration_durations: list[float] = []
+        status_context = {
+            "path": status_path,
+            "candidate_name": candidate.name,
+            "stage_index": index,
+            "stage": stage,
+            "iteration_cap": max_iterations_per_stage,
+        }
 
         for iteration in range(iterations, max_iterations_per_stage):
+            current_iteration = iteration + 1
+            resuming_active_iteration = bool(
+                resumed_partial
+                and iteration == resumed_partial["iteration"]
+                and resumed_partial.get("phase") in {"selfplay-complete", "training"}
+            )
+            resume_train_step = (
+                int(resumed_partial.get("train_step", 0))
+                if resuming_active_iteration
+                else 0
+            )
+            resume_selfplay = bool(
+                resuming_active_iteration and resumed_partial.get("selfplay_complete", False)
+            )
+            estimated_iteration = (
+                sum(iteration_durations[-3:]) / len(iteration_durations[-3:])
+                if iteration_durations
+                else None
+            )
+            remaining_after = max_iterations_per_stage - current_iteration
+            estimated_rung = (
+                estimated_iteration * (remaining_after + 1)
+                if estimated_iteration is not None
+                else None
+            )
+            log(
+                f"    [{candidate.name}] rung {index} iteration "
+                f"{current_iteration}/{max_iterations_per_stage} started; "
+                f"ETA {_duration(estimated_iteration)}/iteration, "
+                f"<= {_duration(estimated_rung)} to rung cap"
+            )
+            iteration_started = time.perf_counter()
+            terminate_if_requested(
+                stage_index=index,
+                iteration=iteration,
+                phase="iteration-start",
+                train_step=0,
+                selfplay_complete=False,
+                stage_complete=False,
+                history=history,
+                by_ratio=by_ratio,
+                solve_rate=solve_rate,
+                crossings=crossings,
+                iteration_durations=iteration_durations,
+            )
+            _publish_ladder_status(
+                **status_context,
+                phase="selfplay",
+                current_iteration=current_iteration,
+                iteration_durations=iteration_durations,
+            )
             if candidate.train:
-                seeds = [
-                    seed + index * 10_000 + iteration * 1_000 + g
-                    for g in range(config.train.selfplay_games)
-                ]
-                records = play_selfplay_games(
-                    game, search, [np.random.default_rng(s + 7) for s in seeds], seeds, 12
+                if resume_selfplay:
+                    selfplay_seconds = 0.0
+                    log(
+                        f"    [{candidate.name}] rung {index} iteration "
+                        f"{current_iteration}: resumed after self-play"
+                    )
+                else:
+                    phase_started = time.perf_counter()
+                    seeds = [
+                        seed + index * 10_000 + iteration * 1_000 + g
+                        for g in range(config.train.selfplay_games)
+                    ]
+                    records = play_selfplay_games(
+                        game, search, [np.random.default_rng(s + 7) for s in seeds], seeds, 12
+                    )
+                    for record in records:
+                        replay.add(record)
+                    selfplay_seconds = time.perf_counter() - phase_started
+                    log(
+                        f"    [{candidate.name}] rung {index} iteration {current_iteration}: "
+                        f"self-play {len(records)} games in {_duration(selfplay_seconds)}"
+                    )
+                terminate_if_requested(
+                    stage_index=index,
+                    iteration=iteration,
+                    phase="selfplay-complete",
+                    train_step=0,
+                    selfplay_complete=True,
+                    stage_complete=False,
+                    history=history,
+                    by_ratio=by_ratio,
+                    solve_rate=solve_rate,
+                    crossings=crossings,
+                    iteration_durations=iteration_durations,
                 )
-                for record in records:
-                    replay.add(record)
-                for _ in range(candidate.train_steps):
+                _publish_ladder_status(
+                    **status_context,
+                    phase="training",
+                    current_iteration=current_iteration,
+                    iteration_durations=iteration_durations,
+                    phase_seconds=selfplay_seconds,
+                )
+                phase_started = time.perf_counter()
+                for train_step in range(resume_train_step, candidate.train_steps):
                     train_alphazero_step(network, optimizer, replay, 32, torch.device(device))
+                    terminate_if_requested(
+                        stage_index=index,
+                        iteration=iteration,
+                        phase="training",
+                        train_step=train_step + 1,
+                        selfplay_complete=True,
+                        stage_complete=False,
+                        history=history,
+                        by_ratio=by_ratio,
+                        solve_rate=solve_rate,
+                        crossings=crossings,
+                        iteration_durations=iteration_durations,
+                    )
+                training_seconds = time.perf_counter() - phase_started
+                log(
+                    f"    [{candidate.name}] rung {index} iteration {current_iteration}: "
+                    + (
+                        f"training steps {resume_train_step + 1}-{candidate.train_steps} "
+                        f"in {_duration(training_seconds)}"
+                        if resume_train_step < candidate.train_steps
+                        else "training was already complete in interrupt.pt"
+                    )
+                )
+                terminate_if_requested(
+                    stage_index=index,
+                    iteration=iteration,
+                    phase="training",
+                    train_step=candidate.train_steps,
+                    selfplay_complete=True,
+                    stage_complete=False,
+                    history=history,
+                    by_ratio=by_ratio,
+                    solve_rate=solve_rate,
+                    crossings=crossings,
+                    iteration_durations=iteration_durations,
+                )
                 iterations += 1
             if not candidate.train or (iteration + 1) % eval_every == 0:
+                _publish_ladder_status(
+                    **status_context,
+                    phase="evaluation",
+                    current_iteration=current_iteration,
+                    iteration_durations=iteration_durations,
+                )
+                phase_started = time.perf_counter()
                 by_ratio = evaluate_stage(
                     game,
                     network,
@@ -998,6 +1377,11 @@ def run_ladder(
                     seed + 500_000 + index * 997,
                     bounds_path=bounds_path,
                     agent=candidate.name,
+                )
+                evaluation_seconds = time.perf_counter() - phase_started
+                log(
+                    f"    [{candidate.name}] rung {index} iteration {current_iteration}: "
+                    f"evaluation {eval_games} games/ratio in {_duration(evaluation_seconds)}"
                 )
                 rates = [v["solved"] for v in by_ratio.values()]
                 # Pooled over every episode rather than the worst ratio: see
@@ -1050,6 +1434,13 @@ def run_ladder(
                 and checkpoint_every > 0
                 and iterations % checkpoint_every == 0
             ):
+                _publish_ladder_status(
+                    **status_context,
+                    phase="checkpoint",
+                    current_iteration=current_iteration,
+                    iteration_durations=iteration_durations,
+                )
+                phase_started = time.perf_counter()
                 _save_ladder_progress(
                     progress_path,
                     candidate=candidate,
@@ -1067,6 +1458,42 @@ def run_ladder(
                     crossings=crossings,
                     consecutive_caps=consecutive_caps,
                 )
+                checkpoint_seconds = time.perf_counter() - phase_started
+                log(
+                    f"    [{candidate.name}] rung {index} iteration {current_iteration}: "
+                    f"checkpoint in {_duration(checkpoint_seconds)}"
+                )
+            if not promoted:
+                terminate_if_requested(
+                    stage_index=index,
+                    iteration=iterations,
+                    phase="iteration-complete",
+                    train_step=0,
+                    selfplay_complete=False,
+                    stage_complete=False,
+                    history=history,
+                    by_ratio=by_ratio,
+                    solve_rate=solve_rate,
+                    crossings=crossings,
+                    iteration_durations=iteration_durations,
+                )
+            iteration_seconds = time.perf_counter() - iteration_started
+            iteration_durations.append(iteration_seconds)
+            rolling_iteration = sum(iteration_durations[-3:]) / len(iteration_durations[-3:])
+            remaining = max_iterations_per_stage - current_iteration
+            log(
+                f"    [{candidate.name}] rung {index} iteration "
+                f"{current_iteration}/{max_iterations_per_stage} completed in "
+                f"{_duration(iteration_seconds)}; rolling ETA "
+                f"{_duration(rolling_iteration)}/iteration, "
+                f"<= {_duration(rolling_iteration * remaining)} to rung cap"
+            )
+            _publish_ladder_status(
+                **status_context,
+                phase="iteration-complete",
+                current_iteration=current_iteration,
+                iteration_durations=iteration_durations,
+            )
             if promoted:
                 break
             if not candidate.train:
@@ -1116,6 +1543,12 @@ def run_ladder(
             seconds=time.perf_counter() - stage_started,
         )
         result.stages.append(stage_result)
+        _publish_ladder_status(
+            **status_context,
+            phase="rung-complete",
+            current_iteration=iterations,
+            iteration_durations=iteration_durations,
+        )
         snapshot(index, "after", stage_result)
         regressed = [
             f"{v['source']}+{v['scramble']} {v['crossings']:.2f}/{v['optimal_crossings']}"
@@ -1172,6 +1605,19 @@ def run_ladder(
                 crossings=crossings,
                 consecutive_caps=consecutive_caps,
             )
+        terminate_if_requested(
+            stage_index=index,
+            iteration=iterations,
+            phase="stage-complete",
+            train_step=0,
+            selfplay_complete=False,
+            stage_complete=True,
+            history=history,
+            by_ratio=by_ratio,
+            solve_rate=solve_rate,
+            crossings=crossings,
+            iteration_durations=iteration_durations,
+        )
         if not promoted:
             if consecutive_caps >= max_consecutive_caps:
                 log(f"    [{candidate.name}] stopping: {consecutive_caps} rungs capped in a row")

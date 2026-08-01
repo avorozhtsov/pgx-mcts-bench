@@ -71,6 +71,15 @@ from the presence of ladder worker processes.
 | local | Three tape/scan workers are finishing rung 0 for `s-tape2`, `s-tape4`, and `s-scan-gru-tape2`. Their scheduler is paused so it cannot dispatch the fourth candidate or another rung; the pool is stopped after all three checkpoint files appear. |
 | local | `u1-puct` reached `stage26-after.pt` and has already stopped. `wide-net`, `search-heavy`, `s-head-256`, `s-reg4`, and `s-ff4-p5` are deliberately not running. |
 | Nebius | One isolated preemptible L40S VM, `braid-gpu-gate-20260801`, is running `braid-device-benchmark`. It compares CPU and CUDA at actor batches 8/32/64 for `u1-puct`, `s-w11-128`, `s-tape4`, and `s-scan-gru`. This is a throughput/cost gate, **not ladder training**. |
+| Nebius | The 16-vCPU concurrency gate completed 14/14 candidates successfully. Its reports were verified locally under `artifacts/nebius-cpu-gate-20260801`, and `braid-cpu-gate-20260801` was deleted. CPU won the deployment decision; rung 18 will use a 32-vCPU host with the bounded queue in `scripts/nebius_rung18_queue.sh`. No promotion VM or job is running yet. |
+
+New promotion workers are gracefully interruptible. `SIGTERM` sets a flag and,
+at the next safe self-play/evaluation boundary or optimizer step, atomically
+writes `checkpoints/<candidate>/interrupt.pt` with network, optimizer, replay,
+RNG, phase, and exact train-step state before exiting 143. Resume loads the
+newest compatible interrupt or ordinary progress checkpoint without repeating
+self-play or gradient steps. This cannot be retrofitted into the three local
+Python processes already running from older code.
 
 The Nebius benchmark has a five-minute read-only heartbeat. It reports phase
 changes, process failure, preemption, result completion, and spend thresholds.
@@ -90,19 +99,20 @@ addresses, SSH keys, or tokens.
 
 ### What happens next
 
-1. Finish the device gate and copy its JSON and Markdown reports locally.
-2. Choose CPU, GPU, or a hybrid configuration from equal-work time and cost.
-3. Delete the benchmark VM and its temporary IAM resources.
-4. Select the top nine conceptually different candidates plus five interesting
+1. Finish the remaining GPU measurements, copy their reports, and delete that
+   benchmark VM. They are diagnostic now; the promotion device decision is CPU.
+2. Select the top nine conceptually different candidates plus five interesting
    candidates (`s-tape4`, not `s-tape2`, is the preferred tape representative).
-5. Transfer their completed checkpoints and explicitly start promotion to rung
-   18. Promotion has **not** started yet.
+3. Create a 32-vCPU CPU host, transfer each selected candidate's completed
+   checkpoint into its isolated run root, and dry-run the bounded queue.
+4. Explicitly start promotion to rung 18. Promotion has **not** started yet.
 
 ## Open, in rough order of value
 
-1. **Finish the Nebius device gate and choose the rental shape.** Compare
-   equal-work iteration time and cost, not forward-pass latency. The small models
-   may leave an L40S under-filled; CPU or a hybrid split remains a live outcome.
+1. **Finish and tear down the Nebius GPU gate.** The CPU gate already made the
+   promotion decision: use 32 vCPUs and one queued candidate per physical core.
+   The remaining GPU rows complete the diagnostic report but do not block CPU
+   promotion preparation.
 2. **Promote the selected portfolio to rung 18.** Start only after the device
    decision, checkpoint transfer, and an explicit launch. The intended portfolio
    is nine top but conceptually different candidates plus five interesting ones.

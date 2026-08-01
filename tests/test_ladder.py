@@ -8,18 +8,30 @@ the first flat evaluation. So they are tested directly rather than through a run
 
 from __future__ import annotations
 
+import os
+import signal
+
 import numpy as np
+import pytest
 
 from pgx_mcts_bench.config import pick_stage
 from pgx_mcts_bench.game import make_game
 from pgx_mcts_bench.ladder import (
     STAGES,
     _config,
+    _duration,
     parallel_arms,
     promotion_reason,
     resume_point,
     stage_mixture,
 )
+
+
+def test_progress_duration_is_compact_and_human_readable() -> None:
+    assert _duration(None) == "pending"
+    assert _duration(12.4) == "12s"
+    assert _duration(125) == "2m 05s"
+    assert _duration(3 * 3600 + 12 * 60) == "3h 12m"
 
 
 def test_stages_are_monotone_in_unknotting_number_and_scramble() -> None:
@@ -680,4 +692,82 @@ def test_partial_rung_checkpoint_restores_training_state(tmp_path) -> None:
     assert start_stage == 0 and partial is not None
     assert partial["iteration"] == 3
     assert partial["history"] == [2.0]
+    assert partial["phase"] == "iteration-complete"
+    assert partial["train_step"] == 0
+    assert not partial["selfplay_complete"]
     assert caps == 0
+
+
+def test_sigterm_checkpoint_resumes_inside_training_step(tmp_path, monkeypatch) -> None:
+    import pgx_mcts_bench.ladder as ladder
+
+    candidate = parallel_arms()[1]
+    checkpoint_dir = tmp_path / "checkpoints"
+    previous_handler = signal.getsignal(signal.SIGTERM)
+
+    first_training_steps = 0
+
+    def empty_selfplay(*args, **kwargs):
+        return []
+
+    def request_term_during_training(*args, **kwargs):
+        nonlocal first_training_steps
+        first_training_steps += 1
+        if first_training_steps == 7:
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    monkeypatch.setattr(ladder, "play_selfplay_games", empty_selfplay)
+    monkeypatch.setattr(ladder, "train_alphazero_step", request_term_during_training)
+    try:
+        with pytest.raises(SystemExit) as interrupted:
+            ladder.run_ladder(
+                candidate,
+                checkpoint_dir=checkpoint_dir,
+                max_iterations_per_stage=1,
+                selfplay_games=1,
+                eval_games=4,
+                retro_games=0,
+                stop_after=0,
+                log=lambda *_args, **_kwargs: None,
+            )
+        assert interrupted.value.code == 128 + signal.SIGTERM
+
+        interrupt_path = checkpoint_dir / candidate.name / "interrupt.pt"
+        saved = ladder.torch.load(interrupt_path, map_location="cpu", weights_only=False)
+        assert saved["phase"] == "training"
+        assert saved["iteration"] == 0
+        assert saved["train_step"] == 7
+        assert saved["selfplay_complete"]
+
+        def repeated_selfplay(*args, **kwargs):
+            raise AssertionError("resumed iteration repeated self-play")
+
+        resumed_training_steps = 0
+
+        def count_resumed_training(*args, **kwargs):
+            nonlocal resumed_training_steps
+            resumed_training_steps += 1
+
+        monkeypatch.setattr(ladder, "play_selfplay_games", repeated_selfplay)
+        monkeypatch.setattr(ladder, "train_alphazero_step", count_resumed_training)
+        ladder.run_ladder(
+            candidate,
+            checkpoint_dir=checkpoint_dir,
+            max_iterations_per_stage=1,
+            selfplay_games=1,
+            eval_games=4,
+            retro_games=0,
+            stop_after=0,
+            log=lambda *_args, **_kwargs: None,
+        )
+        assert resumed_training_steps == candidate.train_steps - 7
+    finally:
+        signal.signal(signal.SIGTERM, previous_handler)
+
+    progress = ladder.torch.load(
+        checkpoint_dir / candidate.name / "progress.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert progress["stage_complete"]
+    assert progress["iteration"] == 1

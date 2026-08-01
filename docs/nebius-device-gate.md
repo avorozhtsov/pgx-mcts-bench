@@ -154,19 +154,74 @@ Current-rung checkpoints are atomic and include network, optimizer, replay,
 NumPy/Torch/CUDA RNG states, evaluation history, and completed capped rungs.
 `--checkpoint-every 1` is the default and is required on preemptible capacity.
 
-If CPU wins, use one worker per candidate/seed and do not let BLAS multiply every
-worker into many threads:
+CPU won the gate. Rung-18 promotion uses a 32-vCPU/128-GiB `cpu-d3` host. Do not
+launch all candidates through one shared `braid-ladder` output: concurrent saves
+would race on `ladder.json`. Instead, stage every checkpoint in an isolated root:
 
 ```bash
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 pgx-mcts-bench braid-ladder \
-  --only <selected-candidates> \
-  --workers 14 \
-  --device cpu \
-  --selfplay-games 8 \
-  --checkpoint-every 1 \
-  --stop-after 27 \
-  --bounds artifacts/bounds.jsonl \
-  --output artifacts/rung27
+export OUTPUT_ROOT=/srv/braid/artifacts/nebius-rung18
+mkdir -p "$OUTPUT_ROOT/runs/<candidate>/checkpoints"
+# Copy <candidate>.pt and, when present, the <candidate>/ progress directory
+# into that checkpoints directory. Repeat for every selected candidate.
+```
+
+Put the frozen portfolio in a plain text file, one candidate per line. Then
+preflight and start the load-controlled queue:
+
+```bash
+export IMAGE=<registry-image>
+export CANDIDATES_FILE=/srv/braid/rung18-candidates.txt
+export OUTPUT_ROOT=/srv/braid/artifacts/nebius-rung18
+
+DRY_RUN=1 scripts/nebius_rung18_queue.sh
+scripts/nebius_rung18_queue.sh
+```
+
+The queue requires exactly 32 logical CPUs, discovers SMT sibling pairs, reserves
+two physical cores for the host, and runs at most fourteen candidates at once.
+Each container owns one physical core, numerical libraries are restricted to one
+thread, and dispatch pauses when one-minute load reaches 28 by default. Every
+rung iteration is checkpointed. The deep-ladder defaults are retained (100
+iterations maximum, a nine-iteration average floor from rung 10, 12 evaluation
+games, and four retrospective games), while the consecutive-cap limit is raised
+to 99 so no candidate is retired before attempting rung 18. A successful
+candidate gets a durable `.done` marker; a failed or interrupted invocation
+resumes from its existing atomic checkpoint. The queue refuses to start any
+candidate without either a promoted checkpoint or a current-rung progress
+checkpoint, preventing an accidental fresh training run.
+
+Worker output is unbuffered and records the start and completion of every
+iteration, with separate timings for self-play, optimizer training, held-out
+evaluation, and checkpoint writing. The rolling mean of the last three completed
+iterations is printed as both time per iteration and time remaining to the rung
+cap. The same live state is atomically published at
+`runs/<candidate>/checkpoints/<candidate>/status.json`, so monitoring can report
+the candidate, rung, iteration, current phase, phase time, and ETA without parsing
+or racing a log that is being written.
+
+`SIGTERM` is resumable. The Python handler only records the request; the worker
+then atomically writes
+`runs/<candidate>/checkpoints/<candidate>/interrupt.pt.tmp` and renames it to
+`interrupt.pt` at the next safe boundary. During training, that boundary is every
+optimizer step. The payload records whether self-play was already added and the
+exact optimizer-step count, so resume neither regenerates those games nor repeats
+gradient steps. A signal received during vectorized self-play or evaluation is
+honoured immediately after that batch returns. Send TERM to one candidate with:
+
+```bash
+docker kill --signal TERM braid-r18-<candidate>
+```
+
+Sending TERM to the queue controller forwards it to every active container in
+parallel and allows up to fifteen minutes for graceful checkpoints. Exit 143 is
+recorded as `.interrupted`, not `.failed`; running the queue again loads the
+newest compatible `interrupt.pt` or `progress.pt` automatically. These files are
+inside the mounted artifact directory and survive the container—unlike `/tmp`.
+
+After the queue completes, combine the isolated reports:
+
+```bash
+pgx-mcts-bench braid-ladder-merge "$OUTPUT_ROOT/runs"
 ```
 
 If CUDA passes the gate, use the winning actor batch from the report. Run one

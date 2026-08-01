@@ -51,6 +51,15 @@ def policy_loss(logits: Tensor, target: Tensor) -> Tensor:
     return -(target * F.log_softmax(logits, dim=-1)).sum(dim=-1).mean()
 
 
+def upper_bound_cost_loss(prediction: Tensor, target: Tensor, shared: Tensor) -> Tensor:
+    """Equality loss for own outcomes, one-sided loss for shared witnesses."""
+    equality = F.smooth_l1_loss(prediction, target, reduction="none")
+    upper_bound = F.smooth_l1_loss(
+        torch.relu(prediction - target), torch.zeros_like(prediction), reduction="none"
+    )
+    return torch.where(shared, upper_bound, equality)
+
+
 def play_selfplay_game(
     game: GameAdapter,
     search: NeuralMCTS,
@@ -248,19 +257,24 @@ def train_alphazero_step(
             device=device,
         )[:, None].expand_as(predicted_moves)
         budget = float(getattr(network, "auxiliary_budget", 1.0))
+        shared = torch.tensor(
+            [bool(getattr(position, "shared_witness", False)) for position in batch],
+            dtype=torch.bool,
+            device=device,
+        )[:, None].expand_as(predicted_crossings)
         crossings_loss = masked_mean(
-            F.smooth_l1_loss(
+            upper_bound_cost_loss(
                 predicted_crossings / budget,
                 torch.nan_to_num(crossing_targets) / budget,
-                reduction="none",
+                shared,
             ),
             solved_mask & torch.isfinite(crossing_targets),
         )
         moves_loss = masked_mean(
-            F.smooth_l1_loss(
+            upper_bound_cost_loss(
                 predicted_moves / budget,
                 torch.nan_to_num(move_targets) / budget,
-                reduction="none",
+                shared,
             ),
             solved_mask & torch.isfinite(move_targets),
         )

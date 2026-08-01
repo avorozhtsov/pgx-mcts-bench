@@ -1,0 +1,24 @@
+# The rung-18 portfolio, excluding search-light permanently.
+d-head128-u1
+d-gru128-u1
+d-fsa32-u1
+d-tape4-u1
+s-tape4
+s-scan-gru
+s-burau-oracle
+s-w11-128
+s-window-128
+s-head-1stride
+s-head-128
+s-head-budget96
+s-reg8
+u1-puct
+u3-uct
+s-paint2
+s-paint4
+s-triad-wst
+
+# Later backfills added to the rung-18 VM.
+s-fsa32
+s-scan-gru-tape2
+s-gru128

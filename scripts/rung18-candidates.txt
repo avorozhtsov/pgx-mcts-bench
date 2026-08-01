@@ -1,0 +1,26 @@
+# Distilled students first: they begin at rung 0 and need the longest runway.
+d-head128-u1
+d-gru128-u1
+d-fsa32-u1
+d-tape4-u1
+
+# General/interesting serial representations and the strongest expensive arms.
+s-tape4
+s-scan-gru
+s-burau-oracle
+s-w11-128
+s-window-128
+s-head-1stride
+s-head-128
+s-head-budget96
+s-reg8
+
+# Parallel controls and remaining complementary local representations.
+u1-puct
+u3-uct
+search-light
+s-paint2
+s-paint4
+
+# Pinned r18/r10/r8 window-scan-tape ensemble; its own rung credit starts at 0.
+s-triad-wst

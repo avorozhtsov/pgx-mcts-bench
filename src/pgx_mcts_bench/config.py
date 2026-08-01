@@ -141,6 +141,11 @@ class BraidGameConfig:
     # crossings, so the annotation remains a replayable part of the Markov state.
     # 0 disables it; useful experimental alphabets are 2 and 4 (symbol 0 blank).
     serial_tape_symbols: int = 0
+    # A tape shift normally writes one of the K symbols, including blank.  A
+    # composite controller also needs the shift used by a non-tape parent: move
+    # the head while leaving the existing annotation untouched.  Keeping that
+    # as a distinct action avoids silently translating "preserve" into "erase".
+    serial_tape_preserve_shift: bool = False
     # Optional automatic whole-tape accumulator. The action space remains the
     # serial O(1) head action space, but the observation is the occupied braid
     # word rotated to start at the head and padded to max_len. This is the common
@@ -149,6 +154,13 @@ class BraidGameConfig:
     serial_encoder: str = ""
     serial_encoder_states: int = 0
     serial_encoder_prime: int = 5
+    # Frozen-window + full-scan + writable-tape policy ensemble.  The non-empty
+    # value selects the composite network and makes the environment expose the
+    # complete head-relative word from which all three parent views are derived.
+    serial_ensemble: str = ""
+    # Maximum consecutive head/memory/tape operations before an external braid
+    # action is required. 0 preserves the historical unbounded serial game.
+    serial_internal_horizon: int = 0
 
     def to_braid_config(self):
         from rf_knots.config import BraidConfig
@@ -193,6 +205,7 @@ class BraidGameConfig:
                 self.serial_registers,
                 self.serial_colours,
                 self.serial_tape_symbols,
+                self.serial_tape_preserve_shift,
             )
         return self._spec.num_actions
 
@@ -218,6 +231,7 @@ class BraidGameConfig:
             + self.serial_registers
             + colours
             + tape
+            + int(self.serial_internal_horizon > 0)
         )
 
     @property
@@ -226,7 +240,7 @@ class BraidGameConfig:
 
     @property
     def width(self) -> int:
-        if self.serial_window and self.serial_encoder:
+        if self.serial_window and (self.serial_encoder or self.serial_ensemble):
             return self.max_len
         return self.serial_window or self.max_len
 

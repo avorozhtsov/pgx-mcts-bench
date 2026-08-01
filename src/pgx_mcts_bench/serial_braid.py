@@ -59,6 +59,7 @@ class SerialState(NamedTuple):
     colours: np.ndarray
     colour: int
     tape: np.ndarray
+    internal_steps: int
 
 # Serial action layout, with G = max_strands - 1 generators and W = act_width.
 # One block of `per_offset = 3 + 2G + 1` actions per actionable offset, then the
@@ -110,6 +111,7 @@ def serial_action_size(
     registers: int = 0,
     colours: int = 0,
     tape_symbols: int = 0,
+    tape_preserve_shift: bool = False,
 ) -> int:
     """Actions for a window agent.
 
@@ -125,7 +127,7 @@ def serial_action_size(
     # Colours cost three actions however many colours there are: PAINT_LOW,
     # PAINT_HIGH, CYCLE. Paint-per-(strand, colour) would be 20 dead actions at
     # N=5, C=4, and dead actions are what sank the register arm.
-    tape_variants = max(tape_symbols, 1)
+    tape_variants = max(tape_symbols + int(tape_preserve_shift), 1)
     return (
         act_width * positional
         + 4
@@ -220,12 +222,16 @@ class SerialBraidGame:
             max(config.serial_registers, 0),
             max(config.serial_colours, 0),
             max(config.serial_tape_symbols, 0),
+            config.serial_tape_preserve_shift,
         )
         self._per_offset = 3 + 2 * generators + 1
         self._singleton_base = self.act_width * self._per_offset
         self._shift_base = self._singleton_base + 4
         self.tape_symbols = max(config.serial_tape_symbols, 0)
-        self._tape_variants = max(self.tape_symbols, 1)
+        self.tape_preserve_shift = bool(config.serial_tape_preserve_shift)
+        self._tape_variants = max(
+            self.tape_symbols + int(self.tape_preserve_shift), 1
+        )
         self.registers = max(config.serial_registers, 0)
         self._register_base = (
             self._shift_base + 2 * len(self.strides) * self._tape_variants
@@ -271,10 +277,16 @@ class SerialBraidGame:
         if action >= self._register_base:
             return f"TOGGLE(r{action - self._register_base})"
         if action >= self._shift_base:
-            shift, symbol = divmod(action - self._shift_base, self._tape_variants)
+            shift, variant = divmod(action - self._shift_base, self._tape_variants)
             index, direction = divmod(shift, 2)
             side = "RIGHT" if direction else "LEFT"
-            write = f",WRITE({symbol})" if self.tape_symbols else ""
+            if self.tape_preserve_shift and variant == 0:
+                write = ",PRESERVE"
+            elif self.tape_symbols:
+                symbol = variant - int(self.tape_preserve_shift)
+                write = f",WRITE({symbol})"
+            else:
+                write = ""
             return f"SHIFT_{side}({self.strides[index]}{write})"
         if action >= self._singleton_base:
             return ["DESTABILIZE", "STABILIZE_POS", "STABILIZE_NEG", "PASS"][
@@ -300,7 +312,10 @@ class SerialBraidGame:
         """Symbol written at the old head by a shift, or ``None`` without tape."""
         if not self.tape_symbols or not self._shift_base <= action < self._register_base:
             return None
-        return (action - self._shift_base) % self._tape_variants
+        variant = (action - self._shift_base) % self._tape_variants
+        if self.tape_preserve_shift and variant == 0:
+            return None
+        return variant - int(self.tape_preserve_shift)
 
     def register_of(self, action: int) -> int | None:
         """Index of the register a TOGGLE action flips, or `None`."""
@@ -388,8 +403,8 @@ class SerialBraidGame:
         )
 
     def step(self, state: Any, action: int) -> Transition:
-        pgx_state, head, registers, colours, colour, tape = state
-        mask = self._legal(pgx_state, head)
+        pgx_state, head, registers, colours, colour, tape, internal_steps = state
+        mask = self._legal(pgx_state, head, internal_steps)
         if not mask[action]:
             raise ValueError(f"Illegal serial action {self.describe(action)}")
 
@@ -402,7 +417,7 @@ class SerialBraidGame:
             flipped[slot] = 1.0 - flipped[slot]
             return self._view(
                 self._charge_budget(pgx_state), head, flipped, colours, colour,
-                tape, reward=0.0,
+                tape, reward=0.0, internal_steps=internal_steps + 1,
             )
 
         # Painting costs a ply like everything else, and so does cycling: a free
@@ -418,7 +433,7 @@ class SerialBraidGame:
                 painted[low if paint == "low" else high] = colour + 1
             return self._view(
                 self._charge_budget(pgx_state), head, registers, painted, held,
-                tape, reward=0.0,
+                tape, reward=0.0, internal_steps=internal_steps + 1,
             )
 
         displacement = self.shift_of(action)
@@ -432,7 +447,8 @@ class SerialBraidGame:
                 written[head % length] = symbol
             advanced = self._charge_budget(pgx_state)
             return self._view(
-                advanced, new_head, registers, carried, colour, written, reward=0.0
+                advanced, new_head, registers, carried, colour, written,
+                reward=0.0, internal_steps=internal_steps + 1,
             )
 
         actor = int(np.asarray(pgx_state.current_player))
@@ -445,7 +461,7 @@ class SerialBraidGame:
         length = max(int(np.asarray(next_state._word).astype(bool).sum()), 1)
         return self._view(
             next_state, head % length, registers, colours, colour, moved_tape,
-            reward=float(rewards[actor]),
+            reward=float(rewards[actor]), internal_steps=0,
         )
 
     def _rewrite_tape(
@@ -556,7 +572,7 @@ class SerialBraidGame:
 
     # -- observation and legality --------------------------------------------
 
-    def _legal(self, pgx_state: Any, head: int) -> np.ndarray:
+    def _legal(self, pgx_state: Any, head: int, internal_steps: int = 0) -> np.ndarray:
         full = np.asarray(pgx_state.legal_action_mask, dtype=bool)
         mask = np.zeros(self.num_actions, dtype=bool)
         length = int(np.asarray(pgx_state._word).astype(bool).sum())
@@ -564,7 +580,10 @@ class SerialBraidGame:
             mask[action] = full[self.underlying_action(action, head, length)]
         # Toggles are always available while the episode runs: the control state is
         # the agent's own, not a function of the word.
-        if not bool(np.asarray(pgx_state.terminated)):
+        internal_allowed = not self.config.serial_internal_horizon or (
+            internal_steps < self.config.serial_internal_horizon
+        )
+        if not bool(np.asarray(pgx_state.terminated)) and internal_allowed:
             mask[self._register_base : self._colour_base] = True
             if self.colours:
                 mask[self._colour_base :] = True
@@ -572,7 +591,7 @@ class SerialBraidGame:
         # never be the only option -- PASS remains the guaranteed fallback. A
         # stride that is a multiple of the current length is a no-op on the
         # necklace, so it is masked out rather than offered as a wasted ply.
-        if length > 1 and not bool(np.asarray(pgx_state.terminated)):
+        if length > 1 and not bool(np.asarray(pgx_state.terminated)) and internal_allowed:
             for index, stride in enumerate(self.strides):
                 if stride % length:
                     start = self._shift_base + 2 * index * self._tape_variants
@@ -614,6 +633,7 @@ class SerialBraidGame:
         colour: int,
         tape: np.ndarray,
         reward: float,
+        internal_steps: int = 0,
     ) -> Transition:
         observation = np.asarray(pgx_state.observation, dtype=np.float32)  # (L, C)
         word = np.asarray(pgx_state._word)
@@ -621,7 +641,7 @@ class SerialBraidGame:
         # The word is cyclic: gather the window with wraparound. When the word is
         # shorter than the window the same positions repeat, which is what the
         # necklace actually looks like.
-        if length > 0 and self.config.serial_encoder:
+        if length > 0 and (self.config.serial_encoder or self.config.serial_ensemble):
             # A head-relative complete scan: occupied letters first, then the
             # environment's padding slots. The action semantics remain local and
             # O(1); only the candidate encoder changes.
@@ -632,7 +652,11 @@ class SerialBraidGame:
         elif length > 0:
             indexes = (head + np.arange(self.window) - self._window_origin) % length
         else:
-            width = self.config.max_len if self.config.serial_encoder else self.window
+            width = (
+                self.config.max_len
+                if self.config.serial_encoder or self.config.serial_ensemble
+                else self.window
+            )
             indexes = np.zeros(width, dtype=int)
         window = observation[indexes]
         observed_width = window.shape[0]
@@ -655,10 +679,16 @@ class SerialBraidGame:
             tape_window = tape[indexes]
             one_hot = np.eye(self.tape_symbols, dtype=np.float32)[tape_window]
             window = np.concatenate([window, one_hot], axis=1)
+        if self.config.serial_internal_horizon:
+            fraction = min(internal_steps / self.config.serial_internal_horizon, 1.0)
+            plane = np.full((observed_width, 1), fraction, dtype=np.float32)
+            window = np.concatenate([window, plane], axis=1)
         return Transition(
-            state=SerialState(pgx_state, head, registers, colours, colour, tape),
+            state=SerialState(
+                pgx_state, head, registers, colours, colour, tape, internal_steps
+            ),
             observation=window.reshape(1, observed_width, window.shape[1]),
-            legal_actions=self._legal(pgx_state, head),
+            legal_actions=self._legal(pgx_state, head, internal_steps),
             reward=reward,
             terminated=bool(np.asarray(pgx_state.terminated)),
             player=int(np.asarray(pgx_state.current_player)),

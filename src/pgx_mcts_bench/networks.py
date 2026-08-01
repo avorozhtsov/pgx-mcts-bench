@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
@@ -680,6 +682,271 @@ class SequenceBraidNet(BraidPolicyValueNet):
         return policy, value, self._auxiliary(features)
 
 
+class TriadBraidNet(BraidPolicyValueNet):
+    """Frozen window/scan/tape experts with a learned normalized policy mixer.
+
+    The composite environment exposes the full head-relative word and a four-
+    symbol tape.  This module derives the three observations expected by the
+    original parents, preserving their architectures and checkpoint tensors:
+
+    * ``s-window-128`` receives a centred tape-free seven-cell window;
+    * ``s-scan-gru`` receives the complete tape-free head-relative word; and
+    * ``s-tape4`` receives the centred seven-cell window including its tape.
+
+    Parent logits are centred and scaled independently before a zero-initialized
+    state/action router averages the experts that actually represent each
+    semantic action.  A zero-initialized residual can subsequently learn
+    interactions that no convex mixture can express.
+    """
+
+    PARENT_NAMES = ("s-window-128", "s-scan-gru", "s-tape4")
+
+    def __init__(self, game: BraidGameConfig, model: ModelConfig):
+        super().__init__()
+        if game.serial_ensemble != "window-scan-tape":
+            raise ValueError(f"Unknown serial ensemble: {game.serial_ensemble}")
+        if game.serial_window != 7 or game.serial_width != 7:
+            raise ValueError("window-scan-tape requires a seven-cell action window")
+        if game.serial_tape_symbols != 4 or not game.serial_tape_preserve_shift:
+            raise ValueError("window-scan-tape requires four tape symbols plus preserve shifts")
+
+        common = dict(
+            serial_ensemble="",
+            serial_tape_preserve_shift=False,
+            serial_registers=0,
+            serial_colours=0,
+        )
+        window_game = replace(
+            game,
+            serial_act_width=7,
+            serial_tape_symbols=0,
+            serial_encoder="",
+            serial_encoder_states=0,
+            **common,
+        )
+        scan_game = replace(
+            game,
+            serial_act_width=1,
+            serial_tape_symbols=0,
+            serial_encoder="scan-gru",
+            serial_encoder_states=128,
+            **common,
+        )
+        tape_game = replace(
+            game,
+            serial_act_width=1,
+            serial_tape_symbols=4,
+            serial_encoder="",
+            serial_encoder_states=0,
+            **common,
+        )
+        self.window = SerialBraidNet(window_game, model)
+        self.scan = SequenceBraidNet(scan_game, model)
+        self.tape = SerialBraidNet(tape_game, model)
+        self.towers = (self.window, self.scan, self.tape)
+
+        self.base_channels = game.observation_channels - game.serial_tape_symbols
+        self.padding_channel = 2 * (game.max_strands - 1)
+        self.local_radius = game.serial_window // 2
+        self.action_size = game.action_size
+        self.feature_size = 64 * len(self.towers)
+        self.fusion_norm = nn.LayerNorm(self.feature_size)
+        self.router = nn.Linear(self.feature_size, self.action_size * len(self.towers))
+        self.policy_residual = nn.Linear(self.feature_size, self.action_size)
+        self.value_residual = nn.Linear(self.feature_size, 1)
+        members = model.auxiliary_value_members
+        self.solve_residual = nn.Linear(self.feature_size, members)
+        self.cost_residual = nn.Linear(self.feature_size, 2 * members)
+        for layer in (
+            self.router,
+            self.policy_residual,
+            self.value_residual,
+            self.solve_residual,
+            self.cost_residual,
+        ):
+            nn.init.zeros_(layer.weight)
+            nn.init.zeros_(layer.bias)
+
+        mappings = self._action_mappings(game, window_game, scan_game, tape_game)
+        support = torch.zeros(self.action_size, len(self.towers), dtype=torch.bool)
+        for tower, mapping in enumerate(mappings):
+            support[mapping, tower] = True
+            self.register_buffer(f"action_map_{tower}", mapping)
+        if not bool(support.any(dim=1).all()):
+            raise ValueError("Composite action space contains an action with no parent expert")
+        self.register_buffer("action_support", support)
+
+        self.auxiliary_members = members
+        self.auxiliary_loss_weight = model.auxiliary_value_loss_weight
+        self.auxiliary_budget = float(game.simplify_budget)
+        self.auxiliary_ratio_channel = 2 * (game.max_strands - 1) + 1 + 1 + 6
+        self.use_auxiliary_value = model.use_auxiliary_value
+        self._freeze_towers()
+
+    @staticmethod
+    def _action_mappings(
+        game: BraidGameConfig,
+        window_game: BraidGameConfig,
+        scan_game: BraidGameConfig,
+        tape_game: BraidGameConfig,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        per_offset = 3 + 2 * (game.max_strands - 1) + 1
+        union_singleton = game.serial_width * per_offset
+        union_shift = union_singleton + 4
+        union_variants = game.serial_tape_symbols + 1  # preserve, then WRITE(0..3)
+        shifts = 2 * len(game.serial_strides)
+
+        window = list(range(window_game.serial_width * per_offset + 4))
+        window.extend(union_shift + shift * union_variants for shift in range(shifts))
+
+        centre = (game.serial_width // 2) * per_offset
+        head = [centre + action for action in range(per_offset)]
+        head.extend(union_singleton + action for action in range(4))
+        scan = head + [union_shift + shift * union_variants for shift in range(shifts)]
+
+        tape = list(head)
+        tape.extend(
+            union_shift + shift * union_variants + 1 + symbol
+            for shift in range(shifts)
+            for symbol in range(game.serial_tape_symbols)
+        )
+        mappings = tuple(torch.tensor(items, dtype=torch.long) for items in (window, scan, tape))
+        expected = (window_game.action_size, scan_game.action_size, tape_game.action_size)
+        actual = tuple(len(mapping) for mapping in mappings)
+        if actual != expected:
+            raise ValueError(f"Composite action maps {actual} do not match parents {expected}")
+        return mappings  # type: ignore[return-value]
+
+    def _freeze_towers(self) -> None:
+        for tower in self.towers:
+            tower.eval()
+            for parameter in tower.parameters():
+                parameter.requires_grad_(False)
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        # Frozen BatchNorm statistics are part of each parent checkpoint.
+        for tower in self.towers:
+            tower.eval()
+        return self
+
+    def load_parent_state_dicts(
+        self,
+        window: dict[str, Tensor],
+        scan: dict[str, Tensor],
+        tape: dict[str, Tensor],
+    ) -> None:
+        for tower, state in zip(self.towers, (window, scan, tape), strict=True):
+            tower.load_state_dict(state)
+        self._freeze_towers()
+
+    def _views(self, observation: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        occupied = 1.0 - observation[:, self.padding_channel, 0, :]
+        lengths = occupied.sum(dim=1).long().clamp(min=1, max=observation.shape[-1])
+        offsets = torch.arange(
+            -self.local_radius,
+            self.local_radius + 1,
+            device=observation.device,
+        )[None, :]
+        indexes = torch.remainder(offsets, lengths[:, None])
+        local = torch.gather(
+            observation,
+            3,
+            indexes[:, None, None, :].expand(-1, observation.shape[1], 1, -1),
+        )
+        return (
+            local[:, : self.base_channels],
+            observation[:, : self.base_channels],
+            local,
+        )
+
+    @staticmethod
+    def _normalize_logits(logits: Tensor) -> Tensor:
+        centred = logits - logits.mean(dim=1, keepdim=True)
+        scale = centred.square().mean(dim=1, keepdim=True).sqrt().clamp(min=1e-4)
+        return centred / scale
+
+    def _forward_core(
+        self, observation: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor, tuple[Tensor, Tensor, Tensor]]:
+        views = self._views(observation)
+        outputs = [
+            tower._forward_core(view)
+            for tower, view in zip(self.towers, views, strict=True)
+        ]
+        logits = [self._normalize_logits(output[0]) for output in outputs]
+        legacy = torch.stack([output[1] for output in outputs], dim=1).mean(dim=1)
+        features = self.fusion_norm(torch.cat([output[2] for output in outputs], dim=1))
+
+        scattered = observation.new_zeros(
+            observation.shape[0], self.action_size, len(self.towers)
+        )
+        for tower, tower_logits in enumerate(logits):
+            mapping = getattr(self, f"action_map_{tower}")
+            scattered[:, mapping, tower] = tower_logits
+        router = self.router(features).view(
+            observation.shape[0], self.action_size, len(self.towers)
+        )
+        router = router.masked_fill(~self.action_support[None], torch.finfo(router.dtype).min)
+        weights = torch.softmax(router, dim=2)
+        policy = (weights * scattered).sum(dim=2) + self.policy_residual(features)
+        value = (legacy + 0.25 * torch.tanh(self.value_residual(features).squeeze(-1))).clamp(
+            -1.0, 1.0
+        )
+
+        parent_auxiliary = [
+            tower._auxiliary(output[2]) for tower, output in zip(self.towers, outputs, strict=True)
+        ]
+        solve = torch.stack([item[0] for item in parent_auxiliary], dim=0).mean(dim=0)
+        crossings = torch.stack([item[1] for item in parent_auxiliary], dim=0).mean(dim=0)
+        moves = torch.stack([item[2] for item in parent_auxiliary], dim=0).mean(dim=0)
+        solve = solve + self.solve_residual(features)
+        cost_scale = torch.exp(
+            0.5
+            * torch.tanh(self.cost_residual(features)).view(
+                observation.shape[0], self.auxiliary_members, 2
+            )
+        )
+        crossings = crossings * cost_scale[:, :, 0]
+        moves = moves * cost_scale[:, :, 1]
+        return policy, value, features, (solve, crossings, moves)
+
+    def composed_auxiliary_value(
+        self,
+        observation: Tensor,
+        auxiliary: tuple[Tensor, Tensor, Tensor],
+    ) -> Tensor:
+        solve_logits, crossings, moves = auxiliary
+        probability = solve_logits.sigmoid()
+        ratio = torch.exp(
+            5.0 * observation[:, self.auxiliary_ratio_channel, 0, 0]
+        )[:, None]
+        normalized_cost = ((ratio * crossings + moves) / (
+            (ratio + 1.0) * self.auxiliary_budget
+        )).clamp(0.0, 1.0)
+        return (-1.0 + 2.0 * probability * (1.0 - normalized_cost)).mean(dim=1)
+
+    def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
+        policy, legacy, _, auxiliary = self._forward_core(observation)
+        value = (
+            self.composed_auxiliary_value(observation, auxiliary)
+            if self.use_auxiliary_value
+            else legacy
+        )
+        return policy, value
+
+    def forward_with_auxiliary(
+        self, observation: Tensor
+    ) -> tuple[Tensor, Tensor, tuple[Tensor, Tensor, Tensor]]:
+        policy, legacy, _, auxiliary = self._forward_core(observation)
+        value = (
+            self.composed_auxiliary_value(observation, auxiliary)
+            if self.use_auxiliary_value
+            else legacy
+        )
+        return policy, value, auxiliary
+
+
 def load_policy_value_state_dict(
     network: PolicyValueNet, state_dict: dict[str, Tensor]
 ) -> bool:
@@ -704,6 +971,8 @@ def load_policy_value_state_dict(
 
 
 def make_braid_network(game: BraidGameConfig, model: ModelConfig) -> PolicyValueNet:
+    if game.serial_ensemble:
+        return TriadBraidNet(game, model)
     if game.serial_encoder:
         return SequenceBraidNet(game, model)
     if game.serial_window:
