@@ -599,6 +599,7 @@ def run_ladder(
     stop_after: int = -1,
     min_iterations_per_rung: float = 0.0,
     min_iterations_from: int = 0,
+    bounds_path: Path | None = None,
     retro_games: int = 6,
     log=print,
 ) -> LadderResult:
@@ -706,7 +707,8 @@ def run_ladder(
                 iterations += 1
             if not candidate.train or (iteration + 1) % eval_every == 0:
                 by_ratio = evaluate_stage(
-                    game, network, config, eval_games, seed + 500_000 + index * 997
+                    game, network, config, eval_games, seed + 500_000 + index * 997,
+                    bounds_path=bounds_path, agent=candidate.name,
                 )
                 rates = [v["solved"] for v in by_ratio.values()]
                 # Pooled over every episode rather than the worst ratio: see
