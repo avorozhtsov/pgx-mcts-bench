@@ -42,6 +42,10 @@ class GameAdapter(Protocol):
 
     def final_rewards(self, state: Any) -> np.ndarray: ...
 
+    def value_potential(self, state: Any, player: int) -> float:
+        """Player-perspective potential used by optional reward shaping."""
+        ...
+
     def state_info(self, state: Any) -> dict[str, int]:
         """Search-visible scalars for a state, without building an observation.
 
@@ -121,6 +125,10 @@ class Go6x6:
 
     def final_rewards(self, state: Any) -> np.ndarray:
         return np.asarray(state.rewards, dtype=np.float32)
+
+    def value_potential(self, state: Any, player: int) -> float:
+        del state, player
+        return 0.0
 
     def state_info(self, state: Any) -> dict[str, int]:
         return {
@@ -238,6 +246,22 @@ class BraidUnknotGame:
 
     def final_rewards(self, state: Any) -> np.ndarray:
         return np.asarray(state.rewards, dtype=np.float32)
+
+    def value_potential(self, state: Any, player: int) -> float:
+        """Exact accrued-cost potential, zeroed at terminal states.
+
+        For the Simplifier this is ``-2 * (lambda * crossings + moves) / W``;
+        the Scrambler receives its negative so shaping remains zero-sum.
+        """
+        if not self.config.multi_objective or bool(np.asarray(state.terminated)):
+            return 0.0
+        ratio = float(np.exp(float(np.asarray(state._log_ratio))))
+        crossings = int(np.asarray(state._crossing_changes))
+        moves = max(self.config.simplify_budget - int(np.asarray(state._budget)), 0)
+        worst = (ratio + 1.0) * self.config.simplify_budget
+        simplifier_potential = -2.0 * (ratio * crossings + moves) / worst
+        simplifier = 1 - int(np.asarray(state._scrambler))
+        return simplifier_potential if player == simplifier else -simplifier_potential
 
     def state_info(self, state: Any) -> dict[str, int]:
         return {

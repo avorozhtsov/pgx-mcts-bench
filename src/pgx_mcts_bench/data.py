@@ -18,6 +18,11 @@ class Position:
     reward: float = 0.0
     next_terminated: bool = False
     outcome: float = 0.0
+    # Player-perspective potential at this position. With potential shaping the
+    # value target is ``terminal_outcome - value_potential``. Keeping the field
+    # on every record also permits paired target-only ablations on identical
+    # replay data.
+    value_potential: float = 0.0
     # Shadow factorized-value targets. ``solved < 0`` means this position came
     # from an old checkpoint or a game without braid cost labels.
     solved: float = -1.0

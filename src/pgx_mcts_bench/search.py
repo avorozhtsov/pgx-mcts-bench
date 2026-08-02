@@ -78,6 +78,14 @@ class NeuralMCTS:
         self.config = config
         self.device = torch.device(device)
 
+    def edge_reward(self, parent_state: Any, actor: int, transition: Any) -> float:
+        """Reward used by search and replay for one exact transition."""
+        reward = float(transition.reward)
+        if self.config.potential_cost_shaping:
+            reward += self.game.value_potential(transition.state, actor)
+            reward -= self.game.value_potential(parent_state, actor)
+        return reward
+
     @torch.inference_mode()
     def run(
         self,
@@ -307,7 +315,7 @@ class NeuralMCTS:
             node = paths[index][-1]
             transition = self.game.step(parent.state, actions[index])
             node.state = transition.state
-            node.reward = transition.reward
+            node.reward = self.edge_reward(parent.state, parent.player, transition)
             node.terminated = transition.terminated
             node.consecutive_passes = transition.consecutive_passes
             node.move_count = transition.move_count
@@ -367,7 +375,7 @@ class NeuralMCTS:
             if exact_transitions is not None:
                 transition = exact_transitions[batch_index]
                 node.state = transition.state
-                node.reward = transition.reward
+                node.reward = self.edge_reward(parent.state, parent.player, transition)
                 node.terminated = transition.terminated
                 node.consecutive_passes = transition.consecutive_passes
                 node.move_count = transition.move_count

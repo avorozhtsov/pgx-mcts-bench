@@ -124,6 +124,79 @@ def test_from_word_starts_the_simplifier() -> None:
     assert int(np.asarray(transition.state._phase)) == 1
 
 
+def test_potential_shaping_preserves_solved_and_failed_returns() -> None:
+    from rf_knots.actions import CROSSING_CHANGE, DESTABILIZE
+
+    config = BraidGameConfig(
+        max_len=12,
+        max_strands=4,
+        scramble_budget=1,
+        simplify_budget=8,
+        allow_crossing_change=True,
+        multi_objective=True,
+        log_ratio_range=(float(np.log(9.0)), float(np.log(9.0))),
+    )
+    game = BraidUnknotGame(config)
+    network = BraidAlphaZeroNet(config, ModelConfig(channels=4))
+    search = NeuralMCTS(
+        game,
+        network,
+        SearchConfig(potential_cost_shaping=True),
+    )
+
+    def shaped_return(actions: list[int]) -> tuple[float, float]:
+        transition = game.from_word([1], 2, log_ratio=float(np.log(9.0)))
+        actor = transition.player
+        shaped = 0.0
+        for action in actions:
+            next_transition = game.step(transition.state, action)
+            shaped += search.edge_reward(transition.state, actor, next_transition)
+            transition = next_transition
+        assert transition.terminated
+        terminal = float(game.final_rewards(transition.state)[actor])
+        return shaped, terminal
+
+    crossing = config._spec.encode(CROSSING_CHANGE, position=0)
+    destabilize = config._spec.encode(DESTABILIZE)
+    shaped, terminal = shaped_return([crossing, destabilize])
+    assert shaped == pytest.approx(terminal)
+
+    passed, failure = shaped_return([crossing] * config.simplify_budget)
+    assert failure == -1.0
+    assert passed == pytest.approx(failure)
+
+
+def test_shaped_value_target_is_remaining_return_and_stays_bounded() -> None:
+    from rf_knots.actions import CROSSING_CHANGE, DESTABILIZE
+
+    ratio = 9.0
+    config = BraidGameConfig(
+        max_len=12,
+        max_strands=4,
+        scramble_budget=1,
+        simplify_budget=8,
+        allow_crossing_change=True,
+        multi_objective=True,
+        log_ratio_range=(float(np.log(ratio)), float(np.log(ratio))),
+    )
+    game = BraidUnknotGame(config)
+    transition = game.from_word([1], 2, log_ratio=float(np.log(ratio)))
+    player = transition.player
+    assert game.value_potential(transition.state, player) == 0.0
+    transition = game.step(
+        transition.state,
+        config._spec.encode(CROSSING_CHANGE, position=0),
+    )
+    potential = game.value_potential(transition.state, player)
+    assert potential == pytest.approx(-2.0 * (ratio + 1.0) / ((ratio + 1.0) * 8))
+    solved = game.step(transition.state, config._spec.encode(DESTABILIZE))
+    solved_outcome = float(game.final_rewards(solved.state)[player])
+    assert solved_outcome - potential == pytest.approx(0.975)
+    # If this same prefix eventually exhausts its budget, the shaped failure
+    # target is also bounded and says only that the *remaining* return is bad.
+    assert -1.0 - potential == pytest.approx(-0.75)
+
+
 # -- value backup --------------------------------------------------------------
 
 

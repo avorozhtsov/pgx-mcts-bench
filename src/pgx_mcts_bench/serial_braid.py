@@ -553,6 +553,18 @@ class SerialBraidGame:
         pgx_state = state[0]
         return np.asarray(pgx_state.rewards, dtype=np.float32)
 
+    def value_potential(self, state: Any, player: int) -> float:
+        pgx_state = state[0]
+        if not self.config.multi_objective or bool(np.asarray(pgx_state.terminated)):
+            return 0.0
+        ratio = float(np.exp(float(np.asarray(pgx_state._log_ratio))))
+        crossings = int(np.asarray(pgx_state._crossing_changes))
+        moves = max(self.config.simplify_budget - int(np.asarray(pgx_state._budget)), 0)
+        worst = (ratio + 1.0) * self.config.simplify_budget
+        simplifier_potential = -2.0 * (ratio * crossings + moves) / worst
+        simplifier = 1 - int(np.asarray(pgx_state._scrambler))
+        return simplifier_potential if player == simplifier else -simplifier_potential
+
     def state_info(self, state: Any) -> dict[str, int]:
         pgx_state = state[0]
         return {

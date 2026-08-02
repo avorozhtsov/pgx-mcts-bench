@@ -1,0 +1,139 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1450 850" role="img" aria-labelledby="r12-title r12-desc">
+<title id="r12-title">Rung-12 selected-candidate Pareto analysis with top pair and triple oracles</title>
+<desc id="r12-desc">Rungs zero through twelve only. Nine selected candidates, including three local candidates, plus the three lowest-objective pair oracles and three lowest-objective triple oracles.</desc>
+<metadata>Generated 2026-08-02 from pgx-mcts-bench commit a3367badf92353ed521e9e1c879536f0dc4e12a8 and current local artifacts. Rung records 13 and above excluded. Local partial coverage: s-tape4 12 of 13 ratio-10 records, s-triad-wst 12 of 13, s-scan-gru-tape2 9 of 13.</metadata>
+<style>
+  text { font-family: "DejaVu Sans", Arial, sans-serif; fill: #172033; }
+  .title { font-size: 24px; font-weight: 700; }
+  .subtitle { font-size: 13px; fill: #59657a; }
+  .axis-label { font-size: 14px; font-weight: 600; }
+  .tick { font-size: 12px; fill: #59657a; }
+  .grid { stroke: #dbe1ea; stroke-width: 1; }
+  .axis { stroke: #172033; stroke-width: 1.2; }
+  .zero { stroke: #59657a; stroke-width: 1.2; stroke-dasharray: 5 5; }
+  .member-link { stroke: #7867a7; stroke-width: 1.2; opacity: .25; }
+  .member-link.triple { stroke: #238b57; }
+  .frontier-line { fill: none; stroke: #1677b8; stroke-width: 2.4; }
+  .single { fill: #7d8799; stroke: #ffffff; stroke-width: 2; }
+  .single-frontier { fill: #1677b8; stroke: #ffffff; stroke-width: 2; }
+  .partial { fill: #ffffff; stroke: #d97706; stroke-width: 2.5; }
+  .pair { fill: #7867a7; stroke: #ffffff; stroke-width: 2; }
+  .triple { fill: #238b57; stroke: #ffffff; stroke-width: 2; }
+  .combo-frontier { stroke: #1677b8; stroke-width: 3; }
+  .label { font-size: 12px; font-weight: 600; paint-order: stroke; stroke: #ffffff; stroke-width: 4px; stroke-linejoin: round; }
+  .rail-heading { font-size: 14px; font-weight: 700; }
+  .rail-item { font-size: 12px; }
+  .rail-value { font-size: 11px; fill: #59657a; }
+  .legend { font-size: 12px; fill: #59657a; }
+</style>
+<rect width="1450" height="850" fill="#ffffff"/>
+<text x="90" y="38" class="title">Rung-12 Pareto Analysis</text>
+<text x="90" y="63" class="subtitle">Selected rung-18 pool plus new local candidates; only rung records 0–12 are used.</text>
+<text x="90" y="84" class="subtitle">x = mean paired ΔL10:1 vs s-window-128 + 10 × (1 − avg_sr); y = it/r. Hollow orange singles are provisional.</text>
+<text x="90" y="105" class="subtitle">Top combinations are ranked by x; oracle selection falls back to another member when a provisional member lacks a rung record.</text>
+<circle cx="1020" cy="79" r="5" class="single"/><text x="1030" y="84" class="legend">single</text>
+<circle cx="1090" cy="79" r="5" class="partial"/><text x="1100" y="84" class="legend">partial</text>
+<rect x="1166" y="74" width="9" height="9" transform="rotate(45 1170.5 78.5)" class="pair"/><text x="1182" y="84" class="legend">pair</text>
+<polygon points="1245,73 1252,85 1238,85" class="triple"/><text x="1260" y="84" class="legend">triple</text>
+<line x1="90.0" y1="125" x2="90.0" y2="758" class="grid"/>
+<text x="90.0" y="781" text-anchor="middle" class="tick">-2</text>
+<line x1="202.0" y1="125" x2="202.0" y2="758" class="grid"/>
+<text x="202.0" y="781" text-anchor="middle" class="tick">0</text>
+<line x1="314.0" y1="125" x2="314.0" y2="758" class="grid"/>
+<text x="314.0" y="781" text-anchor="middle" class="tick">2</text>
+<line x1="426.0" y1="125" x2="426.0" y2="758" class="grid"/>
+<text x="426.0" y="781" text-anchor="middle" class="tick">4</text>
+<line x1="538.0" y1="125" x2="538.0" y2="758" class="grid"/>
+<text x="538.0" y="781" text-anchor="middle" class="tick">6</text>
+<line x1="650.0" y1="125" x2="650.0" y2="758" class="grid"/>
+<text x="650.0" y="781" text-anchor="middle" class="tick">8</text>
+<line x1="762.0" y1="125" x2="762.0" y2="758" class="grid"/>
+<text x="762.0" y="781" text-anchor="middle" class="tick">10</text>
+<line x1="874.0" y1="125" x2="874.0" y2="758" class="grid"/>
+<text x="874.0" y="781" text-anchor="middle" class="tick">12</text>
+<line x1="90" y1="758.0" x2="930" y2="758.0" class="grid"/>
+<text x="78" y="762.0" text-anchor="end" class="tick">5</text>
+<line x1="90" y1="667.6" x2="930" y2="667.6" class="grid"/>
+<text x="78" y="671.6" text-anchor="end" class="tick">10</text>
+<line x1="90" y1="577.1" x2="930" y2="577.1" class="grid"/>
+<text x="78" y="581.1" text-anchor="end" class="tick">15</text>
+<line x1="90" y1="486.7" x2="930" y2="486.7" class="grid"/>
+<text x="78" y="490.7" text-anchor="end" class="tick">20</text>
+<line x1="90" y1="396.3" x2="930" y2="396.3" class="grid"/>
+<text x="78" y="400.3" text-anchor="end" class="tick">25</text>
+<line x1="90" y1="305.9" x2="930" y2="305.9" class="grid"/>
+<text x="78" y="309.9" text-anchor="end" class="tick">30</text>
+<line x1="90" y1="215.4" x2="930" y2="215.4" class="grid"/>
+<text x="78" y="219.4" text-anchor="end" class="tick">35</text>
+<line x1="90" y1="125.0" x2="930" y2="125.0" class="grid"/>
+<text x="78" y="129.0" text-anchor="end" class="tick">40</text>
+<line x1="202.0" y1="125" x2="202.0" y2="758" class="zero"/>
+<line x1="90" y1="758" x2="930" y2="758" class="axis"/>
+<line x1="90" y1="125" x2="90" y2="758" class="axis"/>
+<text x="510.0" y="819" text-anchor="middle" class="axis-label">solve-penalized relative loss objective</text>
+<text x="25" y="441.5" transform="rotate(-90 25 441.5)" text-anchor="middle" class="axis-label">iterations per cleared rung</text>
+<line x1="145.4" y1="630.8" x2="216.4" y2="614.7" class="member-link"/>
+<line x1="145.4" y1="630.8" x2="882.7" y2="684.3" class="member-link"/>
+<line x1="148.9" y1="594.6" x2="216.4" y2="614.7" class="member-link"/>
+<line x1="148.9" y1="594.6" x2="442.5" y2="483.7" class="member-link"/>
+<line x1="154.0" y1="576.1" x2="216.4" y2="614.7" class="member-link"/>
+<line x1="154.0" y1="576.1" x2="242.5" y2="447.5" class="member-link"/>
+<line x1="130.5" y1="617.9" x2="216.4" y2="614.7" class="member-link triple"/>
+<line x1="130.5" y1="617.9" x2="882.7" y2="684.3" class="member-link triple"/>
+<line x1="130.5" y1="617.9" x2="242.5" y2="447.5" class="member-link triple"/>
+<line x1="132.9" y1="578.9" x2="216.4" y2="614.7" class="member-link triple"/>
+<line x1="132.9" y1="578.9" x2="242.5" y2="447.5" class="member-link triple"/>
+<line x1="132.9" y1="578.9" x2="442.5" y2="483.7" class="member-link triple"/>
+<line x1="138.2" y1="629.3" x2="216.4" y2="614.7" class="member-link triple"/>
+<line x1="138.2" y1="629.3" x2="246.3" y2="595.2" class="member-link triple"/>
+<line x1="138.2" y1="629.3" x2="882.7" y2="684.3" class="member-link triple"/>
+<polyline points="130.5,617.9 138.2,629.3 145.4,630.8 821.7,650.9 882.7,684.3" class="frontier-line"/>
+<circle cx="216.4" cy="614.7" r="5.5" class="single"><title>s-window-128: x=0.26, it/r=12.92, usable rungs=13/13</title></circle>
+<text x="224.4" y="630.7" text-anchor="start" class="label">s-window-128</text>
+<circle cx="821.7" cy="650.9" r="5.5" class="single-frontier"><title>s-head-budget96: x=11.07, it/r=10.92, usable rungs=13/13</title></circle>
+<text x="813.7" y="642.9" text-anchor="end" class="label">s-head-budget96</text>
+<circle cx="542.4" cy="574.1" r="5.5" class="single"><title>s-scan-gru: x=6.08, it/r=15.17, usable rungs=13/13</title></circle>
+<text x="550.4" y="566.1" text-anchor="start" class="label">s-scan-gru</text>
+<circle cx="246.3" cy="595.2" r="5.5" class="single"><title>s-paint4: x=0.79, it/r=14.00, usable rungs=13/13</title></circle>
+<text x="254.3" y="587.2" text-anchor="start" class="label">s-paint4</text>
+<circle cx="882.7" cy="684.3" r="5.5" class="single-frontier"><title>u1-puct: x=12.16, it/r=9.08, usable rungs=13/13</title></circle>
+<text x="874.7" y="700.3" text-anchor="end" class="label">u1-puct</text>
+<circle cx="242.5" cy="447.5" r="5.5" class="single"><title>d-head128-u1: x=0.72, it/r=22.17, usable rungs=13/13</title></circle>
+<text x="250.5" y="439.5" text-anchor="start" class="label">d-head128-u1</text>
+<circle cx="410.3" cy="148.0" r="7" class="partial"><title>s-tape4: x=3.72, it/r=38.73, usable rungs=12/13</title></circle>
+<text x="418.3" y="140.0" text-anchor="start" class="label">s-tape4 [12/13]</text>
+<circle cx="442.5" cy="483.7" r="7" class="partial"><title>s-triad-wst: x=4.29, it/r=20.17, usable rungs=12/13</title></circle>
+<text x="450.5" y="499.7" text-anchor="start" class="label">s-triad-wst [12/13]</text>
+<circle cx="314.1" cy="731.9" r="7" class="partial"><title>s-scan-gru-tape2: x=2.00, it/r=6.44, usable rungs=9/13</title></circle>
+<text x="322.1" y="723.9" text-anchor="start" class="label">s-scan-gru-tape2 [9/13]</text>
+<rect x="138.4" y="623.8" width="14" height="14" transform="rotate(45 145.4 630.8)" class="pair combo-frontier"><title>P1 s-window-128 + u1-puct: x=-1.010, it/r=12.04</title></rect>
+<text x="155.4" y="621.8" class="label">P1</text>
+<rect x="141.9" y="587.6" width="14" height="14" transform="rotate(45 148.9 594.6)" class="pair"><title>P2 s-window-128 + s-triad-wst: x=-0.947, it/r=14.04</title></rect>
+<text x="158.9" y="585.6" class="label">P2</text>
+<rect x="147.0" y="569.1" width="14" height="14" transform="rotate(45 154.0 576.1)" class="pair"><title>P3 s-window-128 + d-head128-u1: x=-0.857, it/r=15.06</title></rect>
+<text x="164.0" y="567.1" class="label">P3</text>
+<polygon points="130.5,608.9 139.5,624.6 121.5,624.6" class="triple combo-frontier"><title>T1 s-window-128 + u1-puct + d-head128-u1: x=-1.277, it/r=12.75</title></polygon>
+<text x="140.5" y="608.9" class="label">T1</text>
+<polygon points="132.9,569.9 141.9,585.7 123.9,585.7" class="triple"><title>T2 s-window-128 + d-head128-u1 + s-triad-wst: x=-1.234, it/r=14.90</title></polygon>
+<text x="142.9" y="569.9" class="label">T2</text>
+<polygon points="138.2,620.3 147.2,636.0 129.2,636.0" class="triple combo-frontier"><title>T3 s-window-128 + s-paint4 + u1-puct: x=-1.139, it/r=12.12</title></polygon>
+<text x="148.2" y="620.3" class="label">T3</text>
+<text x="964" y="130" class="rail-heading">Top 3 pairs by x</text>
+<text x="964" y="159" class="rail-item">P1. s-window-128 + u1-puct</text>
+<text x="964" y="178" class="rail-value">x=-1.010 · it/r=12.04 · selected=10:3 · ties=0</text>
+<text x="964" y="217" class="rail-item">P2. s-window-128 + s-triad-wst *</text>
+<text x="964" y="236" class="rail-value">x=-0.947 · it/r=14.04 · selected=11:2 · ties=2</text>
+<text x="964" y="275" class="rail-item">P3. s-window-128 + d-head128-u1</text>
+<text x="964" y="294" class="rail-value">x=-0.857 · it/r=15.06 · selected=10:3 · ties=2</text>
+<text x="964" y="361" class="rail-heading">Top 3 triples by x</text>
+<text x="964" y="390" class="rail-item">T1. s-window-128 + u1-puct + d-head128-u1</text>
+<text x="964" y="409" class="rail-value">x=-1.277 · it/r=12.75</text>
+<text x="964" y="427" class="rail-value">selected=9:3:1 · ties=3</text>
+<text x="964" y="459" class="rail-item">T2. s-window-128 + d-head128-u1 + s-triad-wst *</text>
+<text x="964" y="478" class="rail-value">x=-1.234 · it/r=14.90</text>
+<text x="964" y="496" class="rail-value">selected=10:2:1 · ties=3</text>
+<text x="964" y="528" class="rail-item">T3. s-window-128 + s-paint4 + u1-puct</text>
+<text x="964" y="547" class="rail-value">x=-1.139 · it/r=12.12</text>
+<text x="964" y="565" class="rail-value">selected=9:1:3 · ties=3</text>
+<text x="964" y="780" class="rail-value">* provisional: one member has fewer than 13 usable rung records.</text>
+</svg>

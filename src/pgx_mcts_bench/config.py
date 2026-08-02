@@ -304,6 +304,11 @@ class SearchConfig:
     root_dirichlet_alpha: float = 0.3
     root_exploration_fraction: float = 0.25
     muzero_exact_rules: bool = True
+    # Potential-based cost shaping for the braid objective. The environment's
+    # terminal return is unchanged, but search receives exact incremental cost
+    # and the value head learns the corresponding remaining-return target.
+    # Disabled by default so historical checkpoints retain their value meaning.
+    potential_cost_shaping: bool = False
 
 
 @dataclass(frozen=True)

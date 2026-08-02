@@ -29,6 +29,11 @@ DEFAULT_ROOTS = (Path("artifacts"),)
 # in the research record rather than in every current leaderboard.
 RETIRED_CANDIDATES = frozenset({"s-ff4-p5"})
 
+# Ratio-10 loss is reported as a paired, per-rung difference from this policy.
+# Using a serial policy as the zero point makes the comparison directly answer
+# whether another architecture improves on the strongest compact baseline.
+LOSS_10_REFERENCE = "s-window-128"
+
 
 @dataclass(frozen=True)
 class RungScore:
@@ -250,16 +255,21 @@ def leaderboard(roots: Iterable[Path]) -> tuple[list[LeaderboardRow], list[str]]
         else {}
     )
     rows = [_with_average_move_delta(row, u1_moves) for row in rows]
-    u1_loss_10 = (
+    loss_reference = next(
+        (row for row in rows if row.name == LOSS_10_REFERENCE), None
+    )
+    reference_loss_10 = (
         {
             score.stage: score.loss_10
-            for score in u1.rung_scores
+            for score in loss_reference.rung_scores
             if not math.isnan(score.loss_10)
         }
-        if u1 is not None
+        if loss_reference is not None
         else {}
     )
-    rows = [_with_average_loss_10_delta(row, u1_loss_10) for row in rows]
+    rows = [
+        _with_average_loss_10_delta(row, reference_loss_10) for row in rows
+    ]
     rows.sort(
         key=lambda row: (
             -row.highest_stage,
@@ -312,12 +322,12 @@ def _with_average_move_delta(
 
 
 def _with_average_loss_10_delta(
-    row: LeaderboardRow, u1_loss_10: dict[int, float]
+    row: LeaderboardRow, reference_loss_10: dict[int, float]
 ) -> LeaderboardRow:
     deltas = [
-        score.loss_10 - u1_loss_10[score.stage]
+        score.loss_10 - reference_loss_10[score.stage]
         for score in row.rung_scores
-        if score.stage in u1_loss_10 and not math.isnan(score.loss_10)
+        if score.stage in reference_loss_10 and not math.isnan(score.loss_10)
     ]
     return replace(
         row,
@@ -342,7 +352,7 @@ def render(rows: list[LeaderboardRow]) -> str:
     """Render a fixed-width table that stays compact in terminals and chat."""
     lines = [
         "candidate            r  top           u    sr    cc   gap   n  "
-        "avg_sr   avgΔ  avgΔmv  avgΔL10:1   it   it/r",
+        "avg_sr   avgΔ  avgΔmv  avgΔL10:1(win)   it   it/r",
         "─" * 124,
     ]
     for row in rows:

@@ -1,0 +1,209 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+<title id="title">Rung-18 pair-oracle Pareto analysis</title>
+<desc id="desc">All 21 pairwise oracle combinations among s-window-128, s-head-budget96, s-scan-gru, s-paint4, u1-puct, d-head128-u1, and s-tape4. Lower is better on both axes.</desc>
+<metadata>Generated 2026-08-02 from pgx-mcts-bench commit a3367badf92353ed521e9e1c879536f0dc4e12a8. Source roots: artifacts/nebius-rung18-20260801-current/runs and artifacts/local-rung18-backfill-20260802/runs. Rung records 19 and above excluded.</metadata>
+<style>
+  text { font-family: "DejaVu Sans", Arial, sans-serif; fill: #172033; }
+  .title { font-size: 25px; font-weight: 700; }
+  .subtitle { font-size: 14px; fill: #4c5870; }
+  .axis-label { font-size: 14px; font-weight: 600; }
+  .tick { font-size: 12px; fill: #59657a; }
+  .grid { stroke: #dbe1ea; stroke-width: 1; }
+  .axis { stroke: #526077; stroke-width: 1.3; }
+  .zero { stroke: #8090a8; stroke-width: 1.2; stroke-dasharray: 5 5; }
+  .parent-link { stroke: #8b7bb8; stroke-width: 1; opacity: .18; }
+  .parent-link.knee { stroke: #d97706; stroke-width: 2.2; opacity: .9; }
+  .label-link { stroke: #c7ceda; stroke-width: 1; }
+  .frontier-line { fill: none; stroke: #1677b8; stroke-width: 2.5; opacity: .9; }
+  .single { fill: #7d8799; stroke: #fff; stroke-width: 1.8; opacity: .86; }
+  .single-frontier { fill: #1677b8; stroke: #fff; stroke-width: 2; }
+  .pair { fill: #7867a7; stroke: #fff; stroke-width: 1.8; }
+  .pair-frontier { fill: #1677b8; stroke: #fff; stroke-width: 2; }
+  .knee { fill: #d97706; stroke: #fff; stroke-width: 2.5; }
+  .single-label { font-size: 11px; font-weight: 600; paint-order: stroke; stroke: #fff; stroke-width: 3px; stroke-linejoin: round; }
+  .pair-label { font-size: 12px; }
+  .pair-label.knee-label { font-weight: 700; fill: #9a4f00; }
+  .rail-heading { font-size: 12px; font-weight: 700; fill: #4c5870; }
+  .legend { font-size: 12px; fill: #4c5870; }
+</style>
+<rect width="1600" height="900" fill="#fff"/>
+<text x="90" y="42" class="title">Rung-18 Pair-Oracle Pareto Analysis</text>
+<text x="90" y="68" class="subtitle">x = mean paired ΔL10:1 vs s-window-128 + 10 × (1 − avg_sr); y = iterations per cleared rung; lower is better</text>
+<text x="90" y="91" class="subtitle">Rungs 0–18 only. Pair it/r is win-count weighted; rail entries show (x, it/r; wins; ties; common rungs).</text>
+<circle cx="785" cy="87" r="5" class="single"/><text x="795" y="92" class="legend">single</text>
+<rect x="852" y="82" width="9" height="9" transform="rotate(45 856.5 86.5)" class="pair"/><text x="868" y="92" class="legend">pair oracle</text>
+<rect x="955" y="82" width="9" height="9" transform="rotate(45 959.5 86.5)" class="pair-frontier"/><text x="971" y="92" class="legend">Pareto</text>
+<rect x="1033" y="82" width="9" height="9" transform="rotate(45 1037.5 86.5)" class="knee"/><text x="1049" y="92" class="legend">balanced knee</text>
+<line x1="90.0" y1="115" x2="90.0" y2="805" class="grid"/>
+<text x="90.0" y="829" text-anchor="middle" class="tick">-4</text>
+<line x1="204.8" y1="115" x2="204.8" y2="805" class="grid"/>
+<text x="204.8" y="829" text-anchor="middle" class="tick">0</text>
+<line x1="348.4" y1="115" x2="348.4" y2="805" class="grid"/>
+<text x="348.4" y="829" text-anchor="middle" class="tick">5</text>
+<line x1="491.9" y1="115" x2="491.9" y2="805" class="grid"/>
+<text x="491.9" y="829" text-anchor="middle" class="tick">10</text>
+<line x1="635.5" y1="115" x2="635.5" y2="805" class="grid"/>
+<text x="635.5" y="829" text-anchor="middle" class="tick">15</text>
+<line x1="779.0" y1="115" x2="779.0" y2="805" class="grid"/>
+<text x="779.0" y="829" text-anchor="middle" class="tick">20</text>
+<line x1="922.6" y1="115" x2="922.6" y2="805" class="grid"/>
+<text x="922.6" y="829" text-anchor="middle" class="tick">25</text>
+<line x1="90" y1="785.8" x2="980" y2="785.8" class="grid"/>
+<text x="78" y="789.8" text-anchor="end" class="tick">10</text>
+<line x1="90" y1="709.2" x2="980" y2="709.2" class="grid"/>
+<text x="78" y="713.2" text-anchor="end" class="tick">12</text>
+<line x1="90" y1="632.5" x2="980" y2="632.5" class="grid"/>
+<text x="78" y="636.5" text-anchor="end" class="tick">14</text>
+<line x1="90" y1="555.8" x2="980" y2="555.8" class="grid"/>
+<text x="78" y="559.8" text-anchor="end" class="tick">16</text>
+<line x1="90" y1="479.2" x2="980" y2="479.2" class="grid"/>
+<text x="78" y="483.2" text-anchor="end" class="tick">18</text>
+<line x1="90" y1="402.5" x2="980" y2="402.5" class="grid"/>
+<text x="78" y="406.5" text-anchor="end" class="tick">20</text>
+<line x1="90" y1="325.8" x2="980" y2="325.8" class="grid"/>
+<text x="78" y="329.8" text-anchor="end" class="tick">22</text>
+<line x1="90" y1="249.2" x2="980" y2="249.2" class="grid"/>
+<text x="78" y="253.2" text-anchor="end" class="tick">24</text>
+<line x1="90" y1="172.5" x2="980" y2="172.5" class="grid"/>
+<text x="78" y="176.5" text-anchor="end" class="tick">26</text>
+<line x1="204.8" y1="115" x2="204.8" y2="805" class="zero"/>
+<line x1="90" y1="805" x2="980" y2="805" class="axis"/>
+<line x1="90" y1="115" x2="90" y2="805" class="axis"/>
+<text x="535.0" y="865" text-anchor="middle" class="axis-label">solve-penalized relative loss objective</text>
+<text x="24" y="460.0" text-anchor="middle" transform="rotate(-90 24 460.0)" class="axis-label">iterations per cleared rung</text>
+<text x="1014" y="100" class="rail-heading">Pair oracle labels</text>
+<line x1="134.6" y1="719.4" x2="209.9" y2="697.1" class="parent-link knee"/>
+<line x1="134.6" y1="719.4" x2="406.7" y2="781.8" class="parent-link knee"/>
+<line x1="149.2" y1="698.2" x2="209.9" y2="697.1" class="parent-link"/>
+<line x1="149.2" y1="698.2" x2="336.4" y2="700.6" class="parent-link"/>
+<line x1="144.7" y1="703.8" x2="209.9" y2="697.1" class="parent-link"/>
+<line x1="144.7" y1="703.8" x2="215.2" y2="717.2" class="parent-link"/>
+<line x1="132.5" y1="710.5" x2="209.9" y2="697.1" class="parent-link"/>
+<line x1="132.5" y1="710.5" x2="541.1" y2="745.5" class="parent-link"/>
+<line x1="119.0" y1="640.9" x2="209.9" y2="697.1" class="parent-link"/>
+<line x1="119.0" y1="640.9" x2="158.9" y2="517.5" class="parent-link"/>
+<line x1="110.5" y1="552.4" x2="209.9" y2="697.1" class="parent-link"/>
+<line x1="110.5" y1="552.4" x2="218.4" y2="154.5" class="parent-link"/>
+<line x1="220.7" y1="743.6" x2="406.7" y2="781.8" class="parent-link"/>
+<line x1="220.7" y1="743.6" x2="336.4" y2="700.6" class="parent-link"/>
+<line x1="196.7" y1="724.8" x2="406.7" y2="781.8" class="parent-link"/>
+<line x1="196.7" y1="724.8" x2="215.2" y2="717.2" class="parent-link"/>
+<line x1="240.1" y1="759.6" x2="406.7" y2="781.8" class="parent-link"/>
+<line x1="240.1" y1="759.6" x2="541.1" y2="745.5" class="parent-link"/>
+<line x1="159.3" y1="546.9" x2="406.7" y2="781.8" class="parent-link"/>
+<line x1="159.3" y1="546.9" x2="158.9" y2="517.5" class="parent-link"/>
+<line x1="179.4" y1="293.9" x2="406.7" y2="781.8" class="parent-link"/>
+<line x1="179.4" y1="293.9" x2="218.4" y2="154.5" class="parent-link"/>
+<line x1="188.2" y1="711.3" x2="336.4" y2="700.6" class="parent-link"/>
+<line x1="188.2" y1="711.3" x2="215.2" y2="717.2" class="parent-link"/>
+<line x1="179.8" y1="721.7" x2="336.4" y2="700.6" class="parent-link"/>
+<line x1="179.8" y1="721.7" x2="541.1" y2="745.5" class="parent-link"/>
+<line x1="157.1" y1="530.6" x2="336.4" y2="700.6" class="parent-link"/>
+<line x1="157.1" y1="530.6" x2="158.9" y2="517.5" class="parent-link"/>
+<line x1="192.6" y1="300.1" x2="336.4" y2="700.6" class="parent-link"/>
+<line x1="192.6" y1="300.1" x2="218.4" y2="154.5" class="parent-link"/>
+<line x1="162.3" y1="727.2" x2="215.2" y2="717.2" class="parent-link"/>
+<line x1="162.3" y1="727.2" x2="541.1" y2="745.5" class="parent-link"/>
+<line x1="153.4" y1="588.8" x2="215.2" y2="717.2" class="parent-link"/>
+<line x1="153.4" y1="588.8" x2="158.9" y2="517.5" class="parent-link"/>
+<line x1="146.2" y1="492.1" x2="215.2" y2="717.2" class="parent-link"/>
+<line x1="146.2" y1="492.1" x2="218.4" y2="154.5" class="parent-link"/>
+<line x1="132.9" y1="598.0" x2="541.1" y2="745.5" class="parent-link"/>
+<line x1="132.9" y1="598.0" x2="158.9" y2="517.5" class="parent-link"/>
+<line x1="158.1" y1="363.1" x2="541.1" y2="745.5" class="parent-link"/>
+<line x1="158.1" y1="363.1" x2="218.4" y2="154.5" class="parent-link"/>
+<line x1="142.5" y1="396.5" x2="158.9" y2="517.5" class="parent-link"/>
+<line x1="142.5" y1="396.5" x2="218.4" y2="154.5" class="parent-link"/>
+<polyline points="110.5,552.4 119.0,640.9 132.5,710.5 134.6,719.4 162.3,727.2 220.7,743.6 240.1,759.6 406.7,781.8" class="frontier-line"/>
+<circle cx="406.7" cy="781.8" r="6" class="single-frontier"><title>s-head-budget96: x=7.03, it/r=10.11</title></circle>
+<text x="414.7" y="772.8" text-anchor="start" class="single-label">s-head-budget96</text>
+<circle cx="719.8" cy="737.4" r="5" class="single"><title>s-head-128: x=17.94, it/r=11.26</title></circle>
+<text x="727.8" y="729.4" text-anchor="start" class="single-label">s-head-128</text>
+<circle cx="922.3" cy="475.1" r="5" class="single"><title>s-reg8: x=24.99, it/r=18.11</title></circle>
+<text x="914.3" y="466.1" text-anchor="end" class="single-label">s-reg8</text>
+<circle cx="215.5" cy="672.8" r="5" class="single"><title>s-w11-128: x=0.37, it/r=12.95</title></circle>
+<text x="223.5" y="689.8" text-anchor="start" class="single-label">s-w11-128</text>
+<circle cx="541.1" cy="745.5" r="5" class="single"><title>u1-puct: x=11.71, it/r=11.05</title></circle>
+<text x="549.1" y="761.5" text-anchor="start" class="single-label">u1-puct</text>
+<circle cx="215.2" cy="717.2" r="5" class="single"><title>s-paint4: x=0.36, it/r=11.79</title></circle>
+<text x="223.2" y="708.2" text-anchor="start" class="single-label">s-paint4</text>
+<circle cx="330.1" cy="668.8" r="5" class="single"><title>s-paint2: x=4.36, it/r=13.05</title></circle>
+<text x="338.1" y="660.8" text-anchor="start" class="single-label">s-paint2</text>
+<circle cx="209.9" cy="697.1" r="5" class="single"><title>s-window-128: x=0.18, it/r=12.32</title></circle>
+<text x="217.9" y="714.1" text-anchor="start" class="single-label">s-window-128</text>
+<circle cx="948.1" cy="555.8" r="5" class="single"><title>d-tape4-u1: x=25.89, it/r=16.00</title></circle>
+<text x="940.1" y="546.8" text-anchor="end" class="single-label">d-tape4-u1</text>
+<circle cx="515.0" cy="555.8" r="5" class="single"><title>s-head-1stride: x=10.80, it/r=16.00</title></circle>
+<text x="523.0" y="547.8" text-anchor="start" class="single-label">s-head-1stride</text>
+<circle cx="417.3" cy="419.5" r="5" class="single"><title>d-gru128-u1: x=7.40, it/r=19.56</title></circle>
+<text x="425.3" y="411.5" text-anchor="start" class="single-label">d-gru128-u1</text>
+<circle cx="158.9" cy="517.5" r="5" class="single"><title>d-head128-u1: x=-1.60, it/r=17.00</title></circle>
+<text x="166.9" y="534.5" text-anchor="start" class="single-label">d-head128-u1</text>
+<circle cx="336.4" cy="700.6" r="5" class="single"><title>s-scan-gru: x=4.58, it/r=12.22</title></circle>
+<text x="344.4" y="716.6" text-anchor="start" class="single-label">s-scan-gru</text>
+<circle cx="218.4" cy="154.5" r="5" class="single"><title>s-tape4: x=0.47, it/r=26.47</title></circle>
+<text x="226.4" y="145.5" text-anchor="start" class="single-label">s-tape4</text>
+<polygon points="179.4,287.9 185.4,293.9 179.4,299.9 173.4,293.9" class="pair"><title>s-head-budget96 + s-tape4: x=-0.89, it/r=22.83, wins=4:14, ties=0, common=18</title></polygon>
+<line x1="185.4" y1="293.9" x2="1004" y2="119.0" class="label-link"/>
+<text x="1012" y="123.0" class="pair-label">budget96 + tape4  (-0.89, 22.83; 4:14; 0; 18)</text>
+<polygon points="192.6,294.1 198.6,300.1 192.6,306.1 186.6,300.1" class="pair"><title>s-scan-gru + s-tape4: x=-0.43, it/r=22.67, wins=4:11, ties=3, common=18</title></polygon>
+<line x1="198.6" y1="300.1" x2="1004" y2="152.9" class="label-link"/>
+<text x="1012" y="156.9" class="pair-label">scan-gru + tape4  (-0.43, 22.67; 4:11; 3; 18)</text>
+<polygon points="158.1,357.1 164.1,363.1 158.1,369.1 152.1,363.1" class="pair"><title>u1-puct + s-tape4: x=-1.63, it/r=21.03, wins=6:11, ties=1, common=18</title></polygon>
+<line x1="164.1" y1="363.1" x2="1004" y2="186.8" class="label-link"/>
+<text x="1012" y="190.8" class="pair-label">u1 + tape4  (-1.63, 21.03; 6:11; 1; 18)</text>
+<polygon points="142.5,390.5 148.5,396.5 142.5,402.5 136.5,396.5" class="pair"><title>d-head128-u1 + s-tape4: x=-2.17, it/r=20.16, wins=10:5, ties=3, common=18</title></polygon>
+<line x1="148.5" y1="396.5" x2="1004" y2="220.7" class="label-link"/>
+<text x="1012" y="224.7" class="pair-label">d-head128 + tape4  (-2.17, 20.16; 10:5; 3; 18)</text>
+<polygon points="146.2,486.1 152.2,492.1 146.2,498.1 140.2,492.1" class="pair"><title>s-paint4 + s-tape4: x=-2.04, it/r=17.66, wins=9:6, ties=3, common=18</title></polygon>
+<line x1="152.2" y1="492.1" x2="1004" y2="254.6" class="label-link"/>
+<text x="1012" y="258.6" class="pair-label">paint4 + tape4  (-2.04, 17.66; 9:6; 3; 18)</text>
+<polygon points="157.1,524.6 163.1,530.6 157.1,536.6 151.1,530.6" class="pair"><title>s-scan-gru + d-head128-u1: x=-1.66, it/r=16.66, wins=1:13, ties=5, common=19</title></polygon>
+<line x1="163.1" y1="530.6" x2="1004" y2="288.5" class="label-link"/>
+<text x="1012" y="292.5" class="pair-label">scan-gru + d-head128  (-1.66, 16.66; 1:13; 5; 19)</text>
+<polygon points="159.3,540.9 165.3,546.9 159.3,552.9 153.3,546.9" class="pair"><title>s-head-budget96 + d-head128-u1: x=-1.58, it/r=16.23, wins=2:16, ties=1, common=19</title></polygon>
+<line x1="165.3" y1="546.9" x2="1004" y2="322.4" class="label-link"/>
+<text x="1012" y="326.4" class="pair-label">budget96 + d-head128  (-1.58, 16.23; 2:16; 1; 19)</text>
+<polygon points="110.5,546.4 116.5,552.4 110.5,558.4 104.5,552.4" class="pair-frontier"><title>s-window-128 + s-tape4: x=-3.29, it/r=16.09, wins=11:4, ties=3, common=18</title></polygon>
+<line x1="116.5" y1="552.4" x2="1004" y2="356.3" class="label-link"/>
+<text x="1012" y="360.3" class="pair-label">window + tape4  (-3.29, 16.09; 11:4; 3; 18)</text>
+<polygon points="153.4,582.8 159.4,588.8 153.4,594.8 147.4,588.8" class="pair"><title>s-paint4 + d-head128-u1: x=-1.79, it/r=15.14, wins=5:9, ties=5, common=19</title></polygon>
+<line x1="159.4" y1="588.8" x2="1004" y2="390.2" class="label-link"/>
+<text x="1012" y="394.2" class="pair-label">paint4 + d-head128  (-1.79, 15.14; 5:9; 5; 19)</text>
+<polygon points="132.9,592.0 138.9,598.0 132.9,604.0 126.9,598.0" class="pair"><title>u1-puct + d-head128-u1: x=-2.50, it/r=14.90, wins=6:11, ties=2, common=19</title></polygon>
+<line x1="138.9" y1="598.0" x2="1004" y2="424.1" class="label-link"/>
+<text x="1012" y="428.1" class="pair-label">u1 + d-head128  (-2.50, 14.90; 6:11; 2; 19)</text>
+<polygon points="119.0,634.9 125.0,640.9 119.0,646.9 113.0,640.9" class="pair-frontier"><title>s-window-128 + d-head128-u1: x=-2.99, it/r=13.78, wins=11:5, ties=3, common=19</title></polygon>
+<line x1="125.0" y1="640.9" x2="1004" y2="458.0" class="label-link"/>
+<text x="1012" y="462.0" class="pair-label">window + d-head128  (-2.99, 13.78; 11:5; 3; 19)</text>
+<polygon points="149.2,692.2 155.2,698.2 149.2,704.2 143.2,698.2" class="pair"><title>s-window-128 + s-scan-gru: x=-1.94, it/r=12.29, wins=11:5, ties=3, common=19</title></polygon>
+<line x1="155.2" y1="698.2" x2="1004" y2="491.9" class="label-link"/>
+<text x="1012" y="495.9" class="pair-label">window + scan-gru  (-1.94, 12.29; 11:5; 3; 19)</text>
+<polygon points="144.7,697.8 150.7,703.8 144.7,709.8 138.7,703.8" class="pair"><title>s-window-128 + s-paint4: x=-2.09, it/r=12.14, wins=10:5, ties=4, common=19</title></polygon>
+<line x1="150.7" y1="703.8" x2="1004" y2="525.8" class="label-link"/>
+<text x="1012" y="529.8" class="pair-label">window + paint4  (-2.09, 12.14; 10:5; 4; 19)</text>
+<polygon points="132.5,704.5 138.5,710.5 132.5,716.5 126.5,710.5" class="pair-frontier"><title>s-window-128 + u1-puct: x=-2.52, it/r=11.96, wins=13:5, ties=1, common=19</title></polygon>
+<line x1="138.5" y1="710.5" x2="1004" y2="559.7" class="label-link"/>
+<text x="1012" y="563.7" class="pair-label">window + u1  (-2.52, 11.96; 13:5; 1; 19)</text>
+<polygon points="188.2,705.3 194.2,711.3 188.2,717.3 182.2,711.3" class="pair"><title>s-scan-gru + s-paint4: x=-0.58, it/r=11.94, wins=5:9, ties=5, common=19</title></polygon>
+<line x1="194.2" y1="711.3" x2="1004" y2="593.6" class="label-link"/>
+<text x="1012" y="597.6" class="pair-label">scan-gru + paint4  (-0.58, 11.94; 5:9; 5; 19)</text>
+<polygon points="134.6,711.4 142.6,719.4 134.6,727.4 126.6,719.4" class="knee"><title>s-window-128 + s-head-budget96: x=-2.45, it/r=11.73, wins=14:5, ties=0, common=19</title></polygon>
+<line x1="142.6" y1="719.4" x2="1004" y2="627.5" class="label-link"/>
+<text x="1012" y="631.5" class="pair-label knee-label">window + budget96  ← balanced knee  (-2.45, 11.73; 14:5; 0; 19)</text>
+<polygon points="179.8,715.7 185.8,721.7 179.8,727.7 173.8,721.7" class="pair"><title>s-scan-gru + u1-puct: x=-0.87, it/r=11.67, wins=9:8, ties=2, common=19</title></polygon>
+<line x1="185.8" y1="721.7" x2="1004" y2="661.4" class="label-link"/>
+<text x="1012" y="665.4" class="pair-label">scan-gru + u1  (-0.87, 11.67; 9:8; 2; 19)</text>
+<polygon points="196.7,718.8 202.7,724.8 196.7,730.8 190.7,724.8" class="pair"><title>s-head-budget96 + s-paint4: x=-0.28, it/r=11.59, wins=2:15, ties=2, common=19</title></polygon>
+<line x1="202.7" y1="724.8" x2="1004" y2="695.3" class="label-link"/>
+<text x="1012" y="699.3" class="pair-label">budget96 + paint4  (-0.28, 11.59; 2:15; 2; 19)</text>
+<polygon points="162.3,721.2 168.3,727.2 162.3,733.2 156.3,727.2" class="pair-frontier"><title>s-paint4 + u1-puct: x=-1.48, it/r=11.53, wins=11:6, ties=2, common=19</title></polygon>
+<line x1="168.3" y1="727.2" x2="1004" y2="729.2" class="label-link"/>
+<text x="1012" y="733.2" class="pair-label">paint4 + u1  (-1.48, 11.53; 11:6; 2; 19)</text>
+<polygon points="220.7,737.6 226.7,743.6 220.7,749.6 214.7,743.6" class="pair-frontier"><title>s-head-budget96 + s-scan-gru: x=0.55, it/r=11.10, wins=9:8, ties=2, common=19</title></polygon>
+<line x1="226.7" y1="743.6" x2="1004" y2="763.1" class="label-link"/>
+<text x="1012" y="767.1" class="pair-label">budget96 + scan-gru  (0.55, 11.10; 9:8; 2; 19)</text>
+<polygon points="240.1,753.6 246.1,759.6 240.1,765.6 234.1,759.6" class="pair-frontier"><title>s-head-budget96 + u1-puct: x=1.23, it/r=10.68, wins=7:11, ties=1, common=19</title></polygon>
+<line x1="246.1" y1="759.6" x2="1004" y2="797.0" class="label-link"/>
+<text x="1012" y="801.0" class="pair-label">budget96 + u1  (1.23, 10.68; 7:11; 1; 19)</text>
+</svg>

@@ -132,6 +132,9 @@ def play_selfplay_games(
                     player=transition.player,
                     role=0 if transition.player == first_role[index] else 1,
                     episode_seed=int(seeds[index]),
+                    value_potential=game.value_potential(
+                        transition.state, transition.player
+                    ),
                 )
                 action = result.action
             else:
@@ -141,7 +144,9 @@ def play_selfplay_games(
                 )
             next_transition = game.step(transition.state, action)
             if position is not None:
-                position.reward = next_transition.reward
+                position.reward = search.edge_reward(
+                    transition.state, transition.player, next_transition
+                )
                 position.next_terminated = next_transition.terminated
                 records[index].append(position)
             transitions[index] = next_transition
@@ -169,6 +174,8 @@ def play_selfplay_games(
             )
         for position in record:
             position.outcome = float(rewards[position.player])
+            if search.config.potential_cost_shaping:
+                position.outcome -= position.value_potential
             if is_braid:
                 position.solved = solved
                 position.final_crossing_changes = crossing_changes

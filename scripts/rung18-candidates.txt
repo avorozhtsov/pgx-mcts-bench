@@ -18,9 +18,14 @@ s-reg8
 # Parallel controls and remaining complementary local representations.
 u1-puct
 u3-uct
-search-light
 s-paint2
 s-paint4
 
 # Pinned r18/r10/r8 window-scan-tape ensemble; its own rung credit starts at 0.
 s-triad-wst
+
+# Later backfills added while the original queue was draining.
+s-fsa32
+s-scan-gru-tape2
+s-gru128
+s-tape2

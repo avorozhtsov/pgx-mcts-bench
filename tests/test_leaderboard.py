@@ -113,7 +113,7 @@ def test_newest_snapshot_wins_and_render_has_iteration_columns(tmp_path: Path) -
     assert "avgΔmv(n)" not in table
     assert "avg_sr" in table
     assert "cc/sr" not in table
-    assert "avgΔL10:1" in table
+    assert "avgΔL10:1(win)" in table
     assert "avgΔL10:1(n)" not in table
     assert "it/r" in table
     assert table.rstrip().endswith("4   4.00")
@@ -212,7 +212,7 @@ def test_average_move_delta_uses_common_rungs_and_u1_reference(tmp_path: Path) -
 def test_average_loss_10_delta_uses_paired_ratio_10_costs(tmp_path: Path) -> None:
     _save(
         tmp_path,
-        "u1-puct",
+        "s-window-128",
         [
             _stage(0, 2, crossings_10=2.0, moves_10=10.0),
             _stage(17, 2, crossings_10=3.0, moves_10=20.0),
@@ -231,8 +231,8 @@ def test_average_loss_10_delta_uses_paired_ratio_10_costs(tmp_path: Path) -> Non
     by_name = {row.name: row for row in rows}
 
     assert warnings == []
-    assert by_name["u1-puct"].average_loss_10_delta == 0.0
-    assert by_name["u1-puct"].loss_10_delta_rungs == 2
+    assert by_name["s-window-128"].average_loss_10_delta == 0.0
+    assert by_name["s-window-128"].loss_10_delta_rungs == 2
     # Rung deltas are (25 - 30) and (52 - 50), averaged over common rungs.
     assert by_name["other"].average_loss_10_delta == -1.5
     assert by_name["other"].loss_10_delta_rungs == 2
