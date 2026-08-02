@@ -933,7 +933,9 @@ def _restore_ladder_progress(
     if not _candidate_specs_compatible(saved.get("candidate_spec"), asdict(candidate)):
         raise ValueError("Candidate configuration changed since progress checkpoint")
     migrated = load_policy_value_state_dict(network, saved["network"])
-    if not migrated:
+    if migrated:
+        optimizer.state.clear()
+    else:
         optimizer.load_state_dict(saved["optimizer"])
     # Old replay observations have the old channel count after an input
     # migration. Keep the learned weights and rung evidence, but refill replay
@@ -1061,12 +1063,11 @@ def run_ladder(
     if path is not None and path.exists():
         saved = torch.load(path, map_location=device, weights_only=False)
         migrated = load_policy_value_state_dict(network, saved["network"])
-        try:
+        if migrated:
+            optimizer.state.clear()
+            log("    checkpoint inputs migrated; optimizer state restarted")
+        else:
             optimizer.load_state_dict(saved["optimizer"])
-        except ValueError:
-            if not migrated:
-                raise
-            log("    auxiliary value heads added; optimizer state restarted")
         start_stage, cleared, gaps = resume_point(saved["stages"])
         result.stages = [
             StageResult(**row)
