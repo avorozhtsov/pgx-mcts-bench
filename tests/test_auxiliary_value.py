@@ -76,6 +76,44 @@ def test_old_checkpoint_loads_without_auxiliary_parameters() -> None:
     assert torch.equal(source_value, target_value)
 
 
+@pytest.mark.parametrize(
+    ("game", "expanded_keys"),
+    [
+        (
+            BraidGameConfig(max_len=16, max_strands=3, simplify_budget=12),
+            ("representation.net.0.weight",),
+        ),
+        (
+            BraidGameConfig(
+                max_len=16,
+                max_strands=3,
+                simplify_budget=12,
+                serial_window=7,
+                serial_encoder="gru",
+                serial_encoder_states=8,
+            ),
+            ("gru.weight_ih_l0", "body.0.weight"),
+        ),
+    ],
+)
+def test_checkpoint_migration_ignores_one_new_input_feature(
+    game: BraidGameConfig, expanded_keys: tuple[str, ...]
+) -> None:
+    model = ModelConfig(channels=8, latent_channels=8, residual_blocks=1)
+    target = make_braid_network(game, model)
+    old_state = {key: value.clone() for key, value in target.state_dict().items()}
+    for key in expanded_keys:
+        old_state[key] = old_state[key][:, :-1, ...].clone()
+
+    migrated = load_policy_value_state_dict(target, old_state)
+    loaded = target.state_dict()
+
+    assert migrated
+    for key in expanded_keys:
+        assert torch.equal(loaded[key][:, :-1, ...], old_state[key])
+        assert torch.count_nonzero(loaded[key][:, -1, ...]) == 0
+
+
 def test_cutover_switch_uses_composed_ensemble_value() -> None:
     game = BraidGameConfig(max_len=16, max_strands=3, simplify_budget=12)
     model = ModelConfig(

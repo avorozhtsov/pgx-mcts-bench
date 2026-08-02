@@ -18,6 +18,7 @@ from pgx_mcts_bench.config import pick_stage
 from pgx_mcts_bench.game import make_game
 from pgx_mcts_bench.ladder import (
     STAGES,
+    _candidate_specs_compatible,
     _config,
     _duration,
     parallel_arms,
@@ -25,6 +26,20 @@ from pgx_mcts_bench.ladder import (
     resume_point,
     stage_mixture,
 )
+
+
+def test_old_candidate_spec_accepts_only_known_additive_fields() -> None:
+    current = {
+        "name": "d-head128-u1",
+        "serial_ensemble": "",
+        "serial_internal_horizon": 5,
+        "serial_tape_preserve_shift": False,
+    }
+    old = {"name": "d-head128-u1"}
+
+    assert _candidate_specs_compatible(old, current)
+    assert not _candidate_specs_compatible({"name": "another"}, current)
+    assert not _candidate_specs_compatible({}, {**current, "new_unknown_field": 1})
 
 
 def test_progress_duration_is_compact_and_human_readable() -> None:

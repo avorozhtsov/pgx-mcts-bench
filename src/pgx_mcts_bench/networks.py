@@ -950,15 +950,46 @@ class TriadBraidNet(BraidPolicyValueNet):
 def load_policy_value_state_dict(
     network: PolicyValueNet, state_dict: dict[str, Tensor]
 ) -> bool:
-    """Load old braid checkpoints while initializing only new auxiliary towers.
+    """Load compatible old braid checkpoints with narrowly defined migrations.
 
     Returns ``True`` when an old checkpoint was migrated. Any missing or extra
-    parameter outside ``auxiliary.*`` remains an error.
+    parameter outside ``auxiliary.*`` remains an error. A newly appended
+    observation feature is initialized as an ignored input (all zero weights)
+    for the representation layers used by the serial candidates.
     """
     if not isinstance(network, BraidPolicyValueNet):
         network.load_state_dict(state_dict)
         return False
-    incompatible = network.load_state_dict(state_dict, strict=False)
+    migrated_state = dict(state_dict)
+    target_state = network.state_dict()
+    expandable_inputs = {
+        "representation.net.0.weight",
+        "gru.weight_ih_l0",
+        "body.0.weight",
+    }
+    expanded = False
+    for key in expandable_inputs:
+        source = migrated_state.get(key)
+        target = target_state.get(key)
+        if source is None or target is None or source.shape == target.shape:
+            continue
+        compatible = (
+            source.ndim == target.ndim
+            and source.ndim >= 2
+            and target.shape[1] == source.shape[1] + 1
+            and source.shape[:1] == target.shape[:1]
+            and source.shape[2:] == target.shape[2:]
+        )
+        if not compatible:
+            continue
+        padded = torch.zeros_like(target)
+        index = [slice(None)] * source.ndim
+        index[1] = slice(0, source.shape[1])
+        padded[tuple(index)] = source
+        migrated_state[key] = padded
+        expanded = True
+
+    incompatible = network.load_state_dict(migrated_state, strict=False)
     bad_missing = [key for key in incompatible.missing_keys if not key.startswith("auxiliary.")]
     bad_unexpected = [
         key for key in incompatible.unexpected_keys if not key.startswith("auxiliary.")
@@ -967,7 +998,7 @@ def load_policy_value_state_dict(
         raise RuntimeError(
             f"Incompatible checkpoint; missing={bad_missing}, unexpected={bad_unexpected}"
         )
-    return bool(incompatible.missing_keys)
+    return expanded or bool(incompatible.missing_keys)
 
 
 def make_braid_network(game: BraidGameConfig, model: ModelConfig) -> PolicyValueNet:

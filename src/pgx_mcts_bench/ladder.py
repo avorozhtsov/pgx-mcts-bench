@@ -930,11 +930,15 @@ def _restore_ladder_progress(
     """
     if saved.get("version") not in (1, 2) or saved.get("candidate") != candidate.name:
         raise ValueError("Incompatible ladder progress checkpoint")
-    if saved.get("candidate_spec") != asdict(candidate):
+    if not _candidate_specs_compatible(saved.get("candidate_spec"), asdict(candidate)):
         raise ValueError("Candidate configuration changed since progress checkpoint")
-    load_policy_value_state_dict(network, saved["network"])
-    optimizer.load_state_dict(saved["optimizer"])
-    replay.games = saved.get("replay_games", [])
+    migrated = load_policy_value_state_dict(network, saved["network"])
+    if not migrated:
+        optimizer.load_state_dict(saved["optimizer"])
+    # Old replay observations have the old channel count after an input
+    # migration. Keep the learned weights and rung evidence, but refill replay
+    # with observations matching the current model before the next update.
+    replay.games = [] if migrated else saved.get("replay_games", [])
     replay.position_count = sum(len(game) for game in replay.games)
     rng.bit_generator.state = saved["rng_state"]
     torch.set_rng_state(saved["torch_rng_state"].cpu())
@@ -958,7 +962,8 @@ def _restore_ladder_progress(
     saved_identity = (saved.get("source"), saved.get("scramble"))
     partial = None
     if (
-        not saved.get("stage_complete", False)
+        not migrated
+        and not saved.get("stage_complete", False)
         and start_stage < len(STAGES)
         and STAGES[start_stage] == saved_identity
     ):
@@ -973,6 +978,25 @@ def _restore_ladder_progress(
             "selfplay_complete": bool(saved.get("selfplay_complete", False)),
         }
     return result, start_stage, partial, int(saved.get("consecutive_caps", 0))
+
+
+_COMPATIBLE_NEW_CANDIDATE_FIELDS = {
+    "serial_ensemble",
+    "serial_internal_horizon",
+    "serial_tape_preserve_shift",
+}
+
+
+def _candidate_specs_compatible(saved: object, current: dict) -> bool:
+    """Accept old specs that predate only the explicitly additive fields."""
+    if not isinstance(saved, dict):
+        return False
+    missing = set(current) - set(saved)
+    if not missing <= _COMPATIBLE_NEW_CANDIDATE_FIELDS:
+        return False
+    if set(saved) - set(current):
+        return False
+    return all(saved[key] == current[key] for key in saved)
 
 
 def run_ladder(
