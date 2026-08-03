@@ -385,6 +385,27 @@ def tape_scan_arms() -> list[Candidate]:
     ]
 
 
+def experimental_capacity_arms() -> list[Candidate]:
+    """Higher-capacity probes kept outside the fixed tape/scan comparison."""
+    return [
+        Candidate(
+            "s-cyclic-tape8-192",
+            "window-128 controller + cyclic full-word residual encoder + 8-symbol tape",
+            exploration="u1",
+            simulations=128,
+            channels=32,
+            train_steps=96,
+            serial_window=7,
+            serial_act_width=7,
+            use_auxiliary_value=True,
+            serial_encoder="cyclic-memory",
+            serial_encoder_states=64,
+            serial_tape_symbols=8,
+            serial_tape_preserve_shift=True,
+        ),
+    ]
+
+
 def distilled_arms() -> list[Candidate]:
     """Serial students initialized by behavioural distillation from ``u1-puct``.
 
@@ -492,6 +513,7 @@ def candidates() -> list[Candidate]:
         + colour_arms()
         + invariant_learning_arms()
         + tape_scan_arms()
+        + experimental_capacity_arms()
         + distilled_arms()
         + ensemble_arms()
     )

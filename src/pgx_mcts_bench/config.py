@@ -161,6 +161,11 @@ class BraidGameConfig:
     # Maximum consecutive head/memory/tape operations before an external braid
     # action is required. 0 preserves the historical unbounded serial game.
     serial_internal_horizon: int = 0
+    # Append a broadcast remaining-objective-budget plane. The collaboration
+    # wrapper supplies a task-specific cap; ordinary games expose the equivalent
+    # global move-derived cap. Kept opt-in so historical checkpoint schemas stay
+    # exact unless an experiment explicitly migrates them.
+    objective_budget_channel: bool = False
 
     def to_braid_config(self):
         from rf_knots.config import BraidConfig
@@ -232,6 +237,7 @@ class BraidGameConfig:
             + colours
             + tape
             + int(self.serial_internal_horizon > 0)
+            + int(self.objective_budget_channel)
         )
 
     @property

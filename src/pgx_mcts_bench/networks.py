@@ -682,6 +682,203 @@ class SequenceBraidNet(BraidPolicyValueNet):
         return policy, value, self._auxiliary(features)
 
 
+class CyclicMemoryBraidNet(BraidPolicyValueNet):
+    """Pretrained local controller plus a cyclic, full-word memory encoder.
+
+    The window tower can be loaded exactly from ``s-window-128``. The second
+    tower performs dilated message passing on the occupied cyclic word and pools
+    without an absolute seam, giving the critic a rotation-invariant receptive
+    field over the whole braid. A transported eight-symbol tape is visible only
+    to this global tower. Zero-initialized residual heads make parent import
+    function-preserving on every action the parent represents.
+    """
+
+    def __init__(self, game: BraidGameConfig, model: ModelConfig):
+        super().__init__()
+        if game.serial_encoder != "cyclic-memory":
+            raise ValueError(f"Unknown cyclic-memory encoder: {game.serial_encoder}")
+        if game.serial_window != 7 or game.serial_width != 7:
+            raise ValueError("cyclic-memory requires a seven-cell action window")
+        if game.serial_tape_symbols != 8 or not game.serial_tape_preserve_shift:
+            raise ValueError("cyclic-memory requires eight tape symbols plus preserve shifts")
+        self.tape_symbols = game.serial_tape_symbols
+        self.base_channels = game.observation_channels - self.tape_symbols
+        window_game = replace(
+            game,
+            serial_encoder="",
+            serial_encoder_states=0,
+            serial_tape_symbols=0,
+            serial_tape_preserve_shift=False,
+        )
+        self.window = SerialBraidNet(window_game, model)
+        self.padding_channel = 2 * (game.max_strands - 1)
+        self.local_radius = game.serial_window // 2
+        self.action_size = game.action_size
+        self.width = game.serial_encoder_states
+        if self.width < 16:
+            raise ValueError("cyclic-memory encoder width must be at least 16")
+        self.input_project = nn.Conv1d(game.observation_channels, self.width, 1)
+        self.dilations = (1, 2, 4, 8, 16)
+        self.cyclic_blocks = nn.ModuleList(
+            nn.Sequential(
+                nn.Conv1d(3 * self.width, 2 * self.width, 1),
+                nn.SiLU(),
+                nn.Conv1d(2 * self.width, self.width, 1),
+            )
+            for _ in self.dilations
+        )
+        features = 64 + 2 * self.width
+        self.fusion_norm = nn.LayerNorm(features)
+        self.policy_residual = nn.Linear(features, game.action_size)
+        self.value_residual = nn.Linear(features, 1)
+        members = model.auxiliary_value_members
+        self.solve_residual = nn.Linear(features, members)
+        self.cost_residual = nn.Linear(features, 2 * members)
+        for layer in (
+            self.policy_residual,
+            self.value_residual,
+            self.solve_residual,
+            self.cost_residual,
+        ):
+            nn.init.zeros_(layer.weight)
+            nn.init.zeros_(layer.bias)
+        self.register_buffer(
+            "window_action_map", self._window_action_mapping(game, window_game)
+        )
+        self.auxiliary_members = members
+        self.auxiliary_loss_weight = model.auxiliary_value_loss_weight
+        self.auxiliary_budget = float(game.simplify_budget)
+        self.auxiliary_ratio_channel = 2 * (game.max_strands - 1) + 1 + 1 + 6
+        self.use_auxiliary_value = model.use_auxiliary_value
+
+    @staticmethod
+    def _window_action_mapping(
+        game: BraidGameConfig, window_game: BraidGameConfig
+    ) -> Tensor:
+        per_offset = 3 + 2 * (game.max_strands - 1) + 1
+        base = game.serial_width * per_offset + 4
+        variants = game.serial_tape_symbols + 1
+        shifts = 2 * len(game.serial_strides)
+        mapping = list(range(base))
+        mapping.extend(base + shift * variants for shift in range(shifts))
+        if len(mapping) != window_game.action_size:
+            raise ValueError(
+                f"window action map has {len(mapping)} entries, expected "
+                f"{window_game.action_size}"
+            )
+        return torch.tensor(mapping, dtype=torch.long)
+
+    def load_window_state_dict(self, state: dict[str, Tensor]) -> None:
+        load_policy_value_state_dict(self.window, state)
+
+    def _lengths(self, observation: Tensor) -> Tensor:
+        occupied = 1.0 - observation[:, self.padding_channel, 0, :]
+        return occupied.sum(dim=1).long().clamp(min=1, max=observation.shape[-1])
+
+    def _local_view(self, observation: Tensor, lengths: Tensor) -> Tensor:
+        offsets = torch.arange(
+            -self.local_radius,
+            self.local_radius + 1,
+            device=observation.device,
+        )[None, :]
+        indexes = torch.remainder(offsets, lengths[:, None])
+        local = torch.gather(
+            observation,
+            3,
+            indexes[:, None, None, :].expand(-1, observation.shape[1], 1, -1),
+        )
+        return local[:, : self.base_channels]
+
+    @staticmethod
+    def _cyclic_neighbour(hidden: Tensor, lengths: Tensor, offset: int) -> Tensor:
+        positions = torch.arange(hidden.shape[-1], device=hidden.device)[None, :]
+        indexes = torch.remainder(positions + offset, lengths[:, None])
+        return torch.gather(hidden, 2, indexes[:, None, :].expand(-1, hidden.shape[1], -1))
+
+    def encode_global(self, observation: Tensor) -> Tensor:
+        lengths = self._lengths(observation)
+        positions = torch.arange(observation.shape[-1], device=observation.device)[None, :]
+        occupied = (positions < lengths[:, None]).to(observation.dtype)[:, None, :]
+        hidden = F.silu(self.input_project(observation[:, :, 0, :])) * occupied
+        for dilation, block in zip(self.dilations, self.cyclic_blocks, strict=True):
+            neighbours = torch.cat(
+                [
+                    self._cyclic_neighbour(hidden, lengths, -dilation),
+                    hidden,
+                    self._cyclic_neighbour(hidden, lengths, dilation),
+                ],
+                dim=1,
+            )
+            hidden = (hidden + block(neighbours)) * occupied
+        count = occupied.sum(dim=2).clamp(min=1.0)
+        mean = hidden.sum(dim=2) / count
+        maximum = (hidden + (occupied - 1.0) * 1e4).amax(dim=2)
+        return torch.cat([mean, maximum], dim=1)
+
+    def _forward_core(
+        self, observation: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor, tuple[Tensor, Tensor, Tensor]]:
+        lengths = self._lengths(observation)
+        local = self._local_view(observation, lengths)
+        window_logits, window_value, window_features = self.window._forward_core(local)
+        global_features = self.encode_global(observation)
+        features = self.fusion_norm(torch.cat([window_features, global_features], dim=1))
+        # New tape-write actions start with negligible mass, so importing the
+        # parent does not immediately dilute its established policy. Root noise
+        # still explores them and the residual head can raise them during training.
+        logits = window_logits.new_full((window_logits.shape[0], self.action_size), -8.0)
+        logits[:, self.window_action_map] = window_logits
+        logits = logits + self.policy_residual(features)
+        value = (window_value + self.value_residual(features).squeeze(-1)).clamp(-1.0, 1.0)
+        parent_auxiliary = self.window._auxiliary(window_features)
+        solve_delta = self.solve_residual(features)
+        cost_delta = self.cost_residual(features).view(
+            observation.shape[0], self.auxiliary_members, 2
+        )
+        auxiliary = (
+            parent_auxiliary[0] + solve_delta,
+            (parent_auxiliary[1] + cost_delta[:, :, 0]).clamp(min=0.0),
+            (parent_auxiliary[2] + cost_delta[:, :, 1]).clamp(min=0.0),
+        )
+        return logits, value, features, auxiliary
+
+    def composed_auxiliary_value(
+        self,
+        observation: Tensor,
+        auxiliary: tuple[Tensor, Tensor, Tensor],
+    ) -> Tensor:
+        solve_logits, crossings, moves = auxiliary
+        probability = solve_logits.sigmoid()
+        ratio = torch.exp(
+            5.0 * observation[:, self.auxiliary_ratio_channel, 0, 0]
+        )[:, None]
+        normalized_cost = (ratio * crossings + moves) / (
+            (ratio + 1.0) * self.auxiliary_budget
+        )
+        member_values = -1.0 + 2.0 * probability * (1.0 - normalized_cost.clamp(0.0, 1.0))
+        return member_values.mean(dim=1)
+
+    def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
+        policy, legacy, _, auxiliary = self._forward_core(observation)
+        value = (
+            self.composed_auxiliary_value(observation, auxiliary)
+            if self.use_auxiliary_value
+            else legacy
+        )
+        return policy, value
+
+    def forward_with_auxiliary(
+        self, observation: Tensor
+    ) -> tuple[Tensor, Tensor, tuple[Tensor, Tensor, Tensor]]:
+        policy, legacy, _, auxiliary = self._forward_core(observation)
+        value = (
+            self.composed_auxiliary_value(observation, auxiliary)
+            if self.use_auxiliary_value
+            else legacy
+        )
+        return policy, value, auxiliary
+
+
 class TriadBraidNet(BraidPolicyValueNet):
     """Frozen window/scan/tape experts with a learned normalized policy mixer.
 
@@ -1004,6 +1201,8 @@ def load_policy_value_state_dict(
 def make_braid_network(game: BraidGameConfig, model: ModelConfig) -> PolicyValueNet:
     if game.serial_ensemble:
         return TriadBraidNet(game, model)
+    if game.serial_encoder == "cyclic-memory":
+        return CyclicMemoryBraidNet(game, model)
     if game.serial_encoder:
         return SequenceBraidNet(game, model)
     if game.serial_window:

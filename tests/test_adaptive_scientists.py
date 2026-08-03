@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import torch
 
 from pgx_mcts_bench.adaptive_scientists import (
+    FixedWordGame,
+    KnotItem,
     choose_group_proposal,
     choose_proposals,
     simplicity,
@@ -58,3 +62,12 @@ def test_shared_cost_target_is_an_upper_bound_not_an_equality() -> None:
     assert loss[0].item() == 0.0
     assert loss[1].item() > 0.0
     assert loss[2].item() > 0.0
+
+
+def test_fixed_word_game_delegates_value_potential() -> None:
+    base = SimpleNamespace(
+        config=object(),
+        value_potential=lambda state, player: float(state + player),
+    )
+    fixed = FixedWordGame(base, KnotItem("test", 1, (1,), 2))
+    assert fixed.value_potential(3, 2) == 5.0

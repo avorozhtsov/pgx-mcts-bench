@@ -6,7 +6,7 @@ import copy
 import hashlib
 import json
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +16,7 @@ import torch
 from pgx_mcts_bench.config import ExperimentConfig
 from pgx_mcts_bench.data import GameRecord, ReplayBuffer
 from pgx_mcts_bench.game import GameAdapter, Transition, make_game
-from pgx_mcts_bench.ladder import Candidate, _config, parallel_arms
+from pgx_mcts_bench.ladder import Candidate, _config, candidates
 from pgx_mcts_bench.networks import load_policy_value_state_dict, make_braid_network
 from pgx_mcts_bench.search import NeuralMCTS
 from pgx_mcts_bench.training import play_selfplay_games, train_alphazero_step
@@ -45,33 +45,133 @@ class Scientist:
     ignored_rounds: int = 0
 
 
+@dataclass(frozen=True)
+class ObjectiveBudgetState:
+    base_state: Any
+    objective_cap: float
+    cap_type: str
+    exhausted: bool = False
+
+
 class FixedWordGame:
     """Present one table knot at every reset while preserving the game API."""
 
-    def __init__(self, base: GameAdapter, knot: KnotItem):
+    def __init__(
+        self,
+        base: GameAdapter,
+        knot: KnotItem,
+        ratio: float = 1000.0,
+        *,
+        objective_cap: float | None = None,
+        cap_type: str = "global",
+    ):
         self.base = base
         self.config = base.config
         self.knot = knot
+        self.ratio = ratio
+        self.objective_cap = objective_cap
+        self.cap_type = cap_type
+        if objective_cap is not None and not self.config.objective_budget_channel:
+            raise ValueError("objective_cap requires objective_budget_channel")
+
+    def _global_cap(self) -> float:
+        return (self.ratio + 1.0) * self.config.simplify_budget
+
+    def _raw(self, state: Any) -> Any:
+        if isinstance(state, ObjectiveBudgetState):
+            state = state.base_state
+        return self.base.unwrap(state)
+
+    def _spent(self, state: Any) -> float:
+        raw = self._raw(state)
+        moves = max(
+            self.config.simplify_budget - int(np.asarray(raw._budget)), 0
+        )
+        return self.ratio * int(np.asarray(raw._crossing_changes)) + moves
+
+    def _solved(self, state: Any) -> bool:
+        raw = self._raw(state)
+        return int(np.asarray(raw._n)) == 1
+
+    def _budgeted(self, transition: Transition, cap: float) -> Transition:
+        solved = self._solved(transition.state)
+        remaining = cap - self._spent(transition.state)
+        exhausted = remaining <= 0.0 and not solved
+        terminated = transition.terminated or exhausted
+        observation = transition.observation.copy()
+        observation[..., -1] = np.clip(remaining / max(cap, 1.0), -1.0, 1.0)
+        state = ObjectiveBudgetState(
+            transition.state,
+            objective_cap=cap,
+            cap_type=self.cap_type,
+            exhausted=exhausted,
+        )
+        reason = (
+            "solved"
+            if solved
+            else "objective_budget_exhausted"
+            if exhausted
+            else transition.termination_reason
+        )
+        return replace(
+            transition,
+            state=state,
+            observation=observation,
+            reward=-1.0 if exhausted else transition.reward,
+            terminated=terminated,
+            termination_reason=reason,
+        )
 
     def reset(self, seed: int) -> Transition:
         del seed
-        return self.base.from_word(  # type: ignore[attr-defined]
-            list(self.knot.word), self.knot.strands, log_ratio=math.log(1000.0)
+        transition = self.base.from_word(  # type: ignore[attr-defined]
+            list(self.knot.word), self.knot.strands, log_ratio=math.log(self.ratio)
+        )
+        if not self.config.objective_budget_channel:
+            return transition
+        return self._budgeted(
+            transition,
+            self.objective_cap if self.objective_cap is not None else self._global_cap(),
         )
 
     def step(self, state: Any, action: int) -> Transition:
-        return self.base.step(state, action)
+        if not isinstance(state, ObjectiveBudgetState):
+            return self.base.step(state, action)
+        if state.exhausted:
+            raise ValueError("cannot step an exhausted objective-budget state")
+        transition = self.base.step(state.base_state, action)
+        return self._budgeted(transition, state.objective_cap)
 
     def final_rewards(self, state: Any) -> np.ndarray:
+        if isinstance(state, ObjectiveBudgetState):
+            if state.exhausted:
+                raw = self._raw(state)
+                simplifier = 1 - int(np.asarray(raw._scrambler))
+                rewards = np.zeros(2, dtype=np.float32)
+                rewards[simplifier] = -1.0
+                rewards[1 - simplifier] = 1.0
+                return rewards
+            state = state.base_state
         return self.base.final_rewards(state)
 
+    def value_potential(self, state: Any, player: int) -> float:
+        if isinstance(state, ObjectiveBudgetState):
+            state = state.base_state
+        return self.base.value_potential(state, player)
+
     def state_info(self, state: Any) -> dict[str, int]:
+        if isinstance(state, ObjectiveBudgetState):
+            state = state.base_state
         return self.base.state_info(state)
 
     def first_role_player(self, state: Any) -> int:
+        if isinstance(state, ObjectiveBudgetState):
+            state = state.base_state
         return self.base.first_role_player(state)
 
     def unwrap(self, state: Any) -> Any:
+        if isinstance(state, ObjectiveBudgetState):
+            state = state.base_state
         return self.base.unwrap(state)
 
 
@@ -161,10 +261,10 @@ def score_pool(scientist: Scientist, pool: list[KnotItem]) -> tuple[np.ndarray, 
 
 
 def _candidate(name: str) -> Candidate:
-    candidates = {candidate.name: candidate for candidate in parallel_arms()}
-    if name not in candidates:
-        raise ValueError(f"{name!r} is not a parallel ladder candidate")
-    return candidates[name]
+    by_name = {candidate.name: candidate for candidate in candidates()}
+    if name not in by_name:
+        raise ValueError(f"{name!r} is not a ladder candidate")
+    return by_name[name]
 
 
 def load_scientist(
@@ -175,16 +275,25 @@ def load_scientist(
     device: str,
     simulations: int = 0,
     require_factorized: bool = False,
+    objective_budget_channel: bool = False,
 ) -> Scientist:
     candidate = _candidate(name)
     if simulations:
         candidate = Candidate(**{**asdict(candidate), "simulations": simulations})
     config = _config(candidate, ("R(3,12)#0", 0), seed, device, selfplay_games=1)
+    if objective_budget_channel:
+        config = replace(
+            config,
+            game=replace(config.game, objective_budget_channel=True),
+        )
     game = make_game(config.game)
     network = make_braid_network(config.game, config.model).to(device)
     payload = torch.load(checkpoint, map_location=device, weights_only=False)
     state = payload.get("network", payload)
-    factorized = any(key.startswith("auxiliary.") for key in state)
+    factorized = any(
+        key.startswith("auxiliary.") or key.startswith("window.auxiliary.")
+        for key in state
+    )
     if require_factorized and not factorized:
         raise ValueError(f"{checkpoint} has no trained factorized value heads")
     load_policy_value_state_dict(network, state)

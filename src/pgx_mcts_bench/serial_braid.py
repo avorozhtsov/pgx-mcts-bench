@@ -648,6 +648,16 @@ class SerialBraidGame:
         internal_steps: int = 0,
     ) -> Transition:
         observation = np.asarray(pgx_state.observation, dtype=np.float32)  # (L, C)
+        objective_remaining = None
+        if self.config.objective_budget_channel:
+            ratio = float(np.exp(float(np.asarray(pgx_state._log_ratio))))
+            moves = max(
+                self.config.simplify_budget - int(np.asarray(pgx_state._budget)), 0
+            )
+            spent = ratio * int(np.asarray(pgx_state._crossing_changes)) + moves
+            cap = (ratio + 1.0) * self.config.simplify_budget
+            remaining = np.clip((cap - spent) / max(cap, 1.0), -1.0, 1.0)
+            objective_remaining = remaining
         word = np.asarray(pgx_state._word)
         length = int((word != 0).sum())
         # The word is cyclic: gather the window with wraparound. When the word is
@@ -695,6 +705,14 @@ class SerialBraidGame:
             fraction = min(internal_steps / self.config.serial_internal_horizon, 1.0)
             plane = np.full((observed_width, 1), fraction, dtype=np.float32)
             window = np.concatenate([window, plane], axis=1)
+        if objective_remaining is not None:
+            # Append after registers, colours and tape so every historical
+            # channel keeps its index. Checkpoint migration then only has to
+            # zero one genuinely new final input, including for tape agents.
+            plane = np.full(
+                (observed_width, 1), objective_remaining, dtype=np.float32
+            )
+            window = np.concatenate([window, plane], axis=1)
         return Transition(
             state=SerialState(
                 pgx_state, head, registers, colours, colour, tape, internal_steps
@@ -706,4 +724,12 @@ class SerialBraidGame:
             player=int(np.asarray(pgx_state.current_player)),
             move_count=int(np.asarray(pgx_state._step_count)),
             consecutive_passes=0,
+            termination_reason=(
+                "solved"
+                if bool(np.asarray(pgx_state.terminated))
+                and int(np.asarray(pgx_state._n)) == 1
+                else "move_budget_exhausted"
+                if bool(np.asarray(pgx_state.terminated))
+                else ""
+            ),
         )

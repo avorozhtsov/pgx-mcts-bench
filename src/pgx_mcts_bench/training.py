@@ -211,8 +211,30 @@ def train_alphazero_step(
     batch = replay.sample_positions(batch_size)
     observations = _observations(batch, device)
     logits, values, auxiliary = network.forward_with_auxiliary(observations)
-    p_loss = policy_loss(logits, _policies(batch, device))
-    v_loss = F.mse_loss(values, _outcomes(batch, device))
+    shared_positions = torch.tensor(
+        [bool(getattr(position, "shared_witness", False)) for position in batch],
+        dtype=torch.bool,
+        device=device,
+    )
+    native_targets = (
+        ~shared_positions
+        if bool(getattr(network, "shared_auxiliary_only", False))
+        else torch.ones_like(shared_positions)
+    )
+    policy_losses = -(
+        _policies(batch, device) * F.log_softmax(logits, dim=-1)
+    ).sum(dim=-1)
+    value_losses = (values - _outcomes(batch, device)) ** 2
+    p_loss = (
+        policy_losses[native_targets].mean()
+        if bool(native_targets.any())
+        else policy_losses.sum() * 0.0
+    )
+    v_loss = (
+        value_losses[native_targets].mean()
+        if bool(native_targets.any())
+        else value_losses.sum() * 0.0
+    )
     zero = values.sum() * 0.0
     auxiliary_loss = solve_loss = crossings_loss = moves_loss = zero
     solve_brier = shadow_mae = zero
@@ -264,11 +286,7 @@ def train_alphazero_step(
             device=device,
         )[:, None].expand_as(predicted_moves)
         budget = float(getattr(network, "auxiliary_budget", 1.0))
-        shared = torch.tensor(
-            [bool(getattr(position, "shared_witness", False)) for position in batch],
-            dtype=torch.bool,
-            device=device,
-        )[:, None].expand_as(predicted_crossings)
+        shared = shared_positions[:, None].expand_as(predicted_crossings)
         crossings_loss = masked_mean(
             upper_bound_cost_loss(
                 predicted_crossings / budget,

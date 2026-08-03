@@ -93,6 +93,78 @@ def braid_adaptive_scientists(
     typer.echo(json.dumps(report, indent=2))
 
 
+@app.command("braid-collaborative-scientists")
+def braid_collaborative_scientists(
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    scientist: Annotated[
+        list[str],
+        typer.Option(help="Repeat NAME=CHECKPOINT for heterogeneous serial scientists"),
+    ],
+    arm: Annotated[
+        str,
+        typer.Option(
+            help="adaptive-sharing, adaptive-sharing-aux-only, "
+            "adaptive-no-sharing, static-sharing, or static-no-sharing"
+        ),
+    ] = "adaptive-sharing",
+    rounds: Annotated[int, typer.Option(min=1)] = 200,
+    pool_size: Annotated[int, typer.Option(min=1)] = 200,
+    anchor_size: Annotated[int, typer.Option(min=0)] = 70,
+    frontier: Annotated[int, typer.Option(min=1)] = 100,
+    ratios: str = "10,1000",
+    qualification_simulations: Annotated[int, typer.Option(min=1)] = 16,
+    simulations: Annotated[int, typer.Option(min=1)] = 128,
+    train_every: Annotated[int, typer.Option(min=1)] = 10,
+    train_steps: Annotated[int, typer.Option(min=0)] = 32,
+    batch_size: Annotated[int, typer.Option(min=1)] = 32,
+    attempt_workers: Annotated[int, typer.Option(min=1)] = 1,
+    objective_budget: bool = False,
+    objective_budget_audit_every: Annotated[int, typer.Option(min=0)] = 10,
+    bank_seed: int = 0,
+    seed: int = 0,
+    device: str = "cpu",
+    resume: bool = False,
+) -> None:
+    """Run one resumable heterogeneous collaboration pilot arm."""
+    from pgx_mcts_bench.collaborative_scientists import run_collaborative_scientists
+
+    checkpoints: dict[str, Path] = {}
+    for value in scientist:
+        if "=" not in value:
+            raise typer.BadParameter("--scientist must be NAME=CHECKPOINT")
+        name, raw_path = value.split("=", 1)
+        path = Path(raw_path)
+        if not path.is_file():
+            raise typer.BadParameter(f"checkpoint does not exist: {path}")
+        checkpoints[name] = path
+    if not checkpoints:
+        raise typer.BadParameter("repeat --scientist NAME=CHECKPOINT at least once")
+    parsed_ratios = tuple(float(value) for value in ratios.split(","))
+    report = run_collaborative_scientists(
+        checkpoints,
+        output,
+        arm=arm,  # type: ignore[arg-type]
+        rounds=rounds,
+        pool_size=pool_size,
+        anchor_size=anchor_size,
+        frontier=frontier,
+        ratios=parsed_ratios,
+        qualification_simulations=qualification_simulations,
+        simulations=simulations,
+        train_every=train_every,
+        train_steps=train_steps,
+        batch_size=batch_size,
+        attempt_workers=attempt_workers,
+        objective_budget=objective_budget,
+        objective_budget_audit_every=objective_budget_audit_every,
+        bank_seed=bank_seed,
+        seed=seed,
+        device=device,
+        resume=resume,
+    )
+    typer.echo(json.dumps(report, indent=2))
+
+
 @app.command("braid-triad-build")
 def braid_triad_build(
     window: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
@@ -106,6 +178,149 @@ def braid_triad_build(
 
     report = build_triad_checkpoint(window, scan, tape, output, device=device)
     typer.echo(json.dumps(asdict(report), indent=2))
+
+
+@app.command("braid-cyclic-memory-build")
+def braid_cyclic_memory_build(
+    window: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(dir_okay=False)],
+    seed: int = 0,
+    device: str = "cpu",
+) -> None:
+    """Initialize s-cyclic-tape8-192 from an s-window-128 checkpoint."""
+    from pgx_mcts_bench.cyclic_memory import build_cyclic_memory_checkpoint
+
+    report = build_cyclic_memory_checkpoint(
+        window, output, seed=seed, device=device
+    )
+    typer.echo(json.dumps(report, indent=2))
+
+
+@app.command("braid-collaboration-export")
+def braid_collaboration_export(
+    run: Annotated[Path, typer.Option(exists=True, file_okay=False)],
+    scientist: str,
+    output: Annotated[Path, typer.Option(dir_okay=False)],
+) -> None:
+    """Export one scientist from the latest committed collaboration round."""
+    from pgx_mcts_bench.collaboration_eval import export_collaboration_scientist
+
+    report = export_collaboration_scientist(run, scientist, output)
+    typer.echo(json.dumps(report, indent=2))
+
+
+@app.command("braid-cyclic-invariant-pretrain")
+def braid_cyclic_invariant_pretrain(
+    checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(dir_okay=False)],
+    identities: Annotated[int, typer.Option(min=2)] = 400,
+    calibration_identities: Annotated[int, typer.Option(min=2)] = 50,
+    views_per_identity: Annotated[int, typer.Option(min=2)] = 4,
+    steps: Annotated[int, typer.Option(min=1)] = 1_000,
+    batch_size: Annotated[int, typer.Option(min=2)] = 32,
+    learning_rate: float = 3e-4,
+    temperature: float = 0.1,
+    bank_seed: int = 20260802,
+    seed: int = 0,
+    device: str = "cpu",
+) -> None:
+    """Pretrain the cyclic tower to retrieve equivalent knot representations."""
+    from pgx_mcts_bench.invariant_pretrain import pretrain_cyclic_invariants
+
+    report = pretrain_cyclic_invariants(
+        checkpoint,
+        output,
+        identities=identities,
+        calibration_identities=calibration_identities,
+        views_per_identity=views_per_identity,
+        steps=steps,
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+        temperature=temperature,
+        bank_seed=bank_seed,
+        seed=seed,
+        device=device,
+    )
+    typer.echo(json.dumps(report, indent=2))
+
+
+@app.command("braid-collaboration-evaluate")
+def braid_collaboration_evaluate(
+    run: Annotated[Path, typer.Option(exists=True, file_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    state: str = "final",
+    split: str = "new70",
+    simulations: Annotated[int, typer.Option(min=1)] = 128,
+    limit: Annotated[int, typer.Option(min=0)] = 0,
+    seed: int = 0,
+    device: str = "cpu",
+    resume: bool = False,
+) -> None:
+    """Evaluate an initial or final scientist portfolio on a frozen split."""
+    from pgx_mcts_bench.collaboration_eval import evaluate_collaboration
+
+    report = evaluate_collaboration(
+        run,
+        output,
+        state=state,  # type: ignore[arg-type]
+        split=split,  # type: ignore[arg-type]
+        simulations=simulations,
+        limit=limit,
+        seed=seed,
+        device=device,
+        resume=resume,
+    )
+    typer.echo(json.dumps(report, indent=2))
+
+
+@app.command("braid-collaboration-compare")
+def braid_collaboration_compare(
+    treatment: Annotated[Path, typer.Option(exists=True, file_okay=False)],
+    control: Annotated[Path, typer.Option(exists=True, file_okay=False)],
+    output: Annotated[Path | None, typer.Option(dir_okay=False)] = None,
+) -> None:
+    """Compare two evaluations by exact solved representation identity."""
+    from pgx_mcts_bench.collaboration_eval import compare_collaboration_evaluations
+
+    report = compare_collaboration_evaluations(treatment, control, output)
+    typer.echo(json.dumps(report, indent=2))
+
+
+@app.command("braid-objective-budget-regression")
+def braid_objective_budget_regression(
+    bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(dir_okay=False)],
+    scientist: Annotated[
+        list[str], typer.Option(help="Repeat NAME=CHECKPOINT for each scientist")
+    ],
+    ratio: float = 10.0,
+    simulations: Annotated[int, typer.Option(min=1)] = 16,
+    limit: Annotated[int, typer.Option(min=1)] = 10,
+    items: str = "",
+    seed: int = 0,
+    device: str = "cpu",
+) -> None:
+    """Compare the fixed move clock with predicted caps plus restarts."""
+    from pgx_mcts_bench.collaboration_eval import benchmark_objective_budget
+
+    checkpoints = {}
+    for value in scientist:
+        if "=" not in value:
+            raise typer.BadParameter("--scientist must be NAME=CHECKPOINT")
+        name, raw_path = value.split("=", 1)
+        checkpoints[name] = Path(raw_path)
+    report = benchmark_objective_budget(
+        checkpoints,
+        bank,
+        output,
+        ratio=ratio,
+        simulations=simulations,
+        limit=limit,
+        item_ids=tuple(value for value in items.split(",") if value),
+        seed=seed,
+        device=device,
+    )
+    typer.echo(json.dumps(report["summary"], indent=2))
 
 
 @app.command("braid-triad-frontier")

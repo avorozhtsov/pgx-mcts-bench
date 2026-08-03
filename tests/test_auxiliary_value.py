@@ -169,3 +169,38 @@ def test_auxiliary_losses_use_solve_labels_and_mask_unsolved_costs() -> None:
     assert metrics["solve"] > 0.0
     assert metrics["crossings"] >= 0.0
     assert metrics["moves"] >= 0.0
+
+
+def test_shared_auxiliary_only_masks_policy_and_scalar_value_targets() -> None:
+    game = BraidGameConfig(max_len=16, max_strands=3, simplify_budget=12)
+    network = make_braid_network(
+        game, ModelConfig(channels=8, latent_channels=8, residual_blocks=1)
+    )
+    network.shared_auxiliary_only = True
+    optimizer = torch.optim.AdamW(network.parameters(), lr=1e-3)
+    replay = ReplayBuffer(100, np.random.default_rng(3))
+    observation = _observation(game, batch=1)[0].permute(1, 2, 0).numpy()
+    replay.add(
+        [
+            Position(
+                observation=observation.copy(),
+                legal_actions=np.ones(game.action_size, dtype=bool),
+                policy=np.full(game.action_size, 1.0 / game.action_size, dtype=np.float32),
+                action=0,
+                player=1,
+                role=1,
+                outcome=1.0,
+                solved=1.0,
+                final_crossing_changes=2.0,
+                final_moves=7.0,
+                episode_seed=4,
+                shared_witness=True,
+            )
+        ]
+    )
+
+    metrics = train_alphazero_step(network, optimizer, replay, 4, torch.device("cpu"))
+
+    assert metrics["policy"] == 0.0
+    assert metrics["value"] == 0.0
+    assert metrics["solve"] > 0.0

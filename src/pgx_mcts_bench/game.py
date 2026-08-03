@@ -24,6 +24,9 @@ class Transition:
     # `search.py` never has to reach into a game-specific Pgx state.
     move_count: int = 0
     consecutive_passes: int = 0
+    # Empty while an episode is live. Budget-conditioned wrappers distinguish
+    # objective censoring from the environment's ordinary move-clock failure.
+    termination_reason: str = ""
 
 
 class GameAdapter(Protocol):
@@ -229,6 +232,23 @@ class BraidUnknotGame:
 
     def _view(self, state: Any, reward: float) -> Transition:
         observation = np.asarray(state.observation, dtype=np.float32)
+        if self.config.objective_budget_channel:
+            ratio = float(np.exp(float(np.asarray(state._log_ratio))))
+            moves = max(
+                self.config.simplify_budget - int(np.asarray(state._budget)), 0
+            )
+            spent = ratio * int(np.asarray(state._crossing_changes)) + moves
+            cap = (ratio + 1.0) * self.config.simplify_budget
+            remaining = np.clip((cap - spent) / max(cap, 1.0), -1.0, 1.0)
+            observation = np.concatenate(
+                [
+                    observation,
+                    np.full(
+                        (self.config.max_len, 1), remaining, dtype=np.float32
+                    ),
+                ],
+                axis=1,
+            )
         # (L, C) -> (1, L, C): a one-row image, so the shared Conv2d stack works.
         observation = observation.reshape(1, self.config.max_len, self.config.observation_channels)
         move_count = int(np.asarray(state._step_count))
@@ -242,6 +262,14 @@ class BraidUnknotGame:
             move_count=move_count,
             # There is no pass-pass ending here; the phase budget is the clock.
             consecutive_passes=0,
+            termination_reason=(
+                "solved"
+                if bool(np.asarray(state.terminated))
+                and int(np.asarray(state._n)) == 1
+                else "move_budget_exhausted"
+                if bool(np.asarray(state.terminated))
+                else ""
+            ),
         )
 
     def final_rewards(self, state: Any) -> np.ndarray:
