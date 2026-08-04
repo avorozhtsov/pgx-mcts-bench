@@ -30,3 +30,17 @@ This directory stores important, publication-ready vector figures and their prov
 - Partial local coverage is shown explicitly: `s-tape4` and `s-triad-wst` have 12/13 usable ratio-10 records; `s-scan-gru-tape2` has 9/13.
 - Pair and triple oracles are ranked by the horizontal loss/solve objective. Missing provisional-member rungs conservatively fall back to another ensemble member.
 - The top three pairs and top three triples are embedded in the figure.
+
+## Rung-12 s-scan-gru-tape2 pair analysis
+
+- File: `rung12-scan-gru-tape2-pairs.svg`
+- Generator: `scripts/plot_rung12_scan_gru_tape2_pairs.py`
+- Generated: 2026-08-02
+- Scope: completed rung records 0 through 12; records 13 and above excluded.
+- Pool: `s-scan-gru-tape2` paired separately with every other member of the
+  selected rung-12 pool.
+- `s-scan-gru-tape2` currently has 12/13 completed records. On its missing rung,
+  each pair oracle conservatively falls back to the other member.
+- Pair `it/r` is the parents' `it/r` weighted by the number of rungs on which
+  each parent supplies the selected solution. Pair links connect each oracle to
+  both parents; blue diamonds mark the Pareto frontier among these eight pairs.

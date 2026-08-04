@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1620 900" role="img" aria-labelledby="title desc">
+<title id="title">Rung-12 oracle pairs containing s-scan-gru-tape2</title>
+<desc id="desc">Candidate points and all eight two-policy oracles containing s-scan-gru-tape2. Lower is better on both axes. Records above rung twelve are excluded.</desc>
+<metadata>Generated from the final Nebius snapshot and current local backfill. Completed rung records 0 through 12 only; records 13 and above excluded. Missing focus records fall back to the other pair member.</metadata>
+<style>
+text { font-family: "DejaVu Sans", Arial, sans-serif; fill: #172033; }
+.title { font-size: 24px; font-weight: 700; }
+.subtitle { font-size: 13px; fill: #59657a; }
+.axis-label { font-size: 14px; font-weight: 600; }
+.tick { font-size: 12px; fill: #59657a; }
+.grid { stroke: #dbe1ea; stroke-width: 1; }
+.axis { stroke: #172033; stroke-width: 1.2; }
+.zero { stroke: #59657a; stroke-width: 1.2; stroke-dasharray: 5 5; }
+.member-link { stroke: #7867a7; stroke-width: 1.2; opacity: .3; }
+.single { fill: #7d8799; stroke: #fff; stroke-width: 2; }
+.focus { fill: #d97706; stroke: #fff; stroke-width: 2.5; }
+.pair { fill: #7867a7; stroke: #fff; stroke-width: 2; }
+.frontier { fill: #1677b8; stroke: #fff; stroke-width: 2.5; }
+.label { font-size: 11px; font-weight: 600; paint-order: stroke; stroke: #fff; stroke-width: 4px; stroke-linejoin: round; }
+.rail-heading { font-size: 14px; font-weight: 700; }
+.rail-item { font-size: 12px; }
+.rail-value { font-size: 11px; fill: #59657a; }
+.legend { font-size: 12px; fill: #59657a; }
+</style>
+<rect width="1620" height="900" fill="#fff"/>
+<text x="95" y="38" class="title">Rung-12 pairs with s-scan-gru-tape2</text>
+<text x="95" y="64" class="subtitle">Only completed records through rung 12 are used; higher rungs are excluded.</text>
+<text x="95" y="85" class="subtitle">x = mean paired ΔL10:1 vs s-window-128 + 10 × (1 − avg_sr); y = weighted it/r of the selected pair member.</text>
+<text x="95" y="106" class="subtitle">s-scan-gru-tape2 coverage: 13/13 rungs. On a missing rung, the oracle uses the other member.</text>
+<circle cx="760" cy="80" r="5" class="single"/><text x="772" y="85" class="legend">single</text>
+<circle cx="832" cy="80" r="7" class="focus"/><text x="845" y="85" class="legend">focus</text>
+<rect x="905" y="75" width="10" height="10" transform="rotate(45 910 80)" class="pair"/><text x="924" y="85" class="legend">pair</text>
+<rect x="973" y="75" width="10" height="10" transform="rotate(45 978 80)" class="frontier"/><text x="992" y="85" class="legend">pair Pareto frontier</text>
+<line x1="95.0" y1="140" x2="95.0" y2="785" class="grid"/>
+<text x="95.0" y="809" text-anchor="middle" class="tick">-2</text>
+<line x1="217.0" y1="140" x2="217.0" y2="785" class="grid"/>
+<text x="217.0" y="809" text-anchor="middle" class="tick">0</text>
+<line x1="339.0" y1="140" x2="339.0" y2="785" class="grid"/>
+<text x="339.0" y="809" text-anchor="middle" class="tick">2</text>
+<line x1="461.0" y1="140" x2="461.0" y2="785" class="grid"/>
+<text x="461.0" y="809" text-anchor="middle" class="tick">4</text>
+<line x1="583.0" y1="140" x2="583.0" y2="785" class="grid"/>
+<text x="583.0" y="809" text-anchor="middle" class="tick">6</text>
+<line x1="705.0" y1="140" x2="705.0" y2="785" class="grid"/>
+<text x="705.0" y="809" text-anchor="middle" class="tick">8</text>
+<line x1="827.0" y1="140" x2="827.0" y2="785" class="grid"/>
+<text x="827.0" y="809" text-anchor="middle" class="tick">10</text>
+<line x1="949.0" y1="140" x2="949.0" y2="785" class="grid"/>
+<text x="949.0" y="809" text-anchor="middle" class="tick">12</text>
+<line x1="95" y1="709.1" x2="1010" y2="709.1" class="grid"/>
+<text x="83" y="713.1" text-anchor="end" class="tick">10</text>
+<line x1="95" y1="614.3" x2="1010" y2="614.3" class="grid"/>
+<text x="83" y="618.3" text-anchor="end" class="tick">15</text>
+<line x1="95" y1="519.4" x2="1010" y2="519.4" class="grid"/>
+<text x="83" y="523.4" text-anchor="end" class="tick">20</text>
+<line x1="95" y1="424.6" x2="1010" y2="424.6" class="grid"/>
+<text x="83" y="428.6" text-anchor="end" class="tick">25</text>
+<line x1="95" y1="329.7" x2="1010" y2="329.7" class="grid"/>
+<text x="83" y="333.7" text-anchor="end" class="tick">30</text>
+<line x1="95" y1="234.9" x2="1010" y2="234.9" class="grid"/>
+<text x="83" y="238.9" text-anchor="end" class="tick">35</text>
+<line x1="95" y1="140.0" x2="1010" y2="140.0" class="grid"/>
+<text x="83" y="144.0" text-anchor="end" class="tick">40</text>
+<line x1="217.0" y1="140" x2="217.0" y2="785" class="zero"/>
+<line x1="95" y1="785" x2="1010" y2="785" class="axis"/>
+<line x1="95" y1="140" x2="95" y2="785" class="axis"/>
+<text x="552.5" y="850" text-anchor="middle" class="axis-label">solve-penalized relative loss objective</text>
+<text x="28" y="462.5" transform="rotate(-90 28 462.5)" text-anchor="middle" class="axis-label">iterations per cleared rung</text>
+<line x1="207.6" y1="615.7" x2="412.6" y2="230.5" class="member-link"/>
+<line x1="207.6" y1="615.7" x2="224.8" y2="647.8" class="member-link"/>
+<line x1="348.3" y1="478.8" x2="412.6" y2="230.5" class="member-link"/>
+<line x1="348.3" y1="478.8" x2="861.0" y2="691.6" class="member-link"/>
+<line x1="372.2" y1="447.3" x2="412.6" y2="230.5" class="member-link"/>
+<line x1="372.2" y1="447.3" x2="552.8" y2="633.2" class="member-link"/>
+<line x1="244.1" y1="602.3" x2="412.6" y2="230.5" class="member-link"/>
+<line x1="244.1" y1="602.3" x2="242.0" y2="633.2" class="member-link"/>
+<line x1="275.8" y1="383.1" x2="412.6" y2="230.5" class="member-link"/>
+<line x1="275.8" y1="383.1" x2="927.4" y2="726.6" class="member-link"/>
+<line x1="237.1" y1="467.6" x2="412.6" y2="230.5" class="member-link"/>
+<line x1="237.1" y1="467.6" x2="241.8" y2="510.7" class="member-link"/>
+<line x1="301.1" y1="228.5" x2="412.6" y2="230.5" class="member-link"/>
+<line x1="301.1" y1="228.5" x2="367.9" y2="225.4" class="member-link"/>
+<line x1="272.4" y1="226.0" x2="412.6" y2="230.5" class="member-link"/>
+<line x1="272.4" y1="226.0" x2="414.2" y2="218.8" class="member-link"/>
+<circle cx="224.8" cy="647.8" r="5.5" class="single"><title>s-window-128: x=0.128, it/r=13.23, coverage=13/13</title></circle>
+<text x="232.8" y="637.8" text-anchor="start" class="label">s-window-128</text>
+<circle cx="861.0" cy="691.6" r="5.5" class="single"><title>s-head-budget96: x=10.557, it/r=10.92, coverage=13/13</title></circle>
+<text x="853.0" y="708.6" text-anchor="end" class="label">s-head-budget96</text>
+<circle cx="552.8" cy="633.2" r="5.5" class="single"><title>s-scan-gru: x=5.505, it/r=14.00, coverage=13/13</title></circle>
+<text x="560.8" y="624.2" text-anchor="start" class="label">s-scan-gru</text>
+<circle cx="242.0" cy="633.2" r="5.5" class="single"><title>s-paint4: x=0.410, it/r=14.00, coverage=13/13</title></circle>
+<text x="250.0" y="650.2" text-anchor="start" class="label">s-paint4</text>
+<circle cx="927.4" cy="726.6" r="5.5" class="single"><title>u1-puct: x=11.646, it/r=9.08, coverage=13/13</title></circle>
+<text x="935.4" y="717.6" text-anchor="start" class="label">u1-puct</text>
+<circle cx="241.8" cy="510.7" r="5.5" class="single"><title>d-head128-u1: x=0.407, it/r=20.46, coverage=13/13</title></circle>
+<text x="249.8" y="501.7" text-anchor="start" class="label">d-head128-u1</text>
+<circle cx="367.9" cy="225.4" r="5.5" class="single"><title>s-tape4: x=2.474, it/r=35.50, coverage=12/13</title></circle>
+<text x="375.9" y="216.4" text-anchor="start" class="label">s-tape4</text>
+<circle cx="414.2" cy="218.8" r="5.5" class="single"><title>s-triad-wst: x=3.233, it/r=35.85, coverage=13/13</title></circle>
+<text x="422.2" y="235.8" text-anchor="start" class="label">s-triad-wst</text>
+<circle cx="412.6" cy="230.5" r="7" class="focus"><title>s-scan-gru-tape2: x=3.207, it/r=35.23, coverage=13/13</title></circle>
+<text x="420.6" y="218.5" text-anchor="start" class="label">s-scan-gru-tape2</text>
+<rect x="201.1" y="609.2" width="13" height="13" transform="rotate(45 207.6 615.7)" class="frontier"><title>s-scan-gru-tape2 + s-window-128: x=-0.154, it/r=14.92, selected=1:12, ties=2</title></rect>
+<text x="217.6" y="606.7" class="label">P1</text>
+<rect x="231.6" y="462.1" width="11" height="11" transform="rotate(45 237.1 467.6)" class="pair"><title>s-scan-gru-tape2 + d-head128-u1: x=0.330, it/r=22.73, selected=2:11, ties=3</title></rect>
+<text x="247.1" y="458.6" class="label">P2</text>
+<rect x="238.6" y="596.8" width="11" height="11" transform="rotate(45 244.1 602.3)" class="pair"><title>s-scan-gru-tape2 + s-paint4: x=0.444, it/r=15.63, selected=1:12, ties=3</title></rect>
+<text x="254.1" y="593.3" class="label">P3</text>
+<rect x="266.9" y="220.5" width="11" height="11" transform="rotate(45 272.4 226.0)" class="pair"><title>s-scan-gru-tape2 + s-triad-wst: x=0.908, it/r=35.47, selected=8:5, ties=1</title></rect>
+<text x="282.4" y="217.0" class="label">P4</text>
+<rect x="270.3" y="377.6" width="11" height="11" transform="rotate(45 275.8 383.1)" class="pair"><title>s-scan-gru-tape2 + u1-puct: x=0.964, it/r=27.18, selected=9:4, ties=1</title></rect>
+<text x="285.8" y="374.1" class="label">P5</text>
+<rect x="295.6" y="223.0" width="11" height="11" transform="rotate(45 301.1 228.5)" class="pair"><title>s-scan-gru-tape2 + s-tape4: x=1.379, it/r=35.33, selected=8:5, ties=2</title></rect>
+<text x="311.1" y="219.5" class="label">P6</text>
+<rect x="342.8" y="473.3" width="11" height="11" transform="rotate(45 348.3 478.8)" class="pair"><title>s-scan-gru-tape2 + s-head-budget96: x=2.152, it/r=22.14, selected=6:7, ties=1</title></rect>
+<text x="358.3" y="469.8" class="label">P7</text>
+<rect x="366.7" y="441.8" width="11" height="11" transform="rotate(45 372.2 447.3)" class="pair"><title>s-scan-gru-tape2 + s-scan-gru: x=2.544, it/r=23.80, selected=6:7, ties=3</title></rect>
+<text x="382.2" y="438.3" class="label">P8</text>
+<text x="1060" y="145" class="rail-heading">All focus pairs, ranked by x</text>
+<text x="1060" y="175" class="rail-item">P1. + s-window-128 · Pareto</text>
+<text x="1060" y="193" class="rail-value">x=-0.154 · it/r=14.92 · selected=1:12 · ties=2</text>
+<text x="1060" y="241" class="rail-item">P2. + d-head128-u1</text>
+<text x="1060" y="259" class="rail-value">x=0.330 · it/r=22.73 · selected=2:11 · ties=3</text>
+<text x="1060" y="307" class="rail-item">P3. + s-paint4</text>
+<text x="1060" y="325" class="rail-value">x=0.444 · it/r=15.63 · selected=1:12 · ties=3</text>
+<text x="1060" y="373" class="rail-item">P4. + s-triad-wst</text>
+<text x="1060" y="391" class="rail-value">x=0.908 · it/r=35.47 · selected=8:5 · ties=1</text>
+<text x="1060" y="439" class="rail-item">P5. + u1-puct</text>
+<text x="1060" y="457" class="rail-value">x=0.964 · it/r=27.18 · selected=9:4 · ties=1</text>
+<text x="1060" y="505" class="rail-item">P6. + s-tape4</text>
+<text x="1060" y="523" class="rail-value">x=1.379 · it/r=35.33 · selected=8:5 · ties=2</text>
+<text x="1060" y="571" class="rail-item">P7. + s-head-budget96</text>
+<text x="1060" y="589" class="rail-value">x=2.152 · it/r=22.14 · selected=6:7 · ties=1</text>
+<text x="1060" y="637" class="rail-item">P8. + s-scan-gru</text>
+<text x="1060" y="655" class="rail-value">x=2.544 · it/r=23.80 · selected=6:7 · ties=3</text>
+<text x="1060" y="846" class="rail-value">selected counts are focus:other across 13 evaluated rungs.</text>
+<text x="1060" y="866" class="rail-value">Lower is better on both axes.</text>
+</svg>
