@@ -198,19 +198,67 @@ class AuxiliaryValueMember(nn.Module):
             nn.SiLU(),
             nn.Linear(hidden, 2),
         )
+        self.cost_budget = nn.Sequential(
+            nn.Linear(1, width),
+            nn.SiLU(),
+            nn.Linear(width, 2),
+        )
+        self.solve_conditioning = nn.Sequential(
+            nn.Linear(features + 4, width),
+            nn.SiLU(),
+            nn.Linear(width, width),
+            nn.SiLU(),
+            nn.Linear(width, 1),
+        )
         # Neutral solve prior and modest positive cost priors. Small weights keep
         # members distinct without injecting large random outputs at migration.
         nn.init.normal_(self.solve[-1].weight, std=1e-3)
         nn.init.zeros_(self.solve[-1].bias)
         nn.init.normal_(self.cost[-1].weight, std=1e-3)
+        nn.init.zeros_(self.cost_budget[-1].weight)
+        nn.init.zeros_(self.cost_budget[-1].bias)
+        nn.init.zeros_(self.solve_conditioning[-1].weight)
+        nn.init.zeros_(self.solve_conditioning[-1].bias)
         with torch.no_grad():
             self.cost[-1].bias.copy_(
                 torch.tensor([_inverse_softplus(1.0), _inverse_softplus(8.0)])
             )
 
-    def forward(self, features: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        solve_logit = self.solve(features).squeeze(-1)
-        costs = F.softplus(self.cost(features))
+    def forward(
+        self,
+        solve_features: Tensor,
+        cost_features: Tensor | None = None,
+        conditioning: tuple[Tensor, Tensor, float] | None = None,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        if cost_features is None:
+            cost_features = solve_features
+        cost_logits = self.cost(cost_features)
+        if conditioning is not None:
+            remaining_budget, ratio, scale = conditioning
+            cost_logits = cost_logits + self.cost_budget(remaining_budget[:, None])
+        costs = F.softplus(cost_logits)
+        solve_logit = self.solve(solve_features).squeeze(-1)
+        if conditioning is not None:
+            remaining_budget, ratio, scale = conditioning
+            # Costs enter numerically but are stop-gradient inputs: their own
+            # supervised heads retain the meanings cc and moves rather than
+            # becoming arbitrary hidden variables optimized by solve BCE.
+            normalized_cc = costs[:, 0].detach() / scale
+            normalized_moves = costs[:, 1].detach() / scale
+            normalized_l = (
+                ratio * costs[:, 0].detach() + costs[:, 1].detach()
+            ) / ((ratio + 1.0) * scale)
+            conditioned = torch.cat(
+                [
+                    solve_features,
+                    remaining_budget[:, None],
+                    normalized_cc[:, None],
+                    normalized_moves[:, None],
+                    normalized_l[:, None],
+                ],
+                dim=1,
+            )
+            solve_logit = solve_logit + self.solve_conditioning(conditioned).squeeze(-1)
         return solve_logit, costs[:, 0], costs[:, 1]
 
 
@@ -222,14 +270,52 @@ class AuxiliaryValueHeads(nn.Module):
         self.members = nn.ModuleList(
             AuxiliaryValueMember(features, width) for _ in range(members)
         )
+        self.body_budget_skip = nn.Sequential(
+            nn.Linear(1, 32),
+            nn.SiLU(),
+            nn.Linear(32, features),
+        )
+        self.legacy_budget_skip = nn.Sequential(
+            nn.Linear(1, 32),
+            nn.SiLU(),
+            nn.Linear(32, 1),
+        )
+        for branch in (self.body_budget_skip, self.legacy_budget_skip):
+            nn.init.zeros_(branch[-1].weight)
+            nn.init.zeros_(branch[-1].bias)
 
-    def forward(self, features: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        outputs = [member(features) for member in self.members]
+    def forward(
+        self,
+        solve_features: Tensor,
+        cost_features: Tensor | None = None,
+        conditioning: tuple[Tensor, Tensor, float] | None = None,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        outputs = [
+            member(solve_features, cost_features, conditioning) for member in self.members
+        ]
         return tuple(torch.stack(items, dim=1) for items in zip(*outputs, strict=True))  # type: ignore[return-value]
 
 
 class BraidPolicyValueNet(PolicyValueNet):
     """Common shadow-critic plumbing for every braid representation."""
+
+    def _set_auxiliary_training_controls(
+        self, game: BraidGameConfig, model: ModelConfig
+    ) -> None:
+        self.auxiliary_loss_weight = model.auxiliary_value_loss_weight
+        self.auxiliary_backprop = model.auxiliary_backprop_to_encoder
+        self.auxiliary_solve_backprop = model.auxiliary_solve_backprop_to_encoder
+        self.auxiliary_budget_monotonic_weight = model.auxiliary_budget_monotonic_weight
+        self.auxiliary_budget_monotonic_margin = model.auxiliary_budget_monotonic_margin
+        self.auxiliary_budget_conditioning = model.auxiliary_budget_conditioning
+        self.freeze_batchnorm_stats = model.freeze_batchnorm_stats
+        self.policy_value_preservation_weight = model.policy_value_preservation_weight
+        self.objective_budget_channel = (
+            game.observation_channels - 1 if game.objective_budget_channel else None
+        )
+        self.auxiliary_budget = float(game.simplify_budget)
+        self.auxiliary_ratio_channel = 2 * (game.max_strands - 1) + 1 + 1 + 6
+        self.use_auxiliary_value = model.use_auxiliary_value
 
     def _init_auxiliary(
         self, features: int, game: BraidGameConfig, model: ModelConfig
@@ -238,16 +324,25 @@ class BraidPolicyValueNet(PolicyValueNet):
             features, model.auxiliary_value_width, model.auxiliary_value_members
         )
         self.auxiliary_members = model.auxiliary_value_members
-        self.auxiliary_loss_weight = model.auxiliary_value_loss_weight
-        self.auxiliary_backprop = model.auxiliary_backprop_to_encoder
-        self.use_auxiliary_value = model.use_auxiliary_value
-        self.auxiliary_budget = float(game.simplify_budget)
-        self.auxiliary_ratio_channel = 2 * (game.max_strands - 1) + 1 + 1 + 6
+        self._set_auxiliary_training_controls(game, model)
 
-    def _auxiliary(self, features: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        if not self.auxiliary_backprop:
-            features = features.detach()
-        return self.auxiliary(features)
+    def _budget_conditioning(
+        self, observation: Tensor
+    ) -> tuple[Tensor, Tensor, float] | None:
+        if not self.auxiliary_budget_conditioning or self.objective_budget_channel is None:
+            return None
+        remaining = observation[:, self.objective_budget_channel, 0, 0].clamp(0.0, 1.0)
+        ratio = torch.exp(5.0 * observation[:, self.auxiliary_ratio_channel, 0, 0])
+        return remaining, ratio, self.auxiliary_budget
+
+    def _auxiliary(
+        self, features: Tensor, observation: Tensor | None = None
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        conditioning = self._budget_conditioning(observation) if observation is not None else None
+        if self.auxiliary_backprop:
+            return self.auxiliary(features, conditioning=conditioning)
+        solve_features = features if self.auxiliary_solve_backprop else features.detach()
+        return self.auxiliary(solve_features, features.detach(), conditioning)
 
     def composed_auxiliary_value(
         self,
@@ -272,7 +367,7 @@ class BraidPolicyValueNet(PolicyValueNet):
         if not self.use_auxiliary_value:
             return legacy
         return self.composed_auxiliary_value(
-            observation, self._auxiliary(features)
+            observation, self._auxiliary(features, observation)
         )
 
 
@@ -440,8 +535,17 @@ class SerialBraidNet(BraidPolicyValueNet):
             dim=1,
         )
         features = self.body(summary)
+        conditioning = self._budget_conditioning(observation)
+        if conditioning is not None:
+            remaining_budget, _, _ = conditioning
+            features = features + self.auxiliary.body_budget_skip(remaining_budget[:, None])
         logits = torch.cat([positional, self.global_policy(features)], dim=1)
-        return logits, self.value(features).squeeze(-1), features
+        value_logit = self.value[0](features)
+        if conditioning is not None:
+            value_logit = value_logit + self.auxiliary.legacy_budget_skip(
+                remaining_budget[:, None]
+            )
+        return logits, torch.tanh(value_logit).squeeze(-1), features
 
     def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
         policy, legacy, features = self._forward_core(observation)
@@ -451,7 +555,7 @@ class SerialBraidNet(BraidPolicyValueNet):
         self, observation: Tensor
     ) -> tuple[Tensor, Tensor, tuple[Tensor, Tensor, Tensor]]:
         policy, value, features = self._forward_core(observation)
-        return policy, value, self._auxiliary(features)
+        return policy, value, self._auxiliary(features, observation)
 
 
 def _mod_centered(value: Tensor, prime: int) -> Tensor:
@@ -746,10 +850,7 @@ class CyclicMemoryBraidNet(BraidPolicyValueNet):
             "window_action_map", self._window_action_mapping(game, window_game)
         )
         self.auxiliary_members = members
-        self.auxiliary_loss_weight = model.auxiliary_value_loss_weight
-        self.auxiliary_budget = float(game.simplify_budget)
-        self.auxiliary_ratio_channel = 2 * (game.max_strands - 1) + 1 + 1 + 6
-        self.use_auxiliary_value = model.use_auxiliary_value
+        self._set_auxiliary_training_controls(game, model)
 
     @staticmethod
     def _window_action_mapping(
@@ -831,8 +932,14 @@ class CyclicMemoryBraidNet(BraidPolicyValueNet):
         logits = logits + self.policy_residual(features)
         value = (window_value + self.value_residual(features).squeeze(-1)).clamp(-1.0, 1.0)
         parent_auxiliary = self.window._auxiliary(window_features)
-        solve_delta = self.solve_residual(features)
-        cost_delta = self.cost_residual(features).view(
+        solve_features = (
+            features
+            if self.auxiliary_backprop or self.auxiliary_solve_backprop
+            else features.detach()
+        )
+        cost_features = features if self.auxiliary_backprop else features.detach()
+        solve_delta = self.solve_residual(solve_features)
+        cost_delta = self.cost_residual(cost_features).view(
             observation.shape[0], self.auxiliary_members, 2
         )
         auxiliary = (
@@ -974,10 +1081,7 @@ class TriadBraidNet(BraidPolicyValueNet):
         self.register_buffer("action_support", support)
 
         self.auxiliary_members = members
-        self.auxiliary_loss_weight = model.auxiliary_value_loss_weight
-        self.auxiliary_budget = float(game.simplify_budget)
-        self.auxiliary_ratio_channel = 2 * (game.max_strands - 1) + 1 + 1 + 6
-        self.use_auxiliary_value = model.use_auxiliary_value
+        self._set_auxiliary_training_controls(game, model)
         self._freeze_towers()
 
     @staticmethod
@@ -1097,10 +1201,16 @@ class TriadBraidNet(BraidPolicyValueNet):
         solve = torch.stack([item[0] for item in parent_auxiliary], dim=0).mean(dim=0)
         crossings = torch.stack([item[1] for item in parent_auxiliary], dim=0).mean(dim=0)
         moves = torch.stack([item[2] for item in parent_auxiliary], dim=0).mean(dim=0)
-        solve = solve + self.solve_residual(features)
+        solve_features = (
+            features
+            if self.auxiliary_backprop or self.auxiliary_solve_backprop
+            else features.detach()
+        )
+        cost_features = features if self.auxiliary_backprop else features.detach()
+        solve = solve + self.solve_residual(solve_features)
         cost_scale = torch.exp(
             0.5
-            * torch.tanh(self.cost_residual(features)).view(
+            * torch.tanh(self.cost_residual(cost_features)).view(
                 observation.shape[0], self.auxiliary_members, 2
             )
         )

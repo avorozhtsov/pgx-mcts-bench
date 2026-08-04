@@ -5,6 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import torch
 from rf_knots.actions import DESTABILIZE
 
@@ -44,12 +45,8 @@ def test_stratified_banks_are_identity_disjoint_and_span_quartiles() -> None:
 
 def test_pilot_banks_are_not_unknotting_number_one_only() -> None:
     bank, anchors = stratified_banks(200, 70, seed=20260802)
-    assert sum(
-        (item.certified_unknotting_lower_bound or 0) >= 2 for item in bank
-    ) == 87
-    assert sum(
-        (item.certified_unknotting_lower_bound or 0) >= 2 for item in anchors
-    ) == 27
+    assert sum((item.certified_unknotting_lower_bound or 0) >= 2 for item in bank) == 87
+    assert sum((item.certified_unknotting_lower_bound or 0) >= 2 for item in anchors) == 27
     assert {
         item.id: item.known_unknotting_number
         for item in bank
@@ -73,9 +70,7 @@ def test_semantic_destabilization_translates_to_native_serial_record() -> None:
     assert record is not None
     assert record[0].shared_witness
     assert verified_record_cost(game, knot, 10.0, record)[:2] == (0, 1)
-    rescued, failed_cost, shared_cost = _strict_shared_improvement(
-        receiver, knot, 10.0, [], record
-    )
+    rescued, failed_cost, shared_cost = _strict_shared_improvement(receiver, knot, 10.0, [], record)
     assert rescued
     assert failed_cost is None
     assert shared_cost == 1.0
@@ -99,15 +94,18 @@ def test_objective_budget_accepts_exact_cap_and_marks_censoring() -> None:
     assert native is not None
 
     exact = FixedWordGame(game, knot, 10.0, objective_cap=1.0).reset(0)
-    solved = FixedWordGame(game, knot, 10.0, objective_cap=1.0).step(
-        exact.state, native[0].action
-    )
+    solved = FixedWordGame(game, knot, 10.0, objective_cap=1.0).step(exact.state, native[0].action)
     assert solved.terminated
     assert solved.termination_reason == "solved"
 
     censored = FixedWordGame(game, knot, 10.0, objective_cap=0.0).reset(0)
     assert censored.terminated
     assert censored.termination_reason == "objective_budget_exhausted"
+
+    small = FixedWordGame(game, knot, 10.0, objective_cap=10.0).reset(0)
+    large = FixedWordGame(game, knot, 10.0, objective_cap=20.0).reset(0)
+    assert np.allclose(large.observation[..., -1], 2 * small.observation[..., -1])
+    assert float(large.observation[0, 0, -1]) < 1.0
 
 
 def test_old_checkpoint_ignores_new_objective_budget_channel(tmp_path: Path) -> None:
@@ -126,20 +124,38 @@ def test_old_checkpoint_ignores_new_objective_budget_channel(tmp_path: Path) -> 
             device="cpu",
             objective_budget_channel=True,
         )
-        old_observation = FixedWordGame(make_game(config.game), knot, 10.0).reset(
-            0
-        ).observation
-        new_observation = FixedWordGame(
-            scientist.game, knot, 10.0, objective_cap=12.0
-        ).reset(0).observation
+        old_observation = FixedWordGame(make_game(config.game), knot, 10.0).reset(0).observation
+        new_observation = (
+            FixedWordGame(scientist.game, knot, 10.0, objective_cap=12.0).reset(0).observation
+        )
         old_tensor = torch.from_numpy(old_observation).permute(2, 0, 1)[None]
         new_tensor = torch.from_numpy(new_observation).permute(2, 0, 1)[None]
         with torch.inference_mode():
             old_outputs = old_network(old_tensor)
             new_outputs = scientist.network.eval()(new_tensor)
+            old_auxiliary = old_network.forward_with_auxiliary(old_tensor)[2]
+            new_auxiliary = scientist.network.forward_with_auxiliary(new_tensor)[2]
         assert new_observation.shape[-1] == old_observation.shape[-1] + 1
         torch.testing.assert_close(new_outputs[0], old_outputs[0])
         torch.testing.assert_close(new_outputs[1], old_outputs[1])
+        for new_head, old_head in zip(new_auxiliary, old_auxiliary, strict=True):
+            torch.testing.assert_close(new_head, old_head)
+        assert scientist.config.model.auxiliary_budget_conditioning
+        assert scientist.config.model.auxiliary_solve_backprop_to_encoder
+        assert scientist.config.model.freeze_batchnorm_stats
+        expected_learning_rate = 5e-5 if name == "d-tape4-u1" else 2.5e-4
+        assert scientist.config.train.learning_rate == expected_learning_rate
+        expected_auxiliary_rate = 1e-3 if name == "d-tape4-u1" else 2.5e-4
+        assert [group["lr"] for group in scientist.optimizer.param_groups] == [
+            expected_learning_rate,
+            expected_auxiliary_rate,
+        ]
+        expected_preservation = {
+            "s-window-128": 1.0,
+            "d-tape4-u1": 20.0,
+            "s-w11-128": 5.0,
+        }[name]
+        assert scientist.config.model.policy_value_preservation_weight == expected_preservation
 
 
 def test_objective_budget_underestimate_restarts_geometrically(monkeypatch) -> None:
@@ -155,9 +171,7 @@ def test_objective_budget_underestimate_restarts_geometrically(monkeypatch) -> N
             )
         ]
 
-    monkeypatch.setattr(
-        "pgx_mcts_bench.collaborative_scientists._play", fake_play
-    )
+    monkeypatch.setattr("pgx_mcts_bench.collaborative_scientists._play", fake_play)
     scientist = SimpleNamespace(
         config=SimpleNamespace(
             game=SimpleNamespace(
@@ -166,6 +180,7 @@ def test_objective_budget_underestimate_restarts_geometrically(monkeypatch) -> N
             )
         )
     )
+    retained = []
     record, budget = play_with_objective_restarts(
         scientist,
         KnotItem("x", 3, (1, 1, 1), 2),
@@ -173,11 +188,15 @@ def test_objective_budget_underestimate_restarts_geometrically(monkeypatch) -> N
         predicted_objective=1.0,
         simulations=1,
         seed=5,
+        retained_records=retained,
     )
     assert record[0].solved == 1.0
     assert calls == [2, 4]
     assert budget["restart_count"] == 1
     assert budget["attempts"][0]["objective_budget_exhausted"]
+    assert len(retained) == 2
+    assert retained[0][0].solved == 0.0
+    assert retained[1] is record
 
 
 def test_round_commit_is_immutable_and_schedule_is_rebuilt(tmp_path: Path) -> None:
@@ -220,9 +239,7 @@ def test_minimal_run_resumes_from_committed_round(tmp_path: Path) -> None:
     assert first["completed_rounds"] == 1
     assert resumed["completed_rounds"] == 2
     assert len((output / "schedule.jsonl").read_text().splitlines()) == 2
-    exported = export_collaboration_scientist(
-        output, candidate.name, tmp_path / "exported.pt"
-    )
+    exported = export_collaboration_scientist(output, candidate.name, tmp_path / "exported.pt")
     evaluated = evaluate_collaboration(
         output,
         tmp_path / "evaluation",

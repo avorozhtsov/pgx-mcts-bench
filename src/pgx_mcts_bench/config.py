@@ -338,6 +338,29 @@ class ModelConfig:
     auxiliary_value_width: int = 64
     auxiliary_value_loss_weight: float = 0.1
     auxiliary_backprop_to_encoder: bool = False
+    # Budget-aware training may let only the solve-probability loss update the
+    # shared representation. Conditional cost targets stay detached: a failed
+    # cap is a valid label for "solve within this budget", but says nothing
+    # about the eventual crossing/move cost of a successful trajectory.
+    auxiliary_solve_backprop_to_encoder: bool = False
+    # Paired copies of the same state at lower/higher remaining budgets enforce
+    # p(solve | lower budget) <= p(solve | higher budget). Disabled for legacy
+    # runs and enabled explicitly when the objective-budget input is present.
+    auxiliary_budget_monotonic_weight: float = 0.0
+    auxiliary_budget_monotonic_margin: float = 0.05
+    # First-stage prototype for s-window-128. Predict conditional costs first,
+    # construct L=A*cc+B*moves exactly, and feed those quantities plus the
+    # remaining-budget input into a residual solve-probability branch.
+    auxiliary_budget_conditioning: bool = False
+    # Per-task budget fine-tuning has a much narrower state distribution than
+    # ladder training. Preserve the promoted checkpoint's BatchNorm statistics
+    # while still allowing gradients through its affine parameters and encoder.
+    freeze_batchnorm_stats: bool = False
+    # Optional functional trust region used by narrow budget-critic curricula.
+    # The frozen teacher is attached at runtime and is deliberately not part of
+    # the checkpoint state.  This lets solve loss improve the shared encoder
+    # while penalizing changes to the established policy and scalar value.
+    policy_value_preservation_weight: float = 0.0
     # Deliberate, checkpointed cut-over switch. False keeps MCTS on the legacy
     # scalar while the auxiliary critic trains and is evaluated in shadow mode.
     use_auxiliary_value: bool = False

@@ -21,6 +21,33 @@ from pgx_mcts_bench.networks import load_policy_value_state_dict, make_braid_net
 from pgx_mcts_bench.search import NeuralMCTS
 from pgx_mcts_bench.training import play_selfplay_games, train_alphazero_step
 
+# The preregistered K=3 collaboration roster.  Budget-aware training is admitted
+# per architecture, but keeping the list here prevents the launcher, loader, and
+# admission tools from silently disagreeing about which scientists are repaired.
+COLLABORATION_K3 = ("s-window-128", "d-tape4-u1", "s-w11-128")
+BUDGET_LEARNING_RATES = {
+    "s-window-128": 2.5e-4,
+    # The distilled tape controller is substantially more sensitive to a narrow
+    # easy-task replay distribution than the two window controllers.
+    "d-tape4-u1": 5.0e-5,
+    "s-w11-128": 2.5e-4,
+}
+BUDGET_AUXILIARY_LEARNING_RATES = {
+    "s-window-128": 2.5e-4,
+    "d-tape4-u1": 1.0e-3,
+    "s-w11-128": 2.5e-4,
+}
+BUDGET_PRESERVATION_WEIGHTS = {
+    "s-window-128": 1.0,
+    "d-tape4-u1": 20.0,
+    "s-w11-128": 5.0,
+}
+BUDGET_MONOTONIC_WEIGHTS = {
+    "s-window-128": 0.25,
+    "d-tape4-u1": 1.0,
+    "s-w11-128": 1.0,
+}
+
 
 @dataclass(frozen=True)
 class KnotItem:
@@ -84,9 +111,7 @@ class FixedWordGame:
 
     def _spent(self, state: Any) -> float:
         raw = self._raw(state)
-        moves = max(
-            self.config.simplify_budget - int(np.asarray(raw._budget)), 0
-        )
+        moves = max(self.config.simplify_budget - int(np.asarray(raw._budget)), 0)
         return self.ratio * int(np.asarray(raw._crossing_changes)) + moves
 
     def _solved(self, state: Any) -> bool:
@@ -99,7 +124,11 @@ class FixedWordGame:
         exhausted = remaining <= 0.0 and not solved
         terminated = transition.terminated or exhausted
         observation = transition.observation.copy()
-        observation[..., -1] = np.clip(remaining / max(cap, 1.0), -1.0, 1.0)
+        # Encode absolute remaining objective against one fixed scale. Dividing
+        # by the attempt's own cap made every fresh attempt equal to 1.0, so the
+        # network could not distinguish a cap of 20 from a cap of 200 despite
+        # receiving different terminal labels for them.
+        observation[..., -1] = np.clip(remaining / max(self._global_cap(), 1.0), -1.0, 1.0)
         state = ObjectiveBudgetState(
             transition.state,
             objective_cap=cap,
@@ -282,24 +311,63 @@ def load_scientist(
         candidate = Candidate(**{**asdict(candidate), "simulations": simulations})
     config = _config(candidate, ("R(3,12)#0", 0), seed, device, selfplay_games=1)
     if objective_budget_channel:
+        budget_prototype = name in COLLABORATION_K3
         config = replace(
             config,
             game=replace(config.game, objective_budget_channel=True),
+            train=replace(
+                config.train,
+                learning_rate=(
+                    BUDGET_LEARNING_RATES[name]
+                    if budget_prototype
+                    else config.train.learning_rate
+                ),
+            ),
+            model=replace(
+                config.model,
+                auxiliary_solve_backprop_to_encoder=budget_prototype,
+                auxiliary_budget_monotonic_weight=(
+                    BUDGET_MONOTONIC_WEIGHTS[name] if budget_prototype else 0.0
+                ),
+                auxiliary_budget_conditioning=budget_prototype,
+                freeze_batchnorm_stats=budget_prototype,
+                policy_value_preservation_weight=(
+                    BUDGET_PRESERVATION_WEIGHTS[name] if budget_prototype else 0.0
+                ),
+            ),
         )
     game = make_game(config.game)
     network = make_braid_network(config.game, config.model).to(device)
     payload = torch.load(checkpoint, map_location=device, weights_only=False)
     state = payload.get("network", payload)
     factorized = any(
-        key.startswith("auxiliary.") or key.startswith("window.auxiliary.")
-        for key in state
+        key.startswith("auxiliary.") or key.startswith("window.auxiliary.") for key in state
     )
     if require_factorized and not factorized:
         raise ValueError(f"{checkpoint} has no trained factorized value heads")
     load_policy_value_state_dict(network, state)
-    optimizer = torch.optim.AdamW(
-        network.parameters(), lr=config.train.learning_rate, weight_decay=config.train.weight_decay
-    )
+    if objective_budget_channel and budget_prototype:
+        auxiliary_parameters = list(network.auxiliary.parameters())
+        auxiliary_ids = {id(parameter) for parameter in auxiliary_parameters}
+        controller_parameters = [
+            parameter for parameter in network.parameters() if id(parameter) not in auxiliary_ids
+        ]
+        optimizer = torch.optim.AdamW(
+            [
+                {"params": controller_parameters, "lr": config.train.learning_rate},
+                {
+                    "params": auxiliary_parameters,
+                    "lr": BUDGET_AUXILIARY_LEARNING_RATES[name],
+                },
+            ],
+            weight_decay=config.train.weight_decay,
+        )
+    else:
+        optimizer = torch.optim.AdamW(
+            network.parameters(),
+            lr=config.train.learning_rate,
+            weight_decay=config.train.weight_decay,
+        )
     return Scientist(
         name=name,
         candidate=candidate,
@@ -353,14 +421,16 @@ def run_adaptive_scientists(
     output.mkdir(parents=True, exist_ok=True)
     schedule_path = output / "schedule.jsonl"
     if schedule_path.exists():
-        raise FileExistsError(
-            f"{schedule_path} already exists; choose a fresh output directory"
-        )
+        raise FileExistsError(f"{schedule_path} already exists; choose a fresh output directory")
     pool = smallest_crossing_pool(pool_size)
     scientists = [
         load_scientist(
-            name, path, seed=seed + i * 10_000, device=device,
-            simulations=simulations, require_factorized=require_factorized,
+            name,
+            path,
+            seed=seed + i * 10_000,
+            device=device,
+            simulations=simulations,
+            require_factorized=require_factorized,
         )
         for i, (name, path) in enumerate(checkpoints.items())
     ]
@@ -384,8 +454,13 @@ def run_adaptive_scientists(
         proposals = choose_proposals(score_rows, rng, proposal_temperature)
         proposal_names = [remaining[index].name for index in proposals]
         selected_scientist, selected_index, reason = choose_group_proposal(
-            score_rows, proposals, [s.ignored_rounds for s in scientists], rng,
-            alpha=alpha, temperature=group_temperature, starvation_rounds=starvation,
+            score_rows,
+            proposals,
+            [s.ignored_rounds for s in scientists],
+            rng,
+            alpha=alpha,
+            temperature=group_temperature,
+            starvation_rounds=starvation,
         )
         knot = remaining.pop(selected_index)
         matching = {i for i, proposal in enumerate(proposals) if proposal == selected_index}
@@ -402,12 +477,16 @@ def run_adaptive_scientists(
         for scientist_index, scientist in enumerate(scientists):
             fixed = FixedWordGame(scientist.game, knot)
             search = NeuralMCTS(fixed, scientist.network, scientist.config.search, device)
-            game_seeds = [seed + round_index * 100_000 + scientist_index * 1_000 + i
-                          for i in range(selfplay_games)]
+            game_seeds = [
+                seed + round_index * 100_000 + scientist_index * 1_000 + i
+                for i in range(selfplay_games)
+            ]
             records = play_selfplay_games(
-                fixed, search,
+                fixed,
+                search,
                 [np.random.default_rng(game_seed) for game_seed in game_seeds],
-                game_seeds, scientist.config.train.temperature_moves,
+                game_seeds,
+                scientist.config.train.temperature_moves,
             )
             for record in records:
                 scientist.replay.add(record)
@@ -441,8 +520,11 @@ def run_adaptive_scientists(
                 for _ in range(train_steps):
                     losses[scientist.name].append(
                         train_alphazero_step(
-                            scientist.network, scientist.optimizer, scientist.replay,
-                            batch_size, torch.device(device),
+                            scientist.network,
+                            scientist.optimizer,
+                            scientist.replay,
+                            batch_size,
+                            torch.device(device),
                         )
                     )
             checkpoint_dir = output / "checkpoints" / scientist.name
@@ -508,8 +590,14 @@ def run_adaptive_scientists(
         selected.append(knot.name)
 
     report = {
-        "scientists": [{"name": s.name, "checkpoint": str(s.checkpoint),
-                         "prediction_source": s.prediction_source} for s in scientists],
+        "scientists": [
+            {
+                "name": s.name,
+                "checkpoint": str(s.checkpoint),
+                "prediction_source": s.prediction_source,
+            }
+            for s in scientists
+        ],
         "pool_size": len(pool),
         "pool_sha256": hashlib.sha256(pool_json.encode()).hexdigest(),
         "rounds": len(selected),
@@ -525,7 +613,6 @@ def run_adaptive_scientists(
 def default_rung23_checkpoints(root: Path) -> dict[str, Path]:
     names = ("u1-puct", "search-heavy", "wide-net")
     return {
-        name: root / "artifacts" / "deep-ladder" / name / "checkpoints" / name
-        / "stage23-after.pt"
+        name: root / "artifacts" / "deep-ladder" / name / "checkpoints" / name / "stage23-after.pt"
         for name in names
     }

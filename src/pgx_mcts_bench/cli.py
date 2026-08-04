@@ -34,6 +34,321 @@ from pgx_mcts_bench.training import (
 app = typer.Typer(no_args_is_help=True)
 
 
+@app.command("braid-budget-search-savings")
+def braid_budget_search_savings(
+    checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(dir_okay=False)],
+    start_index: Annotated[int, typer.Option(min=0)] = 25,
+    items: Annotated[int, typer.Option(min=1)] = 20,
+    games_per_item: Annotated[int, typer.Option(min=1)] = 4,
+    ratio: float = 10.0,
+    multiplier: Annotated[float, typer.Option(min=0.1)] = 2.0,
+    strategy: str = "restart",
+    solve_threshold: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.04,
+    simulations: Annotated[int, typer.Option(min=1)] = 32,
+    minimum_savings: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.20,
+    seed: int = 20261240,
+    device: str = "cpu",
+) -> None:
+    """Compare paired full-budget and cap-and-restart search."""
+    from pgx_mcts_bench.budget_savings import run_budget_savings
+
+    report = run_budget_savings(
+        checkpoint,
+        output,
+        start_index=start_index,
+        items=items,
+        games_per_item=games_per_item,
+        ratio=ratio,
+        multiplier=multiplier,
+        strategy=strategy,
+        solve_threshold=solve_threshold,
+        simulations=simulations,
+        minimum_savings=minimum_savings,
+        seed=seed,
+        device=device,
+    )
+    typer.echo(json.dumps({"summary": report["summary"], "decision": report["decision"]}, indent=2))
+
+
+@app.command("braid-budget-heldout-gate")
+def braid_budget_heldout_gate(
+    baseline_checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    trained_checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(dir_okay=False)],
+    scientist: str = "s-window-128",
+    training_items: Annotated[int, typer.Option(min=1)] = 5,
+    heldout_start: Annotated[int, typer.Option(min=1)] = 5,
+    heldout_items: Annotated[int, typer.Option(min=1)] = 10,
+    games_per_cap: Annotated[int, typer.Option(min=1)] = 4,
+    simulations: Annotated[int, typer.Option(min=1)] = 32,
+    rung_eval_games: Annotated[int, typer.Option(min=1)] = 12,
+    rung_simulations: Annotated[int, typer.Option(min=1)] = 128,
+    seed: int = 20261140,
+    device: str = "cpu",
+) -> None:
+    """Run the source-disjoint budget-calibration and retention gate."""
+    from pgx_mcts_bench.budget_gate import run_budget_gate
+
+    report = run_budget_gate(
+        baseline_checkpoint,
+        trained_checkpoint,
+        output,
+        scientist_name=scientist,
+        training_items=training_items,
+        heldout_start=heldout_start,
+        heldout_items=heldout_items,
+        games_per_cap=games_per_cap,
+        simulations=simulations,
+        rung_eval_games=rung_eval_games,
+        rung_simulations=rung_simulations,
+        seed=seed,
+        device=device,
+    )
+    typer.echo(json.dumps({"summary": report["summary"], "decision": report["decision"]}, indent=2))
+
+
+@app.command("braid-budget-critic-curriculum")
+def braid_budget_critic_curriculum(
+    checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    scientist: str = "s-window-128",
+    items: Annotated[int, typer.Option(min=1)] = 5,
+    ratio: float = 10.0,
+    cap_fractions: str = "0.005,0.01,0.02,0.05,1.0",
+    games_per_cap: Annotated[int, typer.Option(min=1)] = 2,
+    train_steps_per_item: Annotated[int, typer.Option(min=1)] = 32,
+    simulations: Annotated[int, typer.Option(min=1)] = 32,
+    rung_eval_games: Annotated[int, typer.Option(min=1)] = 4,
+    rehearsal_games: Annotated[int, typer.Option(min=0)] = 8,
+    seed: int = 20261040,
+    device: str = "cpu",
+) -> None:
+    """Train one budget-conditioned roster critic on the simplest knots."""
+    from pgx_mcts_bench.budget_curriculum import train_budget_curriculum
+
+    report = train_budget_curriculum(
+        checkpoint,
+        output,
+        scientist_name=scientist,
+        items=items,
+        ratio=ratio,
+        cap_fractions=tuple(
+            float(value) for value in cap_fractions.split(",") if value.strip()
+        ),
+        games_per_cap=games_per_cap,
+        train_steps_per_item=train_steps_per_item,
+        simulations=simulations,
+        rung_eval_games=rung_eval_games,
+        rehearsal_games=rehearsal_games,
+        seed=seed,
+        device=device,
+    )
+    typer.echo(json.dumps(report["decision"], indent=2))
+
+
+@app.command("braid-budget-head-audit")
+def braid_budget_head_audit(
+    checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(dir_okay=False)],
+    outcomes: Annotated[Path | None, typer.Option(exists=True, file_okay=False)] = None,
+    training_metrics: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
+    scientist: str = "s-window-128",
+    ratio: float = 10.0,
+    caps: str = "16,32,64,128,256,512,704",
+    device: str = "cpu",
+) -> None:
+    """Audit budget sensitivity, monotonicity, calibration, and label balance."""
+    from pgx_mcts_bench.budget_head_audit import audit_budget_head
+
+    report = audit_budget_head(
+        checkpoint,
+        bank,
+        output,
+        outcomes=outcomes,
+        training_metrics=training_metrics,
+        scientist=scientist,
+        ratio=ratio,
+        caps=tuple(float(value) for value in caps.split(",") if value.strip()),
+        device=device,
+    )
+    typer.echo(json.dumps(report, indent=2))
+
+
+@app.command("braid-rapid-paired-gate")
+def braid_rapid_paired_gate(
+    checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    old_bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    scientist: str = "s-window-128",
+    ratio: float = 10.0,
+    simulations: Annotated[int, typer.Option(min=1)] = 128,
+    selfplay_games: Annotated[int, typer.Option(min=1)] = 8,
+    batch_size: Annotated[int, typer.Option(min=1)] = 32,
+    seeds: str = "20260980,20260981,20260982",
+    workers: Annotated[int, typer.Option(min=1)] = 7,
+    device: str = "cpu",
+    resume: bool = False,
+    gate_games: Annotated[int, typer.Option(min=1)] = 12,
+    gate_min_solve_rate: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.8,
+) -> None:
+    """Run the three-seed paired causal gate before any 200-item expansion."""
+    from pgx_mcts_bench.rapid_gate import run_paired_rapid_gate
+
+    report = run_paired_rapid_gate(
+        checkpoint,
+        bank,
+        old_bank,
+        output,
+        scientist=scientist,
+        ratio=ratio,
+        simulations=simulations,
+        selfplay_games=selfplay_games,
+        batch_size=batch_size,
+        seeds=tuple(int(value) for value in seeds.split(",") if value.strip()),
+        workers=workers,
+        device=device,
+        resume=resume,
+        gate_games=gate_games,
+        gate_min_solve_rate=gate_min_solve_rate,
+    )
+    typer.echo(json.dumps(report, indent=2))
+
+
+@app.command("braid-rapid-adaptation")
+def braid_rapid_adaptation(
+    checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    target_bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    old_bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    scientist: str = "s-window-128",
+    ratio: float = 10.0,
+    initial_f: int = 5,
+    f_old: Annotated[int, typer.Option(min=0)] = 1,
+    threshold: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.8,
+    simulations: Annotated[int, typer.Option(min=1)] = 128,
+    selfplay_games: Annotated[int, typer.Option(min=1)] = 8,
+    train_steps: Annotated[int, typer.Option(min=0)] = 96,
+    batch_size: Annotated[int, typer.Option(min=1)] = 32,
+    limit: Annotated[int, typer.Option(min=1)] = 200,
+    workers: Annotated[int, typer.Option(min=1)] = 6,
+    seed: int = 20260840,
+    device: str = "cpu",
+    resume: bool = False,
+    gate_games: Annotated[int, typer.Option(min=1)] = 12,
+    gate_min_solve_rate: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.8,
+) -> None:
+    """Run disposable task-local adaptation with blockwise F escalation."""
+    from pgx_mcts_bench.rapid_adaptation import run_rapid_adaptation
+
+    report = run_rapid_adaptation(
+        checkpoint,
+        target_bank,
+        old_bank,
+        output,
+        scientist=scientist,
+        ratio=ratio,
+        initial_f=initial_f,
+        f_old=f_old,
+        threshold=threshold,
+        simulations=simulations,
+        selfplay_games=selfplay_games,
+        train_steps=train_steps,
+        batch_size=batch_size,
+        limit=limit,
+        workers=workers,
+        seed=seed,
+        device=device,
+        resume=resume,
+        gate_games=gate_games,
+        gate_min_solve_rate=gate_min_solve_rate,
+    )
+    typer.echo(json.dumps(report, indent=2))
+
+
+@app.command("braid-distillation-degradation-train")
+def braid_distillation_degradation_train(
+    run: Annotated[Path, typer.Option(exists=True, file_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    round_index: Annotated[int, typer.Option(min=0)] = 48,
+    training_seeds: str = "0,1,2",
+    train_steps: Annotated[int, typer.Option(min=1)] = 8,
+    batch_size: Annotated[int, typer.Option(min=2)] = 32,
+    shared_fraction: Annotated[float, typer.Option(min=0.0, max=0.5)] = 0.1,
+    variants: str = "pre,rl0,d1-full,d10-full,d1-aux,d10-aux",
+    learning_rate: Annotated[float | None, typer.Option(min=0.0)] = None,
+    device: str = "cpu",
+) -> None:
+    """Create matched RL-only and one/ten-witness checkpoint forks."""
+    from pgx_mcts_bench.degradation_experiment import VARIANTS, train_degradation_forks
+
+    seeds = tuple(int(value) for value in training_seeds.split(",") if value.strip())
+    selected_variants = tuple(value.strip() for value in variants.split(",") if value.strip())
+    unknown = set(selected_variants) - set(VARIANTS)
+    if unknown:
+        raise typer.BadParameter(f"unknown variants: {sorted(unknown)}")
+    report = train_degradation_forks(
+        run,
+        output,
+        round_index=round_index,
+        training_seeds=seeds,
+        train_steps=train_steps,
+        batch_size=batch_size,
+        shared_fraction=shared_fraction,
+        variants=selected_variants,  # type: ignore[arg-type]
+        learning_rate=learning_rate,
+        device=device,
+    )
+    typer.echo(json.dumps(report, indent=2))
+
+
+@app.command("braid-distillation-degradation-evaluate")
+def braid_distillation_degradation_evaluate(
+    experiment: Annotated[Path, typer.Option(exists=True, file_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    training_seed: Annotated[int, typer.Option()],
+    variant: Annotated[str, typer.Option()],
+    split: Annotated[str, typer.Option()],
+    simulations: Annotated[int, typer.Option(min=1)] = 16,
+    limit: Annotated[int, typer.Option(min=0)] = 0,
+    evaluation_seed: int = 0,
+    device: str = "cpu",
+    resume: bool = False,
+    bank: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
+) -> None:
+    """Evaluate one matched degradation fork on a frozen split."""
+    from pgx_mcts_bench.degradation_experiment import evaluate_degradation_fork
+
+    report = evaluate_degradation_fork(
+        experiment,
+        output,
+        training_seed=training_seed,
+        variant=variant,  # type: ignore[arg-type]
+        split=split,  # type: ignore[arg-type]
+        simulations=simulations,
+        limit=limit,
+        evaluation_seed=evaluation_seed,
+        device=device,
+        resume=resume,
+        bank=bank,
+    )
+    typer.echo(json.dumps(report, indent=2))
+
+
+@app.command("braid-distillation-degradation-analyze")
+def braid_distillation_degradation_analyze(
+    evaluations: Annotated[Path, typer.Option(exists=True, file_okay=False)],
+    output: Annotated[Path | None, typer.Option(dir_okay=False)] = None,
+) -> None:
+    """Apply the paired retention and transfer safety gate."""
+    from pgx_mcts_bench.degradation_experiment import analyze_degradation_experiment
+
+    report = analyze_degradation_experiment(evaluations, output)
+    typer.echo(json.dumps(report, indent=2))
+
+
 @app.command("braid-adaptive-scientists")
 def braid_adaptive_scientists(
     output: Annotated[Path, typer.Option(file_okay=False)],
@@ -84,11 +399,21 @@ def braid_adaptive_scientists(
         if missing:
             raise typer.BadParameter(f"default checkpoint does not exist: {missing[0]}")
     report = run_adaptive_scientists(
-        checkpoints, output, rounds=rounds, pool_size=pool_size, alpha=alpha,
-        proposal_temperature=proposal_temperature, group_temperature=group_temperature,
-        starvation_rounds=starvation_rounds, selfplay_games=selfplay_games,
-        train_steps=train_steps, batch_size=batch_size, simulations=simulations,
-        seed=seed, device=device, require_factorized=require_factorized,
+        checkpoints,
+        output,
+        rounds=rounds,
+        pool_size=pool_size,
+        alpha=alpha,
+        proposal_temperature=proposal_temperature,
+        group_temperature=group_temperature,
+        starvation_rounds=starvation_rounds,
+        selfplay_games=selfplay_games,
+        train_steps=train_steps,
+        batch_size=batch_size,
+        simulations=simulations,
+        seed=seed,
+        device=device,
+        require_factorized=require_factorized,
     )
     typer.echo(json.dumps(report, indent=2))
 
@@ -190,9 +515,7 @@ def braid_cyclic_memory_build(
     """Initialize s-cyclic-tape8-192 from an s-window-128 checkpoint."""
     from pgx_mcts_bench.cyclic_memory import build_cyclic_memory_checkpoint
 
-    report = build_cyclic_memory_checkpoint(
-        window, output, seed=seed, device=device
-    )
+    report = build_cyclic_memory_checkpoint(window, output, seed=seed, device=device)
     typer.echo(json.dumps(report, indent=2))
 
 
@@ -255,6 +578,7 @@ def braid_collaboration_evaluate(
     seed: int = 0,
     device: str = "cpu",
     resume: bool = False,
+    bank: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
 ) -> None:
     """Evaluate an initial or final scientist portfolio on a frozen split."""
     from pgx_mcts_bench.collaboration_eval import evaluate_collaboration
@@ -269,6 +593,51 @@ def braid_collaboration_evaluate(
         seed=seed,
         device=device,
         resume=resume,
+        bank=bank,
+    )
+    typer.echo(json.dumps(report, indent=2))
+
+
+@app.command("braid-collaboration-rebuild-anchor")
+def braid_collaboration_rebuild_anchor(
+    run: Annotated[Path, typer.Option(exists=True, file_okay=False)],
+    output_bank: Annotated[Path, typer.Option(dir_okay=False)],
+    output_manifest: Annotated[Path, typer.Option(dir_okay=False)],
+    max_stage: Annotated[int, typer.Option(min=0)] = 22,
+    seed: int = 20260802,
+) -> None:
+    """Replace held-out identities seen as explicit ladder sources."""
+    from pgx_mcts_bench.bank_audit import rebuild_anchor_without_ladder_identities
+
+    report = rebuild_anchor_without_ladder_identities(
+        run,
+        output_bank,
+        output_manifest,
+        max_stage=max_stage,
+        seed=seed,
+    )
+    typer.echo(json.dumps(report, indent=2))
+
+
+@app.command("braid-build-development-bank")
+def braid_build_development_bank(
+    source_bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output_bank: Annotated[Path, typer.Option(dir_okay=False)],
+    output_manifest: Annotated[Path, typer.Option(dir_okay=False)],
+    size: Annotated[int, typer.Option(min=4)] = 20,
+    seed: int = 20260970,
+    max_stage: Annotated[int, typer.Option(min=0)] = 22,
+) -> None:
+    """Build an outcome-blind, ladder-source-disjoint development bank."""
+    from pgx_mcts_bench.bank_audit import build_development_bank
+
+    report = build_development_bank(
+        source_bank,
+        output_bank,
+        output_manifest,
+        size=size,
+        seed=seed,
+        max_stage=max_stage,
     )
     typer.echo(json.dumps(report, indent=2))
 
@@ -290,9 +659,7 @@ def braid_collaboration_compare(
 def braid_objective_budget_regression(
     bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
     output: Annotated[Path, typer.Option(dir_okay=False)],
-    scientist: Annotated[
-        list[str], typer.Option(help="Repeat NAME=CHECKPOINT for each scientist")
-    ],
+    scientist: Annotated[list[str], typer.Option(help="Repeat NAME=CHECKPOINT for each scientist")],
     ratio: float = 10.0,
     simulations: Annotated[int, typer.Option(min=1)] = 16,
     limit: Annotated[int, typer.Option(min=1)] = 10,

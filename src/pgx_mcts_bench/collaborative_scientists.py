@@ -63,6 +63,10 @@ class BankItem:
 class AttemptRun:
     record: GameRecord
     budget: dict[str, Any] | None = None
+    # Includes lower-cap failed attempts followed by the returned final attempt.
+    # Only the final record decides task success; every attempt is useful for the
+    # conditional solve-probability target at its own encoded budget.
+    replay_records: tuple[GameRecord, ...] = ()
 
 
 def _sha256(path: Path) -> str:
@@ -188,9 +192,7 @@ def _bank_payload(items: list[BankItem]) -> list[dict[str, Any]]:
         if item.known_unknotting_number is not None:
             row["known_unknotting_number"] = item.known_unknotting_number
         if item.certified_unknotting_lower_bound is not None:
-            row["certified_unknotting_lower_bound"] = (
-                item.certified_unknotting_lower_bound
-            )
+            row["certified_unknotting_lower_bound"] = item.certified_unknotting_lower_bound
         rows.append(row)
     return rows
 
@@ -265,12 +267,9 @@ def prediction_details(
     failure_crossings: float = 20.0,
 ) -> list[dict[str, float]]:
     observations = [
-        FixedWordGame(scientist.game, item.knot, ratio).reset(0).observation
-        for ratio in ratios
+        FixedWordGame(scientist.game, item.knot, ratio).reset(0).observation for ratio in ratios
     ]
-    tensor = _observation_tensor(
-        observations, torch.device(scientist.config.train.device)
-    )
+    tensor = _observation_tensor(observations, torch.device(scientist.config.train.device))
     scientist.network.eval()
     _, legacy, auxiliary = scientist.network.forward_with_auxiliary(tensor)
     budget = float(scientist.config.game.simplify_budget)
@@ -341,6 +340,7 @@ def play_with_objective_restarts(
     seed: int,
     multiplier: float = 2.0,
     max_restarts: int | None = None,
+    retained_records: list[GameRecord] | None = None,
 ) -> tuple[GameRecord, dict[str, Any]]:
     """Use a learned attempt cap without turning underestimation into failure."""
     if not scientist.config.game.objective_budget_channel:
@@ -362,15 +362,15 @@ def play_with_objective_restarts(
             objective_cap=cap,
             cap_type="predicted" if attempt_index == 0 else "restart",
         )
+        if retained_records is not None:
+            retained_records.append(record)
         solved = bool(record and record[0].solved > 0.5)
         final_moves = float(record[0].final_moves) if record else 0.0
         # If the ordinary move clock fired, raising an objective cap cannot add
         # search depth. Otherwise an unsolved attempt below the global cap is a
         # censored result and must be retried geometrically.
         objective_exhausted = (
-            not solved
-            and cap < global_cap
-            and final_moves < scientist.config.game.simplify_budget
+            not solved and cap < global_cap and final_moves < scientist.config.game.simplify_budget
         )
         attempts.append(
             {
@@ -416,9 +416,8 @@ def _run_attempt(
     audit_restarts: bool = False,
 ) -> AttemptRun:
     if predicted_objective is None:
-        return AttemptRun(
-            _play(scientist, knot, ratio, simulations=simulations, seed=seed)
-        )
+        return AttemptRun(_play(scientist, knot, ratio, simulations=simulations, seed=seed))
+    replay_records: list[GameRecord] = []
     record, budget = play_with_objective_restarts(
         scientist,
         knot,
@@ -427,9 +426,10 @@ def _run_attempt(
         simulations=simulations,
         seed=seed,
         max_restarts=None if audit_restarts else 0,
+        retained_records=replay_records,
     )
     budget["audit_restarts"] = audit_restarts
-    return AttemptRun(record, budget)
+    return AttemptRun(record, budget, tuple(replay_records))
 
 
 def _worker_play_bundle(
@@ -469,9 +469,7 @@ def _worker_play_bundle(
             simulations=simulations,
             seed=attempt_seed,
             predicted_objective=(
-                predicted_objectives[index]
-                if predicted_objectives is not None
-                else None
+                predicted_objectives[index] if predicted_objectives is not None else None
             ),
             audit_restarts=(
                 objective_budget
@@ -512,9 +510,7 @@ def _play_bundles(
                     simulations=simulations,
                     seed=seed,
                     predicted_objective=(
-                        predicted_objectives[index]
-                        if predicted_objectives is not None
-                        else None
+                        predicted_objectives[index] if predicted_objectives is not None else None
                     ),
                     audit_restarts=(
                         predicted_objectives is not None
@@ -836,6 +832,11 @@ def _manifest(
         "train_steps": train_steps,
         "attempt_workers": attempt_workers,
         "objective_budget": objective_budget,
+        "objective_budget_encoding": "absolute-global-v2",
+        "objective_censored_replay": "solve-negative-v2",
+        "collaboration_replay_sampling": "episode-success-and-cap-balanced-v2",
+        "solve_encoder_gradients": "solve-only-v1",
+        "budget_monotonic_training": "paired-margin-v1",
         "objective_budget_audit_every": objective_budget_audit_every,
         "bank_seed": bank_seed,
         "seed": seed,
@@ -991,11 +992,7 @@ def run_collaborative_scientists(
 
     by_id = {item.id: item for item in bank}
     target_rounds = min(rounds, len(bank))
-    executor = (
-        ProcessPoolExecutor(max_workers=attempt_workers)
-        if attempt_workers > 1
-        else None
-    )
+    executor = ProcessPoolExecutor(max_workers=attempt_workers) if attempt_workers > 1 else None
     for round_index in range(len(processed), target_rounds):
         active = [by_id[item_id] for item_id in active_ids]
         score_rows = [expected_capped_scores(scientist, active, ratios) for scientist in scientists]
@@ -1012,19 +1009,13 @@ def run_collaborative_scientists(
             zip(scientists, proposals, strict=True)
         ):
             seeds = tuple(
-                seed
-                + round_index * 1_000_000
-                + scientist_index * 10_000
-                + ratio_index
+                seed + round_index * 1_000_000 + scientist_index * 10_000 + ratio_index
                 for ratio_index in range(len(ratios))
             )
-            prediction = prediction_details(
-                scientist, active[proposal_index], ratios
-            )
+            prediction = prediction_details(scientist, active[proposal_index], ratios)
             predicted_objectives = (
                 tuple(
-                    row["ratio"] * row["predicted_crossing_changes"]
-                    + row["predicted_moves"]
+                    row["ratio"] * row["predicted_crossing_changes"] + row["predicted_moves"]
                     for row in prediction
                 )
                 if objective_budget
@@ -1050,9 +1041,7 @@ def run_collaborative_scientists(
             item = active[proposal_index]
             total = 0.0
             rows = []
-            for ratio, run in zip(
-                ratios, qualification_records[scientist_index], strict=True
-            ):
+            for ratio, run in zip(ratios, qualification_records[scientist_index], strict=True):
                 record = run.record
                 payload, verified = _attempt_payload(scientist, item.knot, ratio, record)
                 if run.budget is not None:
@@ -1093,8 +1082,7 @@ def run_collaborative_scientists(
             predictions = selected_predictions[scientist.name]
             predicted_objectives = (
                 tuple(
-                    row["ratio"] * row["predicted_crossing_changes"]
-                    + row["predicted_moves"]
+                    row["ratio"] * row["predicted_crossing_changes"] + row["predicted_moves"]
                     for row in predictions
                 )
                 if objective_budget
@@ -1115,11 +1103,11 @@ def run_collaborative_scientists(
         full_attempts: list[dict[str, Any]] = []
         winners: dict[float, tuple[int, GameRecord, tuple[int, int, list[int]]]] = {}
         for scientist_index, scientist in enumerate(scientists):
-            for ratio, run in zip(
-                ratios, full_records[scientist_index], strict=True
-            ):
+            for ratio, run in zip(ratios, full_records[scientist_index], strict=True):
                 record = run.record
-                scientist.replay.add(record)
+                records_for_replay = run.replay_records or (record,)
+                for replay_record in records_for_replay:
+                    scientist.replay.add(replay_record)
                 payload, verified = _attempt_payload(scientist, selected.knot, ratio, record)
                 if run.budget is not None:
                     payload["budget"] = run.budget
@@ -1189,7 +1177,7 @@ def run_collaborative_scientists(
         if (round_index + 1) % train_every == 0:
             for scientist in scientists:
                 last = None
-                if scientist.replay.position_count:
+                if scientist.replay.has_trainable_collaboration_positions():
                     for _ in range(train_steps):
                         last = train_alphazero_step(
                             scientist.network,
@@ -1197,6 +1185,17 @@ def run_collaborative_scientists(
                             scientist.replay,
                             batch_size,
                             torch.device(device),
+                            collaboration_replay=True,
+                            shared_fraction=(
+                                0.1
+                                if arm
+                                in {
+                                    "adaptive-sharing",
+                                    "adaptive-sharing-aux-only",
+                                    "static-sharing",
+                                }
+                                else 0.0
+                            ),
                         )
                 losses[scientist.name] = last
                 if last is not None and scientist.prediction_source == "legacy_proxy":

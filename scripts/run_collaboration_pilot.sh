@@ -5,12 +5,14 @@ mode=${1:-local}
 artifact_root=${2:-artifacts/collaboration-pilot-200}
 bank_seed=${BANK_SEED:-20260802}
 ratios=${RATIOS:-10}
-objective_budget=${OBJECTIVE_BUDGET:-1}
+# Predicted caps stay opt-in until every scientist used by the arm passes its
+# own source-disjoint calibration and paired-retention gate.
+objective_budget=${OBJECTIVE_BUDGET:-0}
 objective_budget_audit_every=${OBJECTIVE_BUDGET_AUDIT_EVERY:-10}
 
-window_checkpoint=${WINDOW_CHECKPOINT:-artifacts/nebius-rung18-20260801-current/runs/s-window-128/checkpoints/s-window-128/stage22-after.pt}
+window_checkpoint=${WINDOW_CHECKPOINT:-artifacts/nebius-rung18-20260801-current/runs/s-window-128/checkpoints/s-window-128/stage21-after.pt}
 tape_checkpoint=${TAPE_CHECKPOINT:-artifacts/nebius-rung18-20260801-current/runs/d-tape4-u1/checkpoints/d-tape4-u1/stage21-after.pt}
-w11_checkpoint=${W11_CHECKPOINT:-artifacts/nebius-rung18-20260801-current/runs/s-w11-128/checkpoints/s-w11-128/stage19-after.pt}
+w11_checkpoint=${W11_CHECKPOINT:-artifacts/nebius-rung18-20260801-current/runs/s-w11-128/checkpoints/s-w11-128/stage18-after.pt}
 cyclic_checkpoint=${CYCLIC_CHECKPOINT:-}
 roster=${ROSTER:-k3}
 
@@ -53,6 +55,18 @@ for checkpoint in "$window_checkpoint" "$tape_checkpoint" "$w11_checkpoint"; do
     echo "missing checkpoint: $checkpoint" >&2
     exit 2
   fi
+done
+scientist_names=(s-window-128 d-tape4-u1 s-w11-128)
+scientist_checkpoints=("$window_checkpoint" "$tape_checkpoint" "$w11_checkpoint")
+for index in "${!scientist_names[@]}"; do
+  .venv/bin/python - "${scientist_names[$index]}" "${scientist_checkpoints[$index]}" <<'PY'
+import sys
+from pathlib import Path
+
+from pgx_mcts_bench.rapid_adaptation import promoted_checkpoint_metadata
+
+promoted_checkpoint_metadata(Path(sys.argv[2]), sys.argv[1])
+PY
 done
 case "$roster" in
   k3) ;;

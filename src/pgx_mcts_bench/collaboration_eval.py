@@ -124,9 +124,10 @@ def evaluate_collaboration(
     seed: int = 0,
     device: str = "cpu",
     resume: bool = False,
+    bank: Path | None = None,
 ) -> dict[str, Any]:
     run_manifest = json.loads((run / "manifest.json").read_text())
-    source = run / ("new-70.json" if split == "new70" else "base.json")
+    source = bank or run / ("new-70.json" if split == "new70" else "base.json")
     items = _bank_from_payload(json.loads(source.read_text()))
     if limit:
         items = items[:limit]
@@ -137,6 +138,7 @@ def evaluate_collaboration(
         "run_protocol_sha256": run_manifest["protocol_sha256"],
         "state": state,
         "split": split,
+        "external_bank": str(bank.resolve()) if bank is not None else None,
         "split_sha256": _json_hash(json.loads(source.read_text())),
         "simulations": simulations,
         "limit": limit,

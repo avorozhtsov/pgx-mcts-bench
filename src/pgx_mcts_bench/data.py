@@ -34,6 +34,9 @@ class Position:
     # A solved trajectory discovered by another scientist. Its realized costs
     # are certified upper bounds, not equality labels for this network.
     shared_witness: bool = False
+    # Search stopped at a learned objective cap. This is a censored attempt, not
+    # evidence that the state is unsolvable under the environment's full budget.
+    objective_censored: bool = False
     # Distillation-only exact serial state and the parallel teacher edit. They
     # define a bounded option target; ordinary self-play leaves both unset.
     option_state: Any = None
@@ -81,6 +84,104 @@ class ReplayBuffer:
             picks = self.rng.integers(0, len(pool), size=count)
             batch.extend(pool[int(pick)] for pick in picks)
         return batch
+
+    def sample_collaboration_positions(
+        self, batch_size: int, shared_fraction: float = 0.1
+    ) -> list[Position]:
+        """Success-balanced native replay with a hard cap on shared positions.
+
+        Objective-censored attempts are negative examples for the conditional
+        question "can this state be solved within the encoded remaining budget?"
+        They share the native-failure stratum but remain masked from policy,
+        scalar-value, and conditional-cost targets. Sampling is episode-uniform
+        within each stratum before choosing a position, preventing long
+        trajectories from dominating.
+        """
+        native_success = [
+            game
+            for game in self.games
+            if game
+            and not bool(getattr(game[0], "shared_witness", False))
+            and not bool(getattr(game[0], "objective_censored", False))
+            and float(getattr(game[0], "solved", -1.0)) > 0.5
+        ]
+        native_failure = [
+            game
+            for game in self.games
+            if game
+            and not bool(getattr(game[0], "shared_witness", False))
+            and not bool(getattr(game[0], "objective_censored", False))
+            and float(getattr(game[0], "solved", -1.0)) <= 0.5
+        ]
+        capped_failure = [
+            game
+            for game in self.games
+            if game
+            and not bool(getattr(game[0], "shared_witness", False))
+            and bool(getattr(game[0], "objective_censored", False))
+        ]
+        shared = [
+            game
+            for game in self.games
+            if game
+            and bool(getattr(game[0], "shared_witness", False))
+            and not bool(getattr(game[0], "objective_censored", False))
+        ]
+        if not native_success and not native_failure and not capped_failure and not shared:
+            raise RuntimeError("Cannot sample an empty collaboration replay")
+
+        shared_count = min(
+            batch_size,
+            max(0, round(batch_size * shared_fraction)) if shared else 0,
+        )
+        native_count = batch_size - shared_count
+        has_negative = bool(native_failure or capped_failure)
+        success_count = native_count // 2 if native_success and has_negative else native_count
+        negative_count = native_count - success_count
+        if not native_success:
+            negative_count, success_count = native_count, 0
+        if not has_negative:
+            success_count, negative_count = native_count, 0
+
+        capped_count = negative_count // 2 if native_failure and capped_failure else negative_count
+        failure_count = negative_count - capped_count
+        if not native_failure:
+            capped_count, failure_count = negative_count, 0
+        if not capped_failure:
+            failure_count, capped_count = negative_count, 0
+
+        def draw(games: list[GameRecord], count: int) -> list[Position]:
+            result = []
+            for _ in range(count):
+                game = games[int(self.rng.integers(0, len(games)))]
+                result.append(game[int(self.rng.integers(0, len(game)))])
+            return result
+
+        def draw_capped(count: int) -> list[Position]:
+            # The remaining-budget feature is the final observation channel.
+            # Choose its initial-value bucket first so a frequent cap does not
+            # erase rarer low/high-cap failures from the conditional critic.
+            buckets: dict[float, list[GameRecord]] = {}
+            for game in capped_failure:
+                initial_budget = float(np.asarray(game[0].observation)[..., -1].mean())
+                buckets.setdefault(round(initial_budget, 2), []).append(game)
+            keys = sorted(buckets)
+            result = []
+            for _ in range(count):
+                key = keys[int(self.rng.integers(0, len(keys)))]
+                game = buckets[key][int(self.rng.integers(0, len(buckets[key])))]
+                result.append(game[int(self.rng.integers(0, len(game)))])
+            return result
+
+        return (
+            draw(native_success, success_count)
+            + draw(native_failure, failure_count)
+            + draw_capped(capped_count)
+            + draw(shared, shared_count)
+        )
+
+    def has_trainable_collaboration_positions(self) -> bool:
+        return any(bool(game) for game in self.games)
 
     def sample_sequences(
         self,

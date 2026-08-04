@@ -114,9 +114,7 @@ def play_selfplay_games(
                 observations=[transitions[i].observation for i in searched],
                 legal_actions=[transitions[i].legal_actions for i in searched],
                 rngs=[rngs[i] for i in searched],
-                temperatures=[
-                    1.0 if moves[i] < temperature_moves else 0.0 for i in searched
-                ],
+                temperatures=[1.0 if moves[i] < temperature_moves else 0.0 for i in searched],
                 add_root_noise=True,
             )
             results_by_index = dict(zip(searched, batch, strict=True))
@@ -132,16 +130,12 @@ def play_selfplay_games(
                     player=transition.player,
                     role=0 if transition.player == first_role[index] else 1,
                     episode_seed=int(seeds[index]),
-                    value_potential=game.value_potential(
-                        transition.state, transition.player
-                    ),
+                    value_potential=game.value_potential(transition.state, transition.player),
                 )
                 action = result.action
             else:
                 position = None
-                action = int(
-                    rngs[index].choice(np.flatnonzero(transition.legal_actions))
-                )
+                action = int(rngs[index].choice(np.flatnonzero(transition.legal_actions)))
             next_transition = game.step(transition.state, action)
             if position is not None:
                 position.reward = search.edge_reward(
@@ -154,24 +148,17 @@ def play_selfplay_games(
 
     for record, transition in zip(records, transitions, strict=True):
         rewards = game.final_rewards(transition.state)
-        final = (
-            game.unwrap(transition.state)
-            if hasattr(game, "unwrap")
-            else transition.state
-        )
+        final = game.unwrap(transition.state) if hasattr(game, "unwrap") else transition.state
         is_braid = all(
-            hasattr(final, field)
-            for field in ("_word", "_n", "_crossing_changes", "_budget")
+            hasattr(final, field) for field in ("_word", "_n", "_crossing_changes", "_budget")
         )
         if is_braid:
             solved = float(
-                bool((np.asarray(final._word) == 0).all())
-                and int(np.asarray(final._n)) == 1
+                bool((np.asarray(final._word) == 0).all()) and int(np.asarray(final._n)) == 1
             )
             crossing_changes = float(np.asarray(final._crossing_changes))
-            final_moves = float(
-                game.config.simplify_budget - int(np.asarray(final._budget))
-            )
+            final_moves = float(game.config.simplify_budget - int(np.asarray(final._budget)))
+        objective_censored = transition.termination_reason == "objective_budget_exhausted"
         for position in record:
             position.outcome = float(rewards[position.player])
             if search.config.potential_cost_shaping:
@@ -180,6 +167,7 @@ def play_selfplay_games(
                 position.solved = solved
                 position.final_crossing_changes = crossing_changes
                 position.final_moves = final_moves
+                position.objective_censored = objective_censored
     return records
 
 
@@ -206,9 +194,20 @@ def train_alphazero_step(
     replay: ReplayBuffer,
     batch_size: int,
     device: torch.device,
+    *,
+    collaboration_replay: bool = False,
+    shared_fraction: float = 0.1,
 ) -> dict[str, float]:
     network.train()
-    batch = replay.sample_positions(batch_size)
+    if bool(getattr(network, "freeze_batchnorm_stats", False)):
+        for module in network.modules():
+            if isinstance(module, nn.modules.batchnorm._BatchNorm):
+                module.eval()
+    batch = (
+        replay.sample_collaboration_positions(batch_size, shared_fraction)
+        if collaboration_replay
+        else replay.sample_positions(batch_size)
+    )
     observations = _observations(batch, device)
     logits, values, auxiliary = network.forward_with_auxiliary(observations)
     shared_positions = torch.tensor(
@@ -216,14 +215,17 @@ def train_alphazero_step(
         dtype=torch.bool,
         device=device,
     )
+    censored_positions = torch.tensor(
+        [bool(getattr(position, "objective_censored", False)) for position in batch],
+        dtype=torch.bool,
+        device=device,
+    )
     native_targets = (
         ~shared_positions
         if bool(getattr(network, "shared_auxiliary_only", False))
         else torch.ones_like(shared_positions)
-    )
-    policy_losses = -(
-        _policies(batch, device) * F.log_softmax(logits, dim=-1)
-    ).sum(dim=-1)
+    ) & ~censored_positions
+    policy_losses = -(_policies(batch, device) * F.log_softmax(logits, dim=-1)).sum(dim=-1)
     value_losses = (values - _outcomes(batch, device)) ** 2
     p_loss = (
         policy_losses[native_targets].mean()
@@ -236,7 +238,27 @@ def train_alphazero_step(
         else value_losses.sum() * 0.0
     )
     zero = values.sum() * 0.0
-    auxiliary_loss = solve_loss = crossings_loss = moves_loss = zero
+    preservation_policy = preservation_value = zero
+    preservation_weight = float(
+        getattr(network, "policy_value_preservation_weight", 0.0)
+    )
+    preservation_teacher = getattr(network, "_policy_value_preservation_teacher", None)
+    if preservation_weight > 0.0 and preservation_teacher is not None:
+        preservation_teacher.eval()
+        with torch.no_grad():
+            teacher_logits, teacher_values = preservation_teacher(observations)
+        legal = _legal(batch, device).bool()
+        floor = torch.finfo(logits.dtype).min
+        student_log_probability = F.log_softmax(logits.masked_fill(~legal, floor), dim=-1)
+        teacher_log_probability = F.log_softmax(
+            teacher_logits.masked_fill(~legal, floor), dim=-1
+        )
+        teacher_probability = teacher_log_probability.exp()
+        preservation_policy = (
+            teacher_probability * (teacher_log_probability - student_log_probability)
+        ).sum(dim=-1).mean()
+        preservation_value = F.mse_loss(values, teacher_values)
+    auxiliary_loss = solve_loss = crossings_loss = moves_loss = monotonic_loss = zero
     solve_brier = shadow_mae = zero
     if auxiliary is not None:
         solve_logits, predicted_crossings, predicted_moves = auxiliary
@@ -246,7 +268,11 @@ def train_alphazero_step(
             device=device,
         )
         roles = torch.tensor([position.role for position in batch], device=device)
-        eligible = (solved >= 0.0) & (roles == 1)
+        # A cap-exhausted trajectory is not a failure under the environment's
+        # full clock, so it remains masked above for policy/value. It *is* an
+        # observed failure of the conditional event "solve within this encoded
+        # budget", and is therefore a negative solve-probability label.
+        eligible = (roles == 1) & ((solved >= 0.0) | censored_positions)
         masks = []
         for position in batch:
             seed = int(getattr(position, "episode_seed", 0)) & 0xFFFFFFFF
@@ -260,20 +286,15 @@ def train_alphazero_step(
 
         def masked_mean(losses: Tensor, mask: Tensor) -> Tensor:
             count = mask.sum()
-            return (
-                (losses * mask).sum() / count.clamp(min=1)
-                if bool(count)
-                else losses.sum() * 0.0
-            )
+            return (losses * mask).sum() / count.clamp(min=1) if bool(count) else losses.sum() * 0.0
 
-        solve_targets = solved[:, None].expand_as(solve_logits).clamp(0.0, 1.0)
+        conditional_solved = torch.where(censored_positions, 0.0, solved).clamp(0.0, 1.0)
+        solve_targets = conditional_solved[:, None].expand_as(solve_logits)
         solve_loss = masked_mean(
-            F.binary_cross_entropy_with_logits(
-                solve_logits, solve_targets, reduction="none"
-            ),
+            F.binary_cross_entropy_with_logits(solve_logits, solve_targets, reduction="none"),
             solve_mask,
         )
-        solved_mask = solve_mask & (solve_targets > 0.5)
+        solved_mask = solve_mask & (solve_targets > 0.5) & ~censored_positions[:, None]
         crossing_targets = torch.tensor(
             [
                 float(getattr(position, "final_crossing_changes", float("nan")))
@@ -303,10 +324,32 @@ def train_alphazero_step(
             ),
             solved_mask & torch.isfinite(move_targets),
         )
-        auxiliary_loss = solve_loss + crossings_loss + moves_loss
+        monotonic_weight = float(
+            getattr(network, "auxiliary_budget_monotonic_weight", 0.0)
+        )
+        budget_channel = getattr(network, "objective_budget_channel", None)
+        if monotonic_weight > 0.0 and budget_channel is not None:
+            lower = observations.clone()
+            higher = observations.clone()
+            current = observations[:, budget_channel, :, :].clamp(0.0, 1.0)
+            lower[:, budget_channel, :, :] = (current - 0.25).clamp(0.0, 1.0)
+            higher[:, budget_channel, :, :] = (current + 0.25).clamp(0.0, 1.0)
+            paired = torch.cat([lower, higher], dim=0)
+            paired_solve = network.forward_with_auxiliary(paired)[2][0]
+            lower_logits, higher_logits = paired_solve.chunk(2, dim=0)
+            margin = float(getattr(network, "auxiliary_budget_monotonic_margin", 0.0))
+            monotonic_loss = F.relu(lower_logits - higher_logits + margin).mean()
+        auxiliary_loss = (
+            solve_loss
+            + crossings_loss
+            + moves_loss
+            + monotonic_weight * monotonic_loss
+        )
         if bool(eligible.any()):
             mean_probability = solve_logits.sigmoid().mean(dim=1)
-            solve_brier = ((mean_probability[eligible] - solved[eligible]) ** 2).mean()
+            solve_brier = (
+                (mean_probability[eligible] - conditional_solved[eligible]) ** 2
+            ).mean()
             composed = network.composed_auxiliary_value(observations, auxiliary)
             shadow_mae = (composed[eligible] - values.detach()[eligible]).abs().mean()
     relation = (
@@ -315,7 +358,13 @@ def train_alphazero_step(
         else torch.zeros((), device=device)
     )
     auxiliary_weight = float(getattr(network, "auxiliary_loss_weight", 0.0))
-    loss = p_loss + v_loss + auxiliary_weight * auxiliary_loss + 0.1 * relation
+    loss = (
+        p_loss
+        + v_loss
+        + auxiliary_weight * auxiliary_loss
+        + preservation_weight * (preservation_policy + preservation_value)
+        + 0.1 * relation
+    )
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     nn.utils.clip_grad_norm_(network.parameters(), 5.0)
@@ -328,8 +377,11 @@ def train_alphazero_step(
         "solve": float(solve_loss.item()),
         "crossings": float(crossings_loss.item()),
         "moves": float(moves_loss.item()),
+        "budget_monotonic": float(monotonic_loss.item()),
         "solve_brier": float(solve_brier.item()),
         "shadow_mae": float(shadow_mae.item()),
+        "preservation_policy": float(preservation_policy.item()),
+        "preservation_value": float(preservation_value.item()),
         "relation": float(relation.item()),
     }
 
