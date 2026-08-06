@@ -32,6 +32,7 @@ def test_old_candidate_spec_accepts_only_known_additive_fields() -> None:
     current = {
         "name": "d-head128-u1",
         "serial_ensemble": "",
+        "serial_internal_budget_remaining": False,
         "serial_internal_horizon": 5,
         "serial_tape_preserve_shift": False,
     }

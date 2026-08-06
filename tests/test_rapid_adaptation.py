@@ -3,10 +3,12 @@ from pathlib import Path
 import pytest
 import torch
 
+from pgx_mcts_bench.data import Position, ReplayBuffer
 from pgx_mcts_bench.rapid_adaptation import (
     adaptation_blocks,
     next_f,
     promoted_checkpoint_metadata,
+    replay_has_native_success,
 )
 
 
@@ -61,3 +63,26 @@ def test_promoted_checkpoint_metadata_rejects_capped_snapshot(tmp_path: Path) ->
 
     with pytest.raises(ValueError, match="requires a promoted checkpoint"):
         promoted_checkpoint_metadata(checkpoint, "s-window-128")
+
+
+def test_replay_success_gate_requires_an_uncensored_native_solution() -> None:
+    class Scientist:
+        replay = ReplayBuffer(100, __import__("numpy").random.default_rng(0))
+
+    scientist = Scientist()
+    position = Position(
+        observation=__import__("numpy").zeros((1, 1, 1)),
+        legal_actions=__import__("numpy").ones(1),
+        policy=__import__("numpy").ones(1),
+        action=0,
+        player=0,
+        role=1,
+        episode_seed=1,
+        solved=0.0,
+    )
+    scientist.replay.add([position])
+    assert replay_has_native_success(scientist) is False
+    position.solved = 1.0
+    assert replay_has_native_success(scientist) is True
+    position.objective_censored = True
+    assert replay_has_native_success(scientist) is False

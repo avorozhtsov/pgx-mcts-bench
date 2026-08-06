@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 from rf_knots.actions import DESTABILIZE
 
@@ -69,6 +70,8 @@ def test_semantic_destabilization_translates_to_native_serial_record() -> None:
     record = translate_semantic_record(receiver, knot, 10.0, [destabilize], seed=9)
     assert record is not None
     assert record[0].shared_witness
+    assert record[0].option_state is not None
+    assert record[0].target_external_action == destabilize
     assert verified_record_cost(game, knot, 10.0, record)[:2] == (0, 1)
     rescued, failed_cost, shared_cost = _strict_shared_improvement(receiver, knot, 10.0, [], record)
     assert rescued
@@ -79,6 +82,39 @@ def test_semantic_destabilization_translates_to_native_serial_record() -> None:
     )
     assert not duplicate
     assert own_cost == duplicate_cost == 1.0
+
+
+def test_translation_rejects_more_than_five_internal_actions(monkeypatch) -> None:
+    candidate = _window_candidate()
+    config = _config(candidate, ("R(3,12)#0", 0), 0, "cpu", selfplay_games=1)
+    game = make_game(config.game)
+    knot = KnotItem("stabilized-unknot", 1, (1,), 2)
+    destabilize = config.game._spec.encode(DESTABILIZE)
+    monkeypatch.setattr(
+        "pgx_mcts_bench.collaborative_scientists._best_destination",
+        lambda *_args: ([0] * 6, 0, 0),
+    )
+
+    record = translate_semantic_record(
+        SimpleNamespace(game=game),
+        knot,
+        10.0,
+        [destabilize],
+        seed=9,
+        internal_action_cap=5,
+    )
+
+    assert record is None
+
+
+def test_solo_compute_matched_requires_one_scientist(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="exactly one scientist"):
+        run_collaborative_scientists(
+            {"a": tmp_path / "a.pt", "b": tmp_path / "b.pt"},
+            tmp_path / "run",
+            arm="solo-compute-matched",
+            rounds=0,
+        )
 
 
 def test_objective_budget_accepts_exact_cap_and_marks_censoring() -> None:
@@ -111,7 +147,7 @@ def test_objective_budget_accepts_exact_cap_and_marks_censoring() -> None:
 def test_old_checkpoint_ignores_new_objective_budget_channel(tmp_path: Path) -> None:
     by_name = {candidate.name: candidate for candidate in candidates()}
     knot = KnotItem("stabilized-unknot", 1, (1,), 2)
-    for name in ("s-window-128", "d-tape4-u1", "s-w11-128"):
+    for name in ("s-window-128", "s-tape4", "s-w11-128"):
         candidate = by_name[name]
         config = _config(candidate, ("R(3,12)#0", 0), 0, "cpu", selfplay_games=1)
         checkpoint = tmp_path / f"{name}.pt"
@@ -143,19 +179,55 @@ def test_old_checkpoint_ignores_new_objective_budget_channel(tmp_path: Path) -> 
         assert scientist.config.model.auxiliary_budget_conditioning
         assert scientist.config.model.auxiliary_solve_backprop_to_encoder
         assert scientist.config.model.freeze_batchnorm_stats
-        expected_learning_rate = 5e-5 if name == "d-tape4-u1" else 2.5e-4
+        expected_learning_rate = 5e-5 if name == "s-tape4" else 2.5e-4
         assert scientist.config.train.learning_rate == expected_learning_rate
-        expected_auxiliary_rate = 1e-3 if name == "d-tape4-u1" else 2.5e-4
+        expected_auxiliary_rate = 1e-3 if name == "s-tape4" else 2.5e-4
         assert [group["lr"] for group in scientist.optimizer.param_groups] == [
             expected_learning_rate,
             expected_auxiliary_rate,
         ]
         expected_preservation = {
             "s-window-128": 1.0,
-            "d-tape4-u1": 20.0,
+            "s-tape4": 20.0,
             "s-w11-128": 5.0,
         }[name]
         assert scientist.config.model.policy_value_preservation_weight == expected_preservation
+
+
+def test_tape4_h5_migrates_two_trailing_budget_channels_exactly(tmp_path: Path) -> None:
+    by_name = {candidate.name: candidate for candidate in candidates()}
+    source = by_name["s-tape4"]
+    source_config = _config(source, ("R(3,12)#0", 0), 0, "cpu", selfplay_games=1)
+    source_network = make_braid_network(source_config.game, source_config.model).eval()
+    checkpoint = tmp_path / "s-tape4.pt"
+    torch.save({"network": source_network.state_dict()}, checkpoint)
+
+    scientist = load_scientist(
+        "s-tape4-h5",
+        checkpoint,
+        seed=0,
+        device="cpu",
+        objective_budget_channel=True,
+    )
+    knot = KnotItem("stabilized-unknot", 1, (1,), 2)
+    old_observation = FixedWordGame(
+        make_game(source_config.game), knot, 10.0
+    ).reset(0).observation
+    new_observation = FixedWordGame(
+        scientist.game, knot, 10.0, objective_cap=12.0
+    ).reset(0).observation
+    old_tensor = torch.from_numpy(old_observation).permute(2, 0, 1)[None]
+    new_tensor = torch.from_numpy(new_observation).permute(2, 0, 1)[None]
+
+    with torch.inference_mode():
+        old_outputs = source_network.forward_with_auxiliary(old_tensor)
+        new_outputs = scientist.network.eval().forward_with_auxiliary(new_tensor)
+
+    assert new_observation.shape[-1] == old_observation.shape[-1] + 2
+    torch.testing.assert_close(new_outputs[0], old_outputs[0])
+    torch.testing.assert_close(new_outputs[1], old_outputs[1])
+    for new_head, old_head in zip(new_outputs[2], old_outputs[2], strict=True):
+        torch.testing.assert_close(new_head, old_head)
 
 
 def test_objective_budget_underestimate_restarts_geometrically(monkeypatch) -> None:

@@ -9,7 +9,11 @@ from typing import Any
 
 import torch
 
-from pgx_mcts_bench.adaptive_scientists import FixedWordGame, load_scientist
+from pgx_mcts_bench.adaptive_scientists import (
+    FixedWordGame,
+    calibrated_solve_probability,
+    load_scientist,
+)
 from pgx_mcts_bench.collaborative_scientists import (
     _atomic_json,
     _bank_from_payload,
@@ -69,7 +73,9 @@ def audit_budget_head(
     tensor = _observation_tensor(observations, torch.device(device))
     with torch.inference_mode():
         auxiliary = model.network.eval().forward_with_auxiliary(tensor)[2]
-        probability = auxiliary[0].sigmoid().mean(dim=1).reshape(len(items), len(caps))
+        probability = calibrated_solve_probability(model, auxiliary[0]).reshape(
+            len(items), len(caps)
+        )
     probabilities = probability.cpu().tolist()
     tolerance = 1e-7
     rows = []

@@ -703,6 +703,8 @@ class SerialBraidGame:
             window = np.concatenate([window, one_hot], axis=1)
         if self.config.serial_internal_horizon:
             fraction = min(internal_steps / self.config.serial_internal_horizon, 1.0)
+            if self.config.serial_internal_budget_remaining:
+                fraction = 1.0 - fraction
             plane = np.full((observed_width, 1), fraction, dtype=np.float32)
             window = np.concatenate([window, plane], axis=1)
         if objective_remaining is not None:

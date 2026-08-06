@@ -14,13 +14,28 @@ def test_calibration_reports_brier_auc_and_bins() -> None:
     assert report["attempts"] == 4
     assert report["positives"] == 2
     assert report["brier"] == pytest.approx(0.025)
+    assert report["brier_skill"] == pytest.approx(0.9)
     assert report["auc"] == 1.0
     assert report["ece_5"] == pytest.approx(0.15)
 
 
 def test_gate_requires_calibration_coverage_and_retention() -> None:
-    trained = {"attempts": 20, "positives": 10, "brier": 0.12, "auc": 0.82}
-    baseline = {"attempts": 20, "positives": 10, "brier": 0.30, "auc": 0.5}
+    trained = {
+        "attempts": 20,
+        "positives": 10,
+        "brier": 0.12,
+        "brier_skill": 0.52,
+        "ece_5": 0.08,
+        "auc": 0.82,
+    }
+    baseline = {
+        "attempts": 20,
+        "positives": 10,
+        "brier": 0.30,
+        "brier_skill": -0.2,
+        "ece_5": 0.2,
+        "auc": 0.5,
+    }
     passed = gate_decision(
         items=10,
         monotone=10,

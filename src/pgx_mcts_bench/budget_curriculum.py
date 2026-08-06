@@ -13,15 +13,25 @@ import torch
 from pgx_mcts_bench.adaptive_scientists import (
     COLLABORATION_K3,
     FixedWordGame,
+    calibrated_solve_probability,
     load_scientist,
     smallest_crossing_pool,
 )
-from pgx_mcts_bench.collaborative_scientists import _atomic_json, _observation_tensor, _sha256
+from pgx_mcts_bench.collaborative_scientists import (
+    _atomic_json,
+    _bank_from_payload,
+    _observation_tensor,
+    _sha256,
+)
 from pgx_mcts_bench.game import make_game
 from pgx_mcts_bench.ladder import _config, candidates, evaluate_stage
 from pgx_mcts_bench.rapid_adaptation import promoted_checkpoint_metadata
 from pgx_mcts_bench.search import NeuralMCTS
-from pgx_mcts_bench.training import play_selfplay_games, train_alphazero_step
+from pgx_mcts_bench.training import (
+    attach_policy_value_preservation_teacher,
+    play_selfplay_games,
+    train_alphazero_step,
+)
 
 
 def _budget_curve(scientist, items, ratio: float, caps: tuple[float, ...]) -> list[dict[str, Any]]:
@@ -32,12 +42,9 @@ def _budget_curve(scientist, items, ratio: float, caps: tuple[float, ...]) -> li
     ]
     tensor = _observation_tensor(observations, torch.device(scientist.config.train.device))
     with torch.inference_mode():
-        probability = (
-            scientist.network.eval()
-            .forward_with_auxiliary(tensor)[2][0]
-            .sigmoid()
-            .mean(dim=1)
-            .reshape(len(items), len(caps))
+        solve_logits = scientist.network.eval().forward_with_auxiliary(tensor)[2][0]
+        probability = calibrated_solve_probability(scientist, solve_logits).reshape(
+            len(items), len(caps)
         )
     return [
         {
@@ -138,6 +145,7 @@ def train_budget_curriculum(
     rehearsal_games: int = 8,
     seed: int = 20261040,
     device: str = "cpu",
+    bank: Path | None = None,
 ) -> dict[str, Any]:
     if scientist_name not in COLLABORATION_K3:
         raise ValueError(
@@ -154,17 +162,15 @@ def train_budget_curriculum(
         require_factorized=True,
         objective_budget_channel=True,
     )
-    preservation_teacher = copy.deepcopy(scientist.network).eval()
-    for parameter in preservation_teacher.parameters():
-        parameter.requires_grad_(False)
-    # Bypass nn.Module registration: the teacher is a runtime training guard,
-    # not a child whose weights should be serialized into every checkpoint.
-    object.__setattr__(
-        scientist.network,
-        "_policy_value_preservation_teacher",
-        preservation_teacher,
-    )
-    simple = smallest_crossing_pool(items)
+    attach_policy_value_preservation_teacher(scientist.network)
+    if bank is None:
+        simple = smallest_crossing_pool(items)
+    else:
+        import json
+
+        simple = [item.knot for item in _bank_from_payload(json.loads(bank.read_text()))]
+        if len(simple) != items:
+            raise ValueError(f"{bank} contains {len(simple)} identities, expected {items}")
     global_cap = (ratio + 1.0) * scientist.config.game.simplify_budget
     caps = tuple(max(1.0, round(global_cap * fraction)) for fraction in cap_fractions)
     before_state = copy.deepcopy(scientist.network.state_dict())
@@ -290,6 +296,7 @@ def train_budget_curriculum(
             "rehearsal_games": rehearsal_games,
             "seed": seed,
             "device": device,
+            "bank": str(bank.resolve()) if bank is not None else None,
         },
         "training": rows,
         "last_metrics": last_metrics,

@@ -24,27 +24,25 @@ from pgx_mcts_bench.training import play_selfplay_games, train_alphazero_step
 # The preregistered K=3 collaboration roster.  Budget-aware training is admitted
 # per architecture, but keeping the list here prevents the launcher, loader, and
 # admission tools from silently disagreeing about which scientists are repaired.
-COLLABORATION_K3 = ("s-window-128", "d-tape4-u1", "s-w11-128")
+COLLABORATION_K3 = ("s-window-128", "s-tape4", "s-w11-128")
 BUDGET_LEARNING_RATES = {
     "s-window-128": 2.5e-4,
-    # The distilled tape controller is substantially more sensitive to a narrow
-    # easy-task replay distribution than the two window controllers.
-    "d-tape4-u1": 5.0e-5,
+    "s-tape4": 5.0e-5,
     "s-w11-128": 2.5e-4,
 }
 BUDGET_AUXILIARY_LEARNING_RATES = {
     "s-window-128": 2.5e-4,
-    "d-tape4-u1": 1.0e-3,
+    "s-tape4": 1.0e-3,
     "s-w11-128": 2.5e-4,
 }
 BUDGET_PRESERVATION_WEIGHTS = {
     "s-window-128": 1.0,
-    "d-tape4-u1": 20.0,
+    "s-tape4": 20.0,
     "s-w11-128": 5.0,
 }
 BUDGET_MONOTONIC_WEIGHTS = {
     "s-window-128": 0.25,
-    "d-tape4-u1": 1.0,
+    "s-tape4": 1.0,
     "s-w11-128": 1.0,
 }
 
@@ -68,8 +66,19 @@ class Scientist:
     optimizer: torch.optim.Optimizer
     replay: ReplayBuffer
     prediction_source: str
+    solve_calibration_scale: float = 1.0
+    solve_calibration_bias: float = 0.0
     last_accepted_round: int = -1
     ignored_rounds: int = 0
+
+
+def calibrated_solve_probability(scientist: Scientist, solve_logits: torch.Tensor) -> torch.Tensor:
+    """Apply the checkpoint's monotone held-out probability calibration."""
+    raw = solve_logits.sigmoid().mean(dim=1).clamp(1e-7, 1.0 - 1e-7)
+    return torch.sigmoid(
+        scientist.solve_calibration_scale * torch.logit(raw)
+        + scientist.solve_calibration_bias
+    )
 
 
 @dataclass(frozen=True)
@@ -281,9 +290,8 @@ def score_pool(scientist: Scientist, pool: list[KnotItem]) -> tuple[np.ndarray, 
     if scientist.prediction_source.startswith("factorized"):
         assert auxiliary is not None
         solve_logits, crossings, _ = auxiliary
-        return (
-            solve_logits.sigmoid().mean(dim=1).cpu().numpy(),
-            crossings.mean(dim=1).cpu().numpy(),
+        return calibrated_solve_probability(scientist, solve_logits).cpu().numpy(), (
+            crossings.mean(dim=1).cpu().numpy()
         )
     probability = ((legacy + 1.0) / 2.0).clamp(0.0, 1.0).cpu().numpy()
     return probability, 20.0 * (1.0 - probability)
@@ -346,6 +354,7 @@ def load_scientist(
     if require_factorized and not factorized:
         raise ValueError(f"{checkpoint} has no trained factorized value heads")
     load_policy_value_state_dict(network, state)
+    solve_calibration = payload.get("solve_calibration", {})
     if objective_budget_channel and budget_prototype:
         auxiliary_parameters = list(network.auxiliary.parameters())
         auxiliary_ids = {id(parameter) for parameter in auxiliary_parameters}
@@ -376,8 +385,14 @@ def load_scientist(
         game=game,
         network=network,
         optimizer=optimizer,
-        replay=ReplayBuffer(config.train.replay_capacity, np.random.default_rng(seed + 17)),
+        replay=ReplayBuffer(
+            config.train.replay_capacity,
+            np.random.default_rng(seed + 17),
+            representation_capacity=100,
+        ),
         prediction_source="factorized" if factorized else "legacy_proxy",
+        solve_calibration_scale=float(solve_calibration.get("scale", 1.0)),
+        solve_calibration_bias=float(solve_calibration.get("bias", 0.0)),
     )
 
 

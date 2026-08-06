@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import time
 from collections.abc import Callable
@@ -60,6 +61,16 @@ def upper_bound_cost_loss(prediction: Tensor, target: Tensor, shared: Tensor) ->
     return torch.where(shared, upper_bound, equality)
 
 
+def attach_policy_value_preservation_teacher(network: PolicyValueNet) -> PolicyValueNet:
+    """Attach a frozen pre-update teacher without registering it in checkpoints."""
+    teacher = copy.deepcopy(network).eval()
+    for parameter in teacher.parameters():
+        parameter.requires_grad_(False)
+    # A registered child module would duplicate the teacher in every state dict.
+    object.__setattr__(network, "_policy_value_preservation_teacher", teacher)
+    return teacher
+
+
 def play_selfplay_game(
     game: GameAdapter,
     search: NeuralMCTS,
@@ -91,6 +102,23 @@ def play_selfplay_games(
     records: list[GameRecord] = [[] for _ in seeds]
     moves = [0 for _ in seeds]
     first_role = [game.first_role_player(t.state) for t in transitions]
+
+    representation_id = str(getattr(getattr(game, "knot", None), "name", ""))
+    objective_cap = getattr(game, "objective_cap", None)
+    if (
+        objective_cap is None
+        and bool(getattr(game.config, "objective_budget_channel", False))
+        and hasattr(game, "_global_cap")
+    ):
+        objective_cap = game._global_cap()
+    action_horizon = int(getattr(game.config, "simplify_budget", 0))
+
+    def residual_word_length(state: Any) -> int:
+        raw = game.unwrap(state) if hasattr(game, "unwrap") else state
+        word = getattr(raw, "_word", None)
+        if word is None:
+            return -1
+        return int(np.count_nonzero(np.asarray(word)))
 
     while True:
         active = [
@@ -131,6 +159,17 @@ def play_selfplay_games(
                     role=0 if transition.player == first_role[index] else 1,
                     episode_seed=int(seeds[index]),
                     value_potential=game.value_potential(transition.state, transition.player),
+                    representation_id=representation_id,
+                    objective_cap=(
+                        float(objective_cap)
+                        if objective_cap is not None
+                        else float("nan")
+                    ),
+                    action_horizon=action_horizon,
+                    residual_word_length=residual_word_length(transition.state),
+                    mcts_root_value=float(result.root_value),
+                    mcts_visit_count=int(np.asarray(result.visits).sum()),
+                    episode_position_index=len(records[index]),
                 )
                 action = result.action
             else:
@@ -159,6 +198,15 @@ def play_selfplay_games(
             crossing_changes = float(np.asarray(final._crossing_changes))
             final_moves = float(game.config.simplify_budget - int(np.asarray(final._budget)))
         objective_censored = transition.termination_reason == "objective_budget_exhausted"
+        terminal_residual = residual_word_length(transition.state)
+        known_residuals = [
+            position.residual_word_length
+            for position in record
+            if position.residual_word_length >= 0
+        ]
+        if terminal_residual >= 0:
+            known_residuals.append(terminal_residual)
+        best_residual = min(known_residuals) if known_residuals else -1
         for position in record:
             position.outcome = float(rewards[position.player])
             if search.config.potential_cost_shaping:
@@ -168,6 +216,8 @@ def play_selfplay_games(
                 position.final_crossing_changes = crossing_changes
                 position.final_moves = final_moves
                 position.objective_censored = objective_censored
+            position.termination_reason = transition.termination_reason
+            position.best_residual_word_length = best_residual
     return records
 
 
@@ -197,6 +247,13 @@ def train_alphazero_step(
     *,
     collaboration_replay: bool = False,
     shared_fraction: float = 0.1,
+    policy_value_success_only: bool = False,
+    replay_current_representation: str = "",
+    replay_current_fraction: float = 0.0,
+    replay_similar_fraction: float = 0.0,
+    replay_similar_representation_count: int = 8,
+    replay_positions_per_episode: int = 1,
+    replay_max_position_uses: int = 0,
 ) -> dict[str, float]:
     network.train()
     if bool(getattr(network, "freeze_batchnorm_stats", False)):
@@ -204,7 +261,16 @@ def train_alphazero_step(
             if isinstance(module, nn.modules.batchnorm._BatchNorm):
                 module.eval()
     batch = (
-        replay.sample_collaboration_positions(batch_size, shared_fraction)
+        replay.sample_collaboration_positions(
+            batch_size,
+            shared_fraction,
+            current_representation=replay_current_representation,
+            current_fraction=replay_current_fraction,
+            similar_fraction=replay_similar_fraction,
+            similar_representation_count=replay_similar_representation_count,
+            positions_per_episode=replay_positions_per_episode,
+            max_position_uses=replay_max_position_uses,
+        )
         if collaboration_replay
         else replay.sample_positions(batch_size)
     )
@@ -220,11 +286,18 @@ def train_alphazero_step(
         dtype=torch.bool,
         device=device,
     )
+    solved = torch.tensor(
+        [float(getattr(position, "solved", -1.0)) for position in batch],
+        device=device,
+    )
+    roles = torch.tensor([position.role for position in batch], device=device)
     native_targets = (
         ~shared_positions
         if bool(getattr(network, "shared_auxiliary_only", False))
         else torch.ones_like(shared_positions)
     ) & ~censored_positions
+    if policy_value_success_only:
+        native_targets &= solved > 0.5
     policy_losses = -(_policies(batch, device) * F.log_softmax(logits, dim=-1)).sum(dim=-1)
     value_losses = (values - _outcomes(batch, device)) ** 2
     p_loss = (
@@ -263,11 +336,6 @@ def train_alphazero_step(
     if auxiliary is not None:
         solve_logits, predicted_crossings, predicted_moves = auxiliary
         members = solve_logits.shape[1]
-        solved = torch.tensor(
-            [float(getattr(position, "solved", -1.0)) for position in batch],
-            device=device,
-        )
-        roles = torch.tensor([position.role for position in batch], device=device)
         # A cap-exhausted trajectory is not a failure under the environment's
         # full clock, so it remains masked above for policy/value. It *is* an
         # observed failure of the conditional event "solve within this encoded
@@ -383,6 +451,28 @@ def train_alphazero_step(
         "preservation_policy": float(preservation_policy.item()),
         "preservation_value": float(preservation_value.item()),
         "relation": float(relation.item()),
+        "policy_value_targets": float(native_targets.sum().item()),
+        "solve_targets": float(eligible.sum().item()) if auxiliary is not None else 0.0,
+        "replay_success_fraction": float((solved > 0.5).float().mean().item()),
+        "replay_censored_fraction": float(censored_positions.float().mean().item()),
+        "replay_shared_fraction": float(shared_positions.float().mean().item()),
+        "replay_unique_representations": float(
+            len(
+                {
+                    str(getattr(position, "representation_id", ""))
+                    for position in batch
+                    if str(getattr(position, "representation_id", ""))
+                }
+            )
+        ),
+        "replay_mean_position_uses": float(
+            np.mean(
+                [
+                    int(getattr(position, "replay_position_uses", 0))
+                    for position in batch
+                ]
+            )
+        ),
     }
 
 

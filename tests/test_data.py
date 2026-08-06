@@ -1,4 +1,7 @@
+import pickle
+
 import numpy as np
+import pytest
 
 from pgx_mcts_bench.data import Position, ReplayBuffer
 
@@ -12,6 +15,26 @@ def _position(terminal: bool) -> Position:
         player=0,
         next_terminated=terminal,
     )
+
+
+def _episode(
+    representation: str,
+    solved: float,
+    *,
+    length: int = 4,
+    seed: int = 0,
+) -> list[Position]:
+    result = []
+    for index in range(length):
+        position = _position(index == length - 1)
+        position.representation_id = representation
+        position.solved = solved
+        position.episode_seed = seed
+        position.episode_position_index = index
+        position.policy = np.zeros(37, dtype=np.float32)
+        position.policy[: index + 1] = 1.0 / (index + 1)
+        result.append(position)
+    return result
 
 
 def test_sequence_sampling_includes_terminal_transitions() -> None:
@@ -57,3 +80,103 @@ def test_collaboration_sampling_balances_success_and_includes_cap_failures() -> 
         for position in censored_only.sample_collaboration_positions(4)
     )
     assert censored_only.has_trainable_collaboration_positions()
+
+
+def test_replay_retains_all_attempts_for_last_m_representations() -> None:
+    replay = ReplayBuffer(
+        100, np.random.default_rng(7), representation_capacity=2
+    )
+    replay.add(_episode("a", 1.0), representation_id="a")
+    replay.add(_episode("b", 0.0), representation_id="b")
+    replay.add(_episode("a", 0.0), representation_id="a")
+    replay.add(_episode("c", 1.0), representation_id="c")
+
+    assert replay.representation_order == ["a", "c"]
+    assert {game[0].representation_id for game in replay.games} == {"a", "c"}
+    assert sum(game[0].representation_id == "a" for game in replay.games) == 2
+
+
+def test_collaboration_replay_uses_current_similar_and_global_quotas() -> None:
+    replay = ReplayBuffer(1_000, np.random.default_rng(11))
+    embeddings = {
+        "current": np.asarray([1.0, 0.0]),
+        "similar": np.asarray([0.99, 0.01]),
+        "far-a": np.asarray([0.0, 1.0]),
+        "far-b": np.asarray([-1.0, 0.0]),
+    }
+    for representation, embedding in embeddings.items():
+        replay.set_representation_embedding(representation, embedding)
+        replay.add(_episode(representation, 1.0), representation_id=representation)
+        replay.add(_episode(representation, 0.0), representation_id=representation)
+
+    batch = replay.sample_collaboration_positions(
+        40,
+        shared_fraction=0.0,
+        current_representation="current",
+        current_fraction=0.25,
+        similar_fraction=0.25,
+        similar_representation_count=1,
+    )
+    identities = [position.representation_id for position in batch]
+
+    assert identities.count("current") >= 10
+    assert identities.count("similar") >= 10
+    assert sum(position.solved > 0.5 for position in batch) == 20
+    assert sum(
+        row["positions"]
+        for row in replay.last_collaboration_sample_trace
+        if row["requested_representation_group"] == "current"
+    ) == 10
+    assert sum(
+        row["positions"]
+        for row in replay.last_collaboration_sample_trace
+        if row["requested_representation_group"] == "similar"
+    ) == 10
+    assert all(
+        row["fallback"] == "none"
+        for row in replay.last_collaboration_sample_trace
+    )
+
+
+def test_collaboration_replay_spreads_positions_and_persists_exposure() -> None:
+    replay = ReplayBuffer(100, np.random.default_rng(13))
+    replay.add(_episode("knot", 1.0, length=6), representation_id="knot")
+
+    batch = replay.sample_collaboration_positions(4, positions_per_episode=4)
+
+    assert {0, 5}.issubset({position.episode_position_index for position in batch})
+    assert replay.games[0][0].replay_episode_uses == 1
+    assert sum(position.replay_position_uses for position in replay.games[0]) == 4
+
+    resumed = pickle.loads(pickle.dumps(replay))
+    assert resumed.games[0][0].replay_episode_uses == 1
+    assert sum(position.replay_position_uses for position in resumed.games[0]) == 4
+
+
+def test_collaboration_replay_enforces_position_exposure_cap() -> None:
+    replay = ReplayBuffer(100, np.random.default_rng(9))
+    replay.add(_episode("a", 1.0), representation_id="a")
+    replay.sample_collaboration_positions(
+        4, positions_per_episode=4, max_position_uses=1
+    )
+    assert max(position.replay_position_uses for position in replay.games[0]) == 1
+    with pytest.raises(RuntimeError, match="reached max_position_uses"):
+        replay.sample_collaboration_positions(
+            1, positions_per_episode=1, max_position_uses=1
+        )
+
+
+def test_collaboration_replay_prefers_less_exposed_attempts() -> None:
+    replay = ReplayBuffer(100, np.random.default_rng(17))
+    overused = _episode("same", 1.0, seed=1)
+    fresh = _episode("same", 1.0, seed=2)
+    overused[0].replay_episode_uses = 100
+    replay.add(overused, representation_id="same")
+    replay.add(fresh, representation_id="same")
+
+    seeds = [
+        replay.sample_collaboration_positions(1)[0].episode_seed
+        for _ in range(40)
+    ]
+
+    assert seeds.count(2) > seeds.count(1)

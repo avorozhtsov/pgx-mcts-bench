@@ -11,12 +11,42 @@ objective_budget=${OBJECTIVE_BUDGET:-0}
 objective_budget_audit_every=${OBJECTIVE_BUDGET_AUDIT_EVERY:-10}
 
 window_checkpoint=${WINDOW_CHECKPOINT:-artifacts/nebius-rung18-20260801-current/runs/s-window-128/checkpoints/s-window-128/stage21-after.pt}
-tape_checkpoint=${TAPE_CHECKPOINT:-artifacts/nebius-rung18-20260801-current/runs/d-tape4-u1/checkpoints/d-tape4-u1/stage21-after.pt}
+tape_checkpoint=${TAPE_CHECKPOINT:-artifacts/local-rung18-backfill-20260802/runs/s-tape4/checkpoints/s-tape4/stage18-after.pt}
 w11_checkpoint=${W11_CHECKPOINT:-artifacts/nebius-rung18-20260801-current/runs/s-w11-128/checkpoints/s-w11-128/stage18-after.pt}
 cyclic_checkpoint=${CYCLIC_CHECKPOINT:-}
 roster=${ROSTER:-k3}
 
 case "$mode" in
+  smoke)
+    seeds=(20260805)
+    rounds=3
+    threads=1
+    attempt_workers=2
+    qualification_simulations=2
+    simulations=4
+    train_every=1
+    train_steps=2
+    ;;
+  schedule-smoke)
+    seeds=(20260960)
+    rounds=20
+    threads=1
+    attempt_workers=2
+    qualification_simulations=16
+    simulations=64
+    train_every=5
+    train_steps=16
+    ;;
+  schedule-pilot)
+    seeds=(20260961)
+    rounds=50
+    threads=1
+    attempt_workers=2
+    qualification_simulations=16
+    simulations=64
+    train_every=5
+    train_steps=16
+    ;;
   local)
     seeds=(20260810)
     rounds=200
@@ -24,6 +54,7 @@ case "$mode" in
     attempt_workers=2
     qualification_simulations=4
     simulations=16
+    train_every=10
     train_steps=8
     ;;
   local-high)
@@ -33,6 +64,7 @@ case "$mode" in
     attempt_workers=2
     qualification_simulations=16
     simulations=128
+    train_every=10
     train_steps=32
     ;;
   cpu32)
@@ -42,24 +74,39 @@ case "$mode" in
     attempt_workers=2
     qualification_simulations=16
     simulations=128
+    train_every=10
     train_steps=32
     ;;
   *)
-    echo "usage: $0 {local|local-high|cpu32} [artifact-root]" >&2
+    echo "usage: $0 {smoke|schedule-smoke|schedule-pilot|local|local-high|cpu32} [artifact-root]" >&2
     exit 2
     ;;
 esac
 
-for checkpoint in "$window_checkpoint" "$tape_checkpoint" "$w11_checkpoint"; do
+scientist_names=(s-window-128 s-tape4 s-w11-128)
+scientist_checkpoints=("$window_checkpoint" "$tape_checkpoint" "$w11_checkpoint")
+case "$roster" in
+  k3) ;;
+  k4)
+    if [[ -z "$cyclic_checkpoint" || ! -f "$cyclic_checkpoint" ]]; then
+      echo "ROSTER=k4 requires an existing CYCLIC_CHECKPOINT" >&2
+      exit 2
+    fi
+    scientist_names+=(s-cyclic-tape8-192)
+    scientist_checkpoints+=("$cyclic_checkpoint")
+    ;;
+  *)
+    echo "ROSTER must be k3 or k4" >&2
+    exit 2
+    ;;
+esac
+for index in "${!scientist_names[@]}"; do
+  checkpoint=${scientist_checkpoints[$index]}
   if [[ ! -f "$checkpoint" ]]; then
     echo "missing checkpoint: $checkpoint" >&2
     exit 2
   fi
-done
-scientist_names=(s-window-128 d-tape4-u1 s-w11-128)
-scientist_checkpoints=("$window_checkpoint" "$tape_checkpoint" "$w11_checkpoint")
-for index in "${!scientist_names[@]}"; do
-  .venv/bin/python - "${scientist_names[$index]}" "${scientist_checkpoints[$index]}" <<'PY'
+  .venv/bin/python - "${scientist_names[$index]}" "$checkpoint" <<'PY'
 import sys
 from pathlib import Path
 
@@ -68,22 +115,19 @@ from pgx_mcts_bench.rapid_adaptation import promoted_checkpoint_metadata
 promoted_checkpoint_metadata(Path(sys.argv[2]), sys.argv[1])
 PY
 done
-case "$roster" in
-  k3) ;;
-  k4)
-    if [[ -z "$cyclic_checkpoint" || ! -f "$cyclic_checkpoint" ]]; then
-      echo "ROSTER=k4 requires an existing CYCLIC_CHECKPOINT" >&2
-      exit 2
-    fi
-    ;;
-  *)
-    echo "ROSTER must be k3 or k4" >&2
-    exit 2
-    ;;
-esac
 
 mkdir -p "$artifact_root/logs"
-arms=(adaptive-sharing adaptive-no-sharing static-sharing static-no-sharing)
+default_arms="adaptive-sharing adaptive-no-sharing static-sharing static-no-sharing solo-compute-matched"
+read -r -a arms <<< "${ARMS:-$default_arms}"
+for arm in "${arms[@]}"; do
+  case "$arm" in
+    adaptive-sharing|adaptive-no-sharing|static-sharing|static-no-sharing|solo-compute-matched) ;;
+    *)
+      echo "unknown arm in ARMS: $arm" >&2
+      exit 2
+      ;;
+  esac
+done
 pids=()
 labels=()
 
@@ -106,11 +150,24 @@ launch_one() {
   fi
   local scientists=(
     --scientist "s-window-128=$window_checkpoint"
-    --scientist "d-tape4-u1=$tape_checkpoint"
+    --scientist "s-tape4=$tape_checkpoint"
     --scientist "s-w11-128=$w11_checkpoint"
   )
   if [[ "$roster" == k4 ]]; then
     scientists+=(--scientist "s-cyclic-tape8-192=$cyclic_checkpoint")
+  fi
+  local arm_qualification_simulations=$qualification_simulations
+  local arm_simulations=$simulations
+  local arm_train_steps=$train_steps
+  if [[ "$arm" == solo-compute-matched ]]; then
+    local scientist_count=${#scientist_names[@]}
+    if [[ "$roster" == k4 ]]; then
+      scientist_count=4
+    fi
+    scientists=(--scientist "s-window-128=$window_checkpoint")
+    arm_qualification_simulations=$((qualification_simulations * scientist_count))
+    arm_simulations=$((simulations * scientist_count))
+    arm_train_steps=$((train_steps * scientist_count))
   fi
   local budget_args=()
   if [[ "$objective_budget" == 1 ]]; then
@@ -133,10 +190,10 @@ launch_one() {
       --anchor-size 70 \
       --frontier 100 \
       --ratios "$ratios" \
-      --qualification-simulations "$qualification_simulations" \
-      --simulations "$simulations" \
-      --train-every 10 \
-      --train-steps "$train_steps" \
+      --qualification-simulations "$arm_qualification_simulations" \
+      --simulations "$arm_simulations" \
+      --train-every "$train_every" \
+      --train-steps "$arm_train_steps" \
       --batch-size 32 \
       --attempt-workers "$attempt_workers" \
       "${budget_args[@]}" \

@@ -161,6 +161,10 @@ class BraidGameConfig:
     # Maximum consecutive head/memory/tape operations before an external braid
     # action is required. 0 preserves the historical unbounded serial game.
     serial_internal_horizon: int = 0
+    # Historical distilled checkpoints encode the fraction of internal steps
+    # already spent.  New budget-aware arms can instead expose the equivalent
+    # fraction remaining without changing those old checkpoint semantics.
+    serial_internal_budget_remaining: bool = False
     # Append a broadcast remaining-objective-budget plane. The collaboration
     # wrapper supplies a task-specific cap; ordinary games expose the equivalent
     # global move-derived cap. Kept opt-in so historical checkpoint schemas stay

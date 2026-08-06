@@ -30,13 +30,19 @@ from pgx_mcts_bench.adaptive_scientists import (
     KnotItem,
     Scientist,
     _observation_tensor,
+    calibrated_solve_probability,
     load_scientist,
 )
 from pgx_mcts_bench.data import GameRecord, Position
-from pgx_mcts_bench.distill import _best_destination
+from pgx_mcts_bench.distill import _best_destination, train_bounded_option_step
+from pgx_mcts_bench.networks import load_policy_value_state_dict
 from pgx_mcts_bench.search import NeuralMCTS
 from pgx_mcts_bench.serial_braid import SerialBraidGame
-from pgx_mcts_bench.training import play_selfplay_games, train_alphazero_step
+from pgx_mcts_bench.training import (
+    attach_policy_value_preservation_teacher,
+    play_selfplay_games,
+    train_alphazero_step,
+)
 
 Arm = Literal[
     "adaptive-sharing",
@@ -44,6 +50,7 @@ Arm = Literal[
     "adaptive-no-sharing",
     "static-sharing",
     "static-no-sharing",
+    "solo-compute-matched",
 ]
 
 _WORKER_SCIENTISTS: dict[tuple[str, str, str, bool], Scientist] = {}
@@ -113,6 +120,32 @@ def _cheap_score(knot: KnotItem) -> float:
     # Universally available, deliberately non-neural proxy.  Coefficients are
     # fixed engineering choices for the pilot, not a fitted scientific baseline.
     return float(len(knot.word) + 8 * (knot.strands - 2) + knot.crossings)
+
+
+def _replay_representation_embedding(knot: KnotItem) -> np.ndarray:
+    """Cheap deterministic similarity key; learned embeddings can replace it later."""
+    word = np.asarray(knot.word, dtype=np.float32)
+    signs = np.sign(word)
+    sign_changes = float(np.count_nonzero(signs[1:] != signs[:-1])) if len(word) > 1 else 0.0
+    generator_histogram = np.zeros(4, dtype=np.float32)
+    for generator in np.abs(word).astype(int):
+        if 1 <= generator <= len(generator_histogram):
+            generator_histogram[generator - 1] += 1.0
+    if len(word):
+        generator_histogram /= len(word)
+    return np.asarray(
+        [
+            len(word) / 48.0,
+            knot.strands / 5.0,
+            knot.crossings / 20.0,
+            float(word.sum()) / 48.0,
+            float(np.abs(word).sum()) / 192.0,
+            float(np.count_nonzero(word > 0)) / max(len(word), 1),
+            sign_changes / max(len(word) - 1, 1),
+            *generator_histogram.tolist(),
+        ],
+        dtype=np.float32,
+    )
 
 
 @lru_cache(maxsize=1)
@@ -248,7 +281,7 @@ def expected_capped_scores(
         moves = budget * (1.0 - probability)
     else:
         solve_logits, predicted_crossings, predicted_moves = auxiliary
-        probability = solve_logits.sigmoid().mean(dim=1)
+        probability = calibrated_solve_probability(scientist, solve_logits)
         crossings = predicted_crossings.mean(dim=1)
         moves = predicted_moves.mean(dim=1)
     ratio_tensor = torch.tensor([ratio for _ in items for ratio in ratios], device=tensor.device)
@@ -279,7 +312,7 @@ def prediction_details(
         moves = budget * (1.0 - probability)
     else:
         solve_logits, predicted_crossings, predicted_moves = auxiliary
-        probability = solve_logits.sigmoid().mean(dim=1)
+        probability = calibrated_solve_probability(scientist, solve_logits)
         crossings = predicted_crossings.mean(dim=1)
         moves = predicted_moves.mean(dim=1)
     rows = []
@@ -460,7 +493,7 @@ def _worker_play_bundle(
             objective_budget_channel=objective_budget,
         )
         _WORKER_SCIENTISTS[key] = scientist
-    scientist.network.load_state_dict(network_state)
+    load_policy_value_state_dict(scientist.network, network_state)
     return [
         _run_attempt(
             scientist,
@@ -626,6 +659,7 @@ def translate_semantic_record(
     semantic_actions: list[int],
     *,
     seed: int,
+    internal_action_cap: int | None = None,
 ) -> GameRecord | None:
     """Route semantic edits through one receiver's native controller."""
     game = receiver.game
@@ -648,6 +682,12 @@ def translate_semantic_record(
             episode_seed=seed,
             value_potential=game.value_potential(transition.state, transition.player),
             shared_witness=True,
+            representation_id=knot.name,
+            action_horizon=int(game.config.simplify_budget),
+            residual_word_length=int(
+                np.count_nonzero(np.asarray(_raw_state(game, transition.state)._word))
+            ),
+            episode_position_index=len(record),
         )
         nxt = game.step(transition.state, action)
         position.next_terminated = nxt.terminated
@@ -663,9 +703,15 @@ def translate_semantic_record(
             if destination is None:
                 return None
             route, _, native_action = destination
+            if internal_action_cap is not None and len(route) > internal_action_cap:
+                return None
+            option_state = state
+            option_position = len(record)
             for action in [*route, native_action]:
                 if not take(action):
                     return None
+            record[option_position].option_state = option_state
+            record[option_position].target_external_action = semantic_action
         elif not take(semantic_action):
             return None
 
@@ -674,12 +720,18 @@ def translate_semantic_record(
     raw = _raw_state(game, transition.state)
     crossing_changes = float(np.asarray(raw._crossing_changes))
     moves = float(game.config.simplify_budget - int(np.asarray(raw._budget)))
+    best_residual = min(
+        [position.residual_word_length for position in record]
+        + [int(np.count_nonzero(np.asarray(raw._word)))]
+    )
     rewards = game.final_rewards(transition.state)
     for position in record:
         position.outcome = float(rewards[position.player])
         position.solved = 1.0
         position.final_crossing_changes = crossing_changes
         position.final_moves = moves
+        position.termination_reason = "solved"
+        position.best_residual_word_length = best_residual
     verified = verified_record_cost(game, knot, ratio, record)
     if verified is None:
         return None
@@ -787,19 +839,33 @@ def _refresh_schedule(output: Path) -> list[dict[str, Any]]:
     return events
 
 
-def _scientist_state(scientist: Scientist) -> dict[str, Any]:
-    return {
+def _scientist_state(
+    scientist: Scientist,
+    option_optimizer: torch.optim.Optimizer | None = None,
+) -> dict[str, Any]:
+    state = {
         "network": scientist.network.state_dict(),
         "optimizer": scientist.optimizer.state_dict(),
         "replay": scientist.replay,
         "prediction_source": scientist.prediction_source,
     }
+    if option_optimizer is not None:
+        state["option_optimizer"] = option_optimizer.state_dict()
+    return state
 
 
-def _restore_scientist(scientist: Scientist, state: dict[str, Any]) -> None:
-    scientist.network.load_state_dict(state["network"])
+def _restore_scientist(
+    scientist: Scientist,
+    state: dict[str, Any],
+    option_optimizer: torch.optim.Optimizer | None = None,
+) -> None:
+    load_policy_value_state_dict(scientist.network, state["network"])
     scientist.optimizer.load_state_dict(state["optimizer"])
+    if option_optimizer is not None:
+        option_optimizer.load_state_dict(state["option_optimizer"])
     scientist.replay = state["replay"]
+    scientist.replay._ensure_replay_state()
+    scientist.replay.representation_capacity = 100
     scientist.prediction_source = state["prediction_source"]
 
 
@@ -834,7 +900,35 @@ def _manifest(
         "objective_budget": objective_budget,
         "objective_budget_encoding": "absolute-global-v2",
         "objective_censored_replay": "solve-negative-v2",
-        "collaboration_replay_sampling": "episode-success-and-cap-balanced-v2",
+        "collaboration_replay_sampling": "exposure-and-representation-balanced-v3",
+        "collaboration_replay_history_representations": 100,
+        "collaboration_replay_representation_mix": {
+            "current": 0.25,
+            "structurally_similar": 0.25,
+            "global": 0.5,
+        },
+        "collaboration_replay_similarity": "cheap-braid-structure-cosine-v1",
+        "collaboration_replay_positions_per_episode": 4,
+        "collaboration_replay_outcome_mix": "native-success-failure-50-50-when-available",
+        "policy_value_update": "success-only-native-plus-option-policy-adapter-v2",
+        "sharing_policy_adapter": {
+            "initialization": "zero-logit residual",
+            "width": 32,
+            "residual_blocks": 2,
+            "optimizer_scope": "adapter-only",
+            "conditioning": "full observation including remaining internal budget",
+        },
+        "policy_value_preservation": "frozen-starting-scientist-when-weight-positive-v1",
+        "shared_witness_internal_action_cap_per_edit": 5,
+        "shared_policy_target": "any legal <=5-internal-action path then certified edit",
+        "solution_definition": {
+            "terminal": "exact replay reaches empty braid word and one strand",
+            "learned_objective_cap": "disabled unless objective_budget is true",
+            "crossing_change_cap": None,
+            "native_action_horizon": 64,
+            "completeness_claim": False,
+            "timeout_interpretation": "censored beyond the declared action horizon",
+        },
         "solve_encoder_gradients": "solve-only-v1",
         "budget_monotonic_training": "paired-margin-v1",
         "objective_budget_audit_every": objective_budget_audit_every,
@@ -902,10 +996,13 @@ def run_collaborative_scientists(
         "adaptive-no-sharing",
         "static-sharing",
         "static-no-sharing",
+        "solo-compute-matched",
     }:
         raise ValueError(f"unknown arm: {arm}")
     if not checkpoints:
         raise ValueError("at least one scientist is required")
+    if arm == "solo-compute-matched" and len(checkpoints) != 1:
+        raise ValueError("solo-compute-matched requires exactly one scientist")
     if attempt_workers < 1:
         raise ValueError("attempt_workers must be positive")
     output.mkdir(parents=True, exist_ok=True)
@@ -976,12 +1073,30 @@ def run_collaborative_scientists(
         for index, (name, path) in enumerate(checkpoints.items())
     ]
     for scientist in scientists:
-        scientist.network.shared_auxiliary_only = arm == "adaptive-sharing-aux-only"
+        scientist.network.shared_auxiliary_only = arm in {
+            "adaptive-sharing",
+            "adaptive-sharing-aux-only",
+            "static-sharing",
+        }
+        attach_policy_value_preservation_teacher(scientist.network)
+    option_optimizers: dict[str, torch.optim.Optimizer] = {}
+    if arm in {"adaptive-sharing", "static-sharing"}:
+        for scientist in scientists:
+            adapter = scientist.network.attach_option_policy_adapter()
+            option_optimizers[scientist.name] = torch.optim.AdamW(
+                adapter.parameters(),
+                lr=scientist.config.train.learning_rate,
+                weight_decay=scientist.config.train.weight_decay,
+            )
     completed = _round_dirs(output)
     if completed:
         saved = load_round_state(completed[-1], map_location=device)
         for scientist in scientists:
-            _restore_scientist(scientist, saved["scientists"][scientist.name])
+            _restore_scientist(
+                scientist,
+                saved["scientists"][scientist.name],
+                option_optimizers.get(scientist.name),
+            )
         active_ids = list(saved["active_ids"])
         cursor = int(saved["cursor"])
         processed = list(saved["processed"])
@@ -1064,6 +1179,9 @@ def run_collaborative_scientists(
             selecting_scientist = -1
             selected_index = proposals[0]
         selected = active[selected_index]
+        replay_embedding = _replay_representation_embedding(selected.knot)
+        for scientist in scientists:
+            scientist.replay.set_representation_embedding(selected.id, replay_embedding)
         selected_predictions = {
             scientist.name: prediction_details(scientist, selected, ratios)
             for scientist in scientists
@@ -1107,7 +1225,9 @@ def run_collaborative_scientists(
                 record = run.record
                 records_for_replay = run.replay_records or (record,)
                 for replay_record in records_for_replay:
-                    scientist.replay.add(replay_record)
+                    scientist.replay.add(
+                        replay_record, representation_id=selected.id
+                    )
                 payload, verified = _attempt_payload(scientist, selected.knot, ratio, record)
                 if run.budget is not None:
                     payload["budget"] = run.budget
@@ -1147,6 +1267,7 @@ def run_collaborative_scientists(
                         + round_index * 10_000
                         + ratio_index * 100
                         + receiver_index,
+                        internal_action_cap=5,
                     )
                     success = translated is not None
                     admitted, own_objective, shared_objective = _strict_shared_improvement(
@@ -1157,7 +1278,9 @@ def run_collaborative_scientists(
                         translated,
                     )
                     if admitted:
-                        receiver.replay.add(translated)
+                        receiver.replay.add(
+                            translated, representation_id=selected.id
+                        )
                     translations.append(
                         {
                             "ratio": ratio,
@@ -1196,7 +1319,61 @@ def run_collaborative_scientists(
                                 }
                                 else 0.0
                             ),
+                            policy_value_success_only=True,
+                            replay_current_representation=selected.id,
+                            replay_current_fraction=0.25,
+                            replay_similar_fraction=0.25,
+                            replay_positions_per_episode=4,
                         )
+                option_positions = [
+                    position
+                    for game_record in scientist.replay.games
+                    for position in game_record
+                    if position.option_state is not None
+                    and position.target_external_action >= 0
+                ]
+                if (
+                    arm in {"adaptive-sharing", "static-sharing"}
+                    and isinstance(scientist.game, SerialBraidGame)
+                    and option_positions
+                ):
+                    option_diagnostics: dict[str, float | str] = {}
+                    option_loss = train_bounded_option_step(
+                        scientist.network,
+                        option_optimizers[scientist.name],
+                        scientist.game,
+                        scientist.replay,
+                        scientist.replay.rng,
+                        batch_size=min(batch_size, len(option_positions)),
+                        horizon=5,
+                        beam_width=8,
+                        device=torch.device(device),
+                        adapter_only=True,
+                        stable_routes=True,
+                        diagnostics=option_diagnostics,
+                    )
+                    if last is None:
+                        last = {}
+                    last["bounded_option"] = option_loss
+                    last["bounded_option_diagnostics"] = option_diagnostics
+                    last["matched_extra_update"] = "bounded-option"
+                elif scientist.replay.games:
+                    last = train_alphazero_step(
+                        scientist.network,
+                        scientist.optimizer,
+                        scientist.replay,
+                        batch_size,
+                        torch.device(device),
+                        collaboration_replay=True,
+                        shared_fraction=0.0,
+                        policy_value_success_only=True,
+                        replay_current_representation=selected.id,
+                        replay_current_fraction=0.25,
+                        replay_similar_fraction=0.25,
+                        replay_positions_per_episode=4,
+                    )
+                    last["bounded_option"] = 0.0
+                    last["matched_extra_update"] = "native-control"
                 losses[scientist.name] = last
                 if last is not None and scientist.prediction_source == "legacy_proxy":
                     scientist.prediction_source = "factorized_collaboration"
@@ -1241,7 +1418,12 @@ def run_collaborative_scientists(
             "active_ids": active_ids,
             "cursor": cursor,
             "processed": processed,
-            "scientists": {scientist.name: _scientist_state(scientist) for scientist in scientists},
+            "scientists": {
+                scientist.name: _scientist_state(
+                    scientist, option_optimizers.get(scientist.name)
+                )
+                for scientist in scientists
+            },
         }
         _commit_round(output, round_index, event, state)
         _refresh_schedule(output)

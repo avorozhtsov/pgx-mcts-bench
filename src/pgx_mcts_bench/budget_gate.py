@@ -9,7 +9,7 @@ import numpy as np
 
 from pgx_mcts_bench.adaptive_scientists import FixedWordGame, load_scientist, smallest_crossing_pool
 from pgx_mcts_bench.budget_curriculum import _budget_curve, _rung_evaluation
-from pgx_mcts_bench.collaborative_scientists import _atomic_json, _sha256
+from pgx_mcts_bench.collaborative_scientists import _atomic_json, _bank_from_payload, _sha256
 from pgx_mcts_bench.rapid_adaptation import promoted_checkpoint_metadata
 from pgx_mcts_bench.search import NeuralMCTS
 from pgx_mcts_bench.training import play_selfplay_games
@@ -55,12 +55,16 @@ def calibration(scores: list[float], labels: list[int]) -> dict[str, Any]:
                 "observed_solve_rate": observed,
             }
         )
+    base_rate = sum(labels) / len(labels)
+    null_brier = base_rate * (1.0 - base_rate)
     return {
         "attempts": len(labels),
         "positives": sum(labels),
         "mean_p_solve": sum(scores) / len(scores),
         "observed_solve_rate": sum(labels) / len(labels),
         "brier": brier,
+        "null_brier": null_brier,
+        "brier_skill": 1.0 - brier / null_brier if null_brier > 0.0 else 0.0,
         "auc": roc_auc(scores, labels),
         "ece_5": ece,
         "bins": bins,
@@ -86,16 +90,15 @@ def gate_decision(
         "monotone_all": monotone == items,
         "informative_items_exist": informative_items > 0,
         "all_informative_items_sensitive": informative_sensitive == informative_items,
-        "never_solved_items_low_probability": (
-            never_solved_low_probability == never_solved_items
-        ),
         "both_solve_labels_present": (
             0 < trained_calibration["positives"] < trained_calibration["attempts"]
         ),
         "brier_at_most_0_25": trained_calibration["brier"] <= 0.25,
         "brier_improves_baseline": trained_calibration["brier"] < baseline_calibration["brier"],
-        "auc_at_least_0_70": (
-            trained_calibration["auc"] is not None and trained_calibration["auc"] >= 0.70
+        "brier_skill_at_least_0_15": trained_calibration["brier_skill"] >= 0.15,
+        "ece_at_most_0_10": trained_calibration["ece_5"] <= 0.10,
+        "auc_at_least_0_75": (
+            trained_calibration["auc"] is not None and trained_calibration["auc"] >= 0.75
         ),
         "heldout_coverage_noninferior": trained_solves >= baseline_solves,
         "promoted_rung_noninferior": trained_rung_rate >= baseline_rung_rate,
@@ -185,12 +188,31 @@ def run_budget_gate(
     rung_simulations: int = 128,
     seed: int = 20261140,
     device: str = "cpu",
+    training_bank: Path | None = None,
+    heldout_bank: Path | None = None,
 ) -> dict[str, Any]:
-    if heldout_start < training_items:
-        raise ValueError("heldout_start must exclude every training item")
-    all_items = smallest_crossing_pool(heldout_start + heldout_items)
-    training_names = [item.name for item in all_items[:training_items]]
-    heldout = all_items[heldout_start : heldout_start + heldout_items]
+    if training_bank is None or heldout_bank is None:
+        if heldout_start < training_items:
+            raise ValueError("heldout_start must exclude every training item")
+        all_items = smallest_crossing_pool(heldout_start + heldout_items)
+        training_names = [item.name for item in all_items[:training_items]]
+        selection_names = [item.name for item in all_items[training_items:heldout_start]]
+        heldout = all_items[heldout_start : heldout_start + heldout_items]
+    else:
+        import json
+
+        training = [
+            item.knot for item in _bank_from_payload(json.loads(training_bank.read_text()))
+        ]
+        heldout = [
+            item.knot for item in _bank_from_payload(json.loads(heldout_bank.read_text()))
+        ]
+        if len(training) != training_items or len(heldout) != heldout_items:
+            raise ValueError("critic bank sizes do not match the declared item counts")
+        training_names = [item.name for item in training]
+        selection_names = []
+        if set(training_names) & {item.name for item in heldout}:
+            raise ValueError("training and held-out critic banks overlap")
     baseline = load_scientist(
         scientist_name,
         baseline_checkpoint,
@@ -288,9 +310,9 @@ def run_budget_gate(
         "trained_sha256": _sha256(trained_checkpoint),
         "protocol": {
             "training_items_excluded": training_names,
-            "selection_items_excluded": [
-                item.name for item in all_items[training_items:heldout_start]
-            ],
+            "selection_items_excluded": selection_names,
+            "training_bank": str(training_bank.resolve()) if training_bank else None,
+            "heldout_bank": str(heldout_bank.resolve()) if heldout_bank else None,
             "heldout_start": heldout_start,
             "heldout_items": [item.name for item in heldout],
             "ratio": ratio,

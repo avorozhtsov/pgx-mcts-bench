@@ -195,3 +195,113 @@ def build_development_bank(
     }
     _atomic_json(output_manifest, report)
     return report
+
+
+def build_critic_calibration_banks(
+    protected_banks: list[Path],
+    output: Path,
+    *,
+    train_size: int = 60,
+    validation_size: int = 20,
+    decision_size: int = 20,
+    seed: int = 20261310,
+    max_stage: int = 22,
+) -> dict[str, Any]:
+    """Build identity-disjoint critic splits outside every protected endpoint.
+
+    Selection uses only representation metadata. Each split receives one quarter
+    3-strand, one quarter 4-strand, and the remainder 5-strand knots, sampled
+    across the full cheap-score range. Outcomes and network predictions never
+    participate.
+    """
+    sizes = {
+        "train": train_size,
+        "validation": validation_size,
+        "decision": decision_size,
+    }
+    if any(size < 4 for size in sizes.values()):
+        raise ValueError("every critic split needs at least four identities")
+    protected_payloads = [json.loads(path.read_text()) for path in protected_banks]
+    protected_ids = {
+        str(row["id"])
+        for payload in protected_payloads
+        for row in payload
+    }
+    audit = ladder_source_identity_audit(max_stage)
+    excluded = protected_ids | set(audit["excluded_knot_ids"])
+    compatible = [knot for knot in _compatible_table() if knot.name not in excluded]
+
+    quotas: dict[str, dict[int, int]] = {}
+    for split, size in sizes.items():
+        quotas[split] = {3: size // 4, 4: size // 4}
+        quotas[split][5] = size - quotas[split][3] - quotas[split][4]
+
+    selected: dict[str, list[Any]] = {split: [] for split in sizes}
+    for strands in (3, 4, 5):
+        total = sum(quotas[split][strands] for split in sizes)
+        group = sorted(
+            (knot for knot in compatible if knot.strands == strands),
+            key=lambda knot: (_cheap_score(knot), knot.name),
+        )
+        if len(group) < total:
+            raise ValueError(f"only {len(group)} eligible {strands}-strand knots; need {total}")
+        chosen = []
+        for bin_index, part in enumerate(np.array_split(np.asarray(group, dtype=object), total)):
+            ranked = sorted(
+                list(part),
+                key=lambda knot: hashlib.sha256(
+                    f"{seed}:critic:{strands}:{bin_index}:{knot.name}".encode()
+                ).digest(),
+            )
+            chosen.append(ranked[0])
+        chosen.sort(
+            key=lambda knot: hashlib.sha256(
+                f"{seed}:critic:assign:{strands}:{knot.name}".encode()
+            ).digest()
+        )
+        offset = 0
+        for split in sizes:
+            count = quotas[split][strands]
+            selected[split].extend(chosen[offset : offset + count])
+            offset += count
+
+    output.mkdir(parents=True, exist_ok=True)
+    split_payloads = {}
+    for split, knots in selected.items():
+        items = [_bank_item(knot, 0) for knot in knots]
+        items.sort(key=lambda item: (item.cheap_score, item.id))
+        payload = _bank_payload(items)
+        split_payloads[split] = payload
+        _atomic_json(output / f"{split}.json", payload)
+
+    split_ids = {
+        split: {str(row["id"]) for row in payload}
+        for split, payload in split_payloads.items()
+    }
+    if any(split_ids[left] & split_ids[right] for left in sizes for right in sizes if left < right):
+        raise AssertionError("critic splits overlap")
+    if set().union(*split_ids.values()) & excluded:
+        raise AssertionError("critic split overlaps a protected identity")
+    report = {
+        "schema": "critic-calibration-banks-v1",
+        "seed": seed,
+        "max_stage": max_stage,
+        "uses_outcomes": False,
+        "protected_banks": [str(path.resolve()) for path in protected_banks],
+        "protected_ids": len(protected_ids),
+        "excluded_ladder_ids": sorted(audit["excluded_knot_ids"]),
+        "sizes": sizes,
+        "quotas": {
+            split: {str(strands): count for strands, count in by_strand.items()}
+            for split, by_strand in quotas.items()
+        },
+        "split_sha256": {
+            split: _json_hash(payload) for split, payload in split_payloads.items()
+        },
+        "selected_ids": {
+            split: [str(row["id"]) for row in payload]
+            for split, payload in split_payloads.items()
+        },
+    }
+    _atomic_json(output / "manifest.json", report)
+    return report

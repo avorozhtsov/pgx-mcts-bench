@@ -220,6 +220,53 @@ def test_auxiliary_losses_use_solve_labels_and_mask_unsolved_costs() -> None:
     assert metrics["moves"] >= 0.0
 
 
+def test_success_only_controller_masks_failed_policy_and_value_but_trains_solve() -> None:
+    game = BraidGameConfig(max_len=16, max_strands=3, simplify_budget=12)
+    network = make_braid_network(
+        game,
+        ModelConfig(
+            channels=8,
+            latent_channels=8,
+            residual_blocks=1,
+            auxiliary_value_loss_weight=1.0,
+            auxiliary_solve_backprop_to_encoder=True,
+        ),
+    )
+    optimizer = torch.optim.AdamW(network.parameters(), lr=1e-3)
+    replay = ReplayBuffer(100, np.random.default_rng(29))
+    observation = _observation(game, batch=1)[0].permute(1, 2, 0).numpy()
+    replay.add(
+        [
+            Position(
+                observation=observation,
+                legal_actions=np.ones(game.action_size, dtype=bool),
+                policy=np.full(game.action_size, 1.0 / game.action_size, dtype=np.float32),
+                action=0,
+                player=1,
+                role=1,
+                outcome=-1.0,
+                solved=0.0,
+                episode_seed=30,
+            )
+        ]
+    )
+
+    metrics = train_alphazero_step(
+        network,
+        optimizer,
+        replay,
+        4,
+        torch.device("cpu"),
+        policy_value_success_only=True,
+    )
+
+    assert metrics["policy"] == 0.0
+    assert metrics["value"] == 0.0
+    assert metrics["policy_value_targets"] == 0.0
+    assert metrics["solve"] > 0.0
+    assert metrics["solve_targets"] == 4.0
+
+
 def test_shared_auxiliary_only_masks_policy_and_scalar_value_targets() -> None:
     game = BraidGameConfig(max_len=16, max_strands=3, simplify_budget=12)
     network = make_braid_network(

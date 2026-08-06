@@ -16,9 +16,9 @@ from pgx_mcts_bench.collaborative_scientists import (
 from pgx_mcts_bench.rapid_adaptation import _run_one_task, checkpoint_regression_gate
 
 ARMS = {
-    "frozen-5+1": {"f": 5, "f_old": 1, "train_steps": 0},
-    "train-5+0": {"f": 5, "f_old": 0, "train_steps": 96},
-    "train-5+1": {"f": 5, "f_old": 1, "train_steps": 96},
+    "frozen-8+1": {"f": 8, "f_old": 1, "train_steps": 0},
+    "train-8+0": {"f": 8, "f_old": 0, "train_steps": 96},
+    "train-8+1": {"f": 8, "f_old": 1, "train_steps": 96},
 }
 
 
@@ -83,11 +83,11 @@ def analyze_paired_gate(
         solved_sets = {
             arm: {row["item"] for row in rows if row["solved"]} for arm, rows in rows_by_arm.items()
         }
-        treatment_rows = {row["item"]: row for row in rows_by_arm["train-5+1"]}
-        frozen = solved_sets["frozen-5+1"]
+        treatment_rows = {row["item"]: row for row in rows_by_arm["train-8+1"]}
+        frozen = solved_sets["frozen-8+1"]
         rescues = sorted(
             item
-            for item in solved_sets["train-5+1"] - frozen
+            for item in solved_sets["train-8+1"] - frozen
             if treatment_rows[item].get("first_solve")
             and not treatment_rows[item]["first_solve"]["before_any_training"]
         )
@@ -95,8 +95,8 @@ def analyze_paired_gate(
             post_training_rescue_seeds += 1
         comparisons = {}
         seed_noninferior = True
-        for control in ("frozen-5+1", "train-5+0"):
-            treatment = summaries["train-5+1"]
+        for control in ("frozen-8+1", "train-8+0"):
+            treatment = summaries["train-8+1"]
             baseline = summaries[control]
             noninferior = (
                 treatment["solved"] >= baseline["solved"]
@@ -104,9 +104,9 @@ def analyze_paired_gate(
             )
             seed_noninferior &= noninferior
             comparisons[control] = {
-                "shared_solved": sorted(solved_sets["train-5+1"] & solved_sets[control]),
-                "treatment_only": sorted(solved_sets["train-5+1"] - solved_sets[control]),
-                "control_only": sorted(solved_sets[control] - solved_sets["train-5+1"]),
+                "shared_solved": sorted(solved_sets["train-8+1"] & solved_sets[control]),
+                "treatment_only": sorted(solved_sets["train-8+1"] - solved_sets[control]),
+                "control_only": sorted(solved_sets[control] - solved_sets["train-8+1"]),
                 "solve_delta": treatment["solved"] - baseline["solved"],
                 "capped_objective_delta": (
                     treatment["capped_objective_sum"] - baseline["capped_objective_sum"]
@@ -114,8 +114,8 @@ def analyze_paired_gate(
                 "noninferior": noninferior,
             }
         retention_noninferior = (
-            summaries["train-5+1"]["retention_solved"]
-            >= summaries["frozen-5+1"]["retention_solved"]
+            summaries["train-8+1"]["retention_solved"]
+            >= summaries["frozen-8+1"]["retention_solved"]
         )
         seed_noninferior &= retention_noninferior
         all_noninferior &= seed_noninferior

@@ -169,6 +169,7 @@ class Candidate:
     serial_encoder_prime: int = 5
     serial_ensemble: str = ""
     serial_internal_horizon: int = 0
+    serial_internal_budget_remaining: bool = False
     use_auxiliary_value: bool = False
     train: bool = True
 
@@ -387,21 +388,33 @@ def tape_scan_arms() -> list[Candidate]:
 
 def experimental_capacity_arms() -> list[Candidate]:
     """Higher-capacity probes kept outside the fixed tape/scan comparison."""
+    base = dict(
+        exploration="u1",
+        simulations=128,
+        channels=32,
+        train_steps=96,
+        serial_window=7,
+        use_auxiliary_value=True,
+    )
     return [
+        Candidate(
+            "s-tape4-h5",
+            "independent tape4 controller with five-step internal budget",
+            serial_act_width=1,
+            serial_tape_symbols=4,
+            serial_internal_horizon=5,
+            serial_internal_budget_remaining=True,
+            **base,
+        ),
         Candidate(
             "s-cyclic-tape8-192",
             "window-128 controller + cyclic full-word residual encoder + 8-symbol tape",
-            exploration="u1",
-            simulations=128,
-            channels=32,
-            train_steps=96,
-            serial_window=7,
             serial_act_width=7,
-            use_auxiliary_value=True,
             serial_encoder="cyclic-memory",
             serial_encoder_states=64,
             serial_tape_symbols=8,
             serial_tape_preserve_shift=True,
+            **base,
         ),
     ]
 
@@ -695,6 +708,7 @@ def _config(
         serial_encoder_prime=candidate.serial_encoder_prime,
         serial_ensemble=candidate.serial_ensemble,
         serial_internal_horizon=candidate.serial_internal_horizon,
+        serial_internal_budget_remaining=candidate.serial_internal_budget_remaining,
     )
     return ExperimentConfig(
         game=game,
@@ -1006,6 +1020,7 @@ def _restore_ladder_progress(
 
 _COMPATIBLE_NEW_CANDIDATE_FIELDS = {
     "serial_ensemble",
+    "serial_internal_budget_remaining",
     "serial_internal_horizon",
     "serial_tape_preserve_shift",
 }
@@ -1045,6 +1060,8 @@ def run_ladder(
     min_iterations_from: int = 0,
     bounds_path: Path | None = None,
     retro_games: int = 6,
+    policy_value_success_only: bool = False,
+    policy_value_success_gated: bool = False,
     log=print,
 ) -> LadderResult:
     started = time.perf_counter()
@@ -1371,8 +1388,35 @@ def run_ladder(
                     phase_seconds=selfplay_seconds,
                 )
                 phase_started = time.perf_counter()
+                eligible_games = [
+                    game
+                    for game in replay.games
+                    if game and not bool(getattr(game[0], "objective_censored", False))
+                ]
+                replay_success_fraction = (
+                    sum(float(getattr(game[0], "solved", -1.0)) > 0.5 for game in eligible_games)
+                    / len(eligible_games)
+                    if eligible_games
+                    else 0.0
+                )
+                sparse_positive_replay = 0.0 < replay_success_fraction < 0.5
                 for train_step in range(resume_train_step, candidate.train_steps):
-                    train_alphazero_step(network, optimizer, replay, 32, torch.device(device))
+                    train_alphazero_step(
+                        network,
+                        optimizer,
+                        replay,
+                        32,
+                        torch.device(device),
+                        collaboration_replay=(
+                            policy_value_success_only
+                            or (policy_value_success_gated and sparse_positive_replay)
+                        ),
+                        shared_fraction=0.0,
+                        policy_value_success_only=(
+                            policy_value_success_only
+                            or (policy_value_success_gated and replay_success_fraction == 0.0)
+                        ),
+                    )
                     terminate_if_requested(
                         stage_index=index,
                         iteration=iteration,

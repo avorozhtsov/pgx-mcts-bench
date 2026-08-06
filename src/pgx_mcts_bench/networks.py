@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 
 import torch
@@ -316,6 +317,76 @@ class BraidPolicyValueNet(PolicyValueNet):
         self.auxiliary_budget = float(game.simplify_budget)
         self.auxiliary_ratio_channel = 2 * (game.max_strands - 1) + 1 + 1 + 6
         self.use_auxiliary_value = model.use_auxiliary_value
+        self.option_policy_adapter: OptionPolicyAdapter | None = None
+        self.option_policy_gate: OptionPolicyGate | None = None
+        self.option_adapter_enabled = True
+        self._option_adapter_spec = (
+            game.observation_channels,
+            game.action_size,
+            (
+                game.observation_channels
+                - int(game.objective_budget_channel)
+                - 1
+                if game.serial_internal_horizon
+                else None
+            ),
+        )
+
+    def attach_option_policy_adapter(
+        self, *, width: int = 32, residual_blocks: int = 2
+    ) -> OptionPolicyAdapter:
+        """Attach the isolated sharing controller without changing logits."""
+        if self.option_policy_adapter is None:
+            channels, actions, internal_budget_channel = self._option_adapter_spec
+            self.option_policy_adapter = OptionPolicyAdapter(
+                channels,
+                actions,
+                internal_budget_channel=internal_budget_channel,
+                width=width,
+                residual_blocks=residual_blocks,
+            )
+        return self.option_policy_adapter
+
+    def attach_option_policy_gate(
+        self, *, width: int = 32, residual_blocks: int = 2, initial_probability: float = 0.1
+    ) -> OptionPolicyGate:
+        """Attach a conservative state-dependent applicability gate."""
+        if self.option_policy_adapter is None:
+            self.attach_option_policy_adapter()
+        if self.option_policy_gate is None:
+            channels, _, internal_budget_channel = self._option_adapter_spec
+            self.option_policy_gate = OptionPolicyGate(
+                channels,
+                internal_budget_channel=internal_budget_channel,
+                width=width,
+                residual_blocks=residual_blocks,
+                initial_probability=initial_probability,
+            )
+        return self.option_policy_gate
+
+    def option_policy_components(self, observation: Tensor) -> tuple[Tensor, Tensor]:
+        """Return the applied adapter residual and its scalar state gate."""
+        if self.option_policy_adapter is None:
+            return (
+                observation.new_zeros((observation.shape[0], self._option_adapter_spec[1])),
+                observation.new_zeros((observation.shape[0], 1)),
+            )
+        residual = self.option_policy_adapter(observation)
+        gate = (
+            self.option_policy_gate(observation)
+            if self.option_policy_gate is not None
+            else observation.new_ones((observation.shape[0], 1))
+        )
+        return residual * gate, gate
+
+    def _apply_option_policy_adapter(
+        self, observation: Tensor, logits: Tensor
+    ) -> Tensor:
+        if self.option_policy_adapter is None or not self.option_adapter_enabled:
+            return logits
+        residual, _ = self.option_policy_components(observation)
+        return logits + residual
+
 
     def _init_auxiliary(
         self, features: int, game: BraidGameConfig, model: ModelConfig
@@ -369,6 +440,115 @@ class BraidPolicyValueNet(PolicyValueNet):
         return self.composed_auxiliary_value(
             observation, self._auxiliary(features, observation)
         )
+
+
+class _OptionResidualBlock(nn.Module):
+    def __init__(self, width: int):
+        super().__init__()
+        self.norm = nn.GroupNorm(4, width)
+        self.body = nn.Sequential(
+            nn.Conv1d(width, width, 3, padding=1),
+            nn.SiLU(),
+            nn.Conv1d(width, width, 3, padding=1),
+        )
+
+    def forward(self, hidden: Tensor) -> Tensor:
+        return self.norm(hidden + self.body(hidden))
+
+
+class OptionPolicyAdapter(nn.Module):
+    """Zero-initialized residual policy for bounded internal options."""
+
+    def __init__(
+        self,
+        observation_channels: int,
+        action_size: int,
+        *,
+        internal_budget_channel: int | None,
+        width: int = 32,
+        residual_blocks: int = 2,
+    ):
+        super().__init__()
+        if width < 16 or width % 4:
+            raise ValueError("option adapter width must be >=16 and divisible by 4")
+        self.internal_budget_channel = internal_budget_channel
+        self.input = nn.Conv1d(observation_channels, width, 3, padding=1)
+        self.blocks = nn.ModuleList(
+            _OptionResidualBlock(width) for _ in range(residual_blocks)
+        )
+        self.readout = nn.Sequential(
+            nn.Linear(2 * width + 1, width),
+            nn.SiLU(),
+            nn.Linear(width, width),
+            nn.SiLU(),
+            nn.Linear(width, action_size),
+        )
+        nn.init.zeros_(self.readout[-1].weight)
+        nn.init.zeros_(self.readout[-1].bias)
+
+    def forward(self, observation: Tensor) -> Tensor:
+        sequence = observation[:, :, 0, :]
+        hidden = F.silu(self.input(sequence))
+        for block in self.blocks:
+            hidden = block(hidden)
+        internal_budget = (
+            observation[:, self.internal_budget_channel, 0, 0:1]
+            if self.internal_budget_channel is not None
+            else observation.new_ones((observation.shape[0], 1))
+        )
+        summary = torch.cat(
+            [hidden.mean(dim=2), hidden.amax(dim=2), internal_budget], dim=1
+        )
+        return self.readout(summary)
+
+
+class OptionPolicyGate(nn.Module):
+    """State-dependent probability that a shared-option residual is applicable."""
+
+    def __init__(
+        self,
+        observation_channels: int,
+        *,
+        internal_budget_channel: int | None,
+        width: int = 32,
+        residual_blocks: int = 2,
+        initial_probability: float = 0.1,
+    ):
+        super().__init__()
+        if width < 16 or width % 4:
+            raise ValueError("option gate width must be >=16 and divisible by 4")
+        if not 0.0 < initial_probability < 1.0:
+            raise ValueError("initial gate probability must be between zero and one")
+        self.internal_budget_channel = internal_budget_channel
+        self.input = nn.Conv1d(observation_channels, width, 3, padding=1)
+        self.blocks = nn.ModuleList(
+            _OptionResidualBlock(width) for _ in range(residual_blocks)
+        )
+        self.readout = nn.Sequential(
+            nn.Linear(2 * width + 1, width),
+            nn.SiLU(),
+            nn.Linear(width, 1),
+        )
+        nn.init.zeros_(self.readout[-1].weight)
+        nn.init.constant_(
+            self.readout[-1].bias,
+            math.log(initial_probability / (1.0 - initial_probability)),
+        )
+
+    def forward(self, observation: Tensor) -> Tensor:
+        sequence = observation[:, :, 0, :]
+        hidden = F.silu(self.input(sequence))
+        for block in self.blocks:
+            hidden = block(hidden)
+        internal_budget = (
+            observation[:, self.internal_budget_channel, 0, 0:1]
+            if self.internal_budget_channel is not None
+            else observation.new_ones((observation.shape[0], 1))
+        )
+        summary = torch.cat(
+            [hidden.mean(dim=2), hidden.amax(dim=2), internal_budget], dim=1
+        )
+        return self.readout(summary).sigmoid()
 
 
 class BraidPolicyHead(nn.Module):
@@ -545,6 +725,7 @@ class SerialBraidNet(BraidPolicyValueNet):
             value_logit = value_logit + self.auxiliary.legacy_budget_skip(
                 remaining_budget[:, None]
             )
+        logits = self._apply_option_policy_adapter(observation, logits)
         return logits, torch.tanh(value_logit).squeeze(-1), features
 
     def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
@@ -773,7 +954,8 @@ class SequenceBraidNet(BraidPolicyValueNet):
         encoded = self.encode(observation)
         head = observation[:, :, 0, 0]
         features = self.body(torch.cat([encoded, head], dim=1))
-        return self.policy(features), self.value(features).squeeze(-1), features
+        policy = self._apply_option_policy_adapter(observation, self.policy(features))
+        return policy, self.value(features).squeeze(-1), features
 
     def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
         policy, legacy, features = self._forward_core(observation)
@@ -930,6 +1112,7 @@ class CyclicMemoryBraidNet(BraidPolicyValueNet):
         logits = window_logits.new_full((window_logits.shape[0], self.action_size), -8.0)
         logits[:, self.window_action_map] = window_logits
         logits = logits + self.policy_residual(features)
+        logits = self._apply_option_policy_adapter(observation, logits)
         value = (window_value + self.value_residual(features).squeeze(-1)).clamp(-1.0, 1.0)
         parent_auxiliary = self.window._auxiliary(window_features)
         solve_features = (
@@ -1191,6 +1374,7 @@ class TriadBraidNet(BraidPolicyValueNet):
         router = router.masked_fill(~self.action_support[None], torch.finfo(router.dtype).min)
         weights = torch.softmax(router, dim=2)
         policy = (weights * scattered).sum(dim=2) + self.policy_residual(features)
+        policy = self._apply_option_policy_adapter(observation, policy)
         value = (legacy + 0.25 * torch.tanh(self.value_residual(features).squeeze(-1))).clamp(
             -1.0, 1.0
         )
@@ -1260,14 +1444,24 @@ def load_policy_value_state_dict(
     """Load compatible old braid checkpoints with narrowly defined migrations.
 
     Returns ``True`` when an old checkpoint was migrated. Any missing or extra
-    parameter outside ``auxiliary.*`` remains an error. A newly appended
-    observation feature is initialized as an ignored input (all zero weights)
+    parameter outside ``auxiliary.*`` remains an error. Newly appended
+    observation features are initialized as ignored inputs (all zero weights)
     for the representation layers used by the serial candidates.
     """
     if not isinstance(network, BraidPolicyValueNet):
         network.load_state_dict(state_dict)
         return False
     migrated_state = dict(state_dict)
+    if (
+        network.option_policy_adapter is None
+        and any(key.startswith("option_policy_adapter.") for key in migrated_state)
+    ):
+        network.attach_option_policy_adapter()
+    if (
+        network.option_policy_gate is None
+        and any(key.startswith("option_policy_gate.") for key in migrated_state)
+    ):
+        network.attach_option_policy_gate()
     target_state = network.state_dict()
     expandable_inputs = {
         "representation.net.0.weight",
@@ -1283,7 +1477,7 @@ def load_policy_value_state_dict(
         compatible = (
             source.ndim == target.ndim
             and source.ndim >= 2
-            and target.shape[1] == source.shape[1] + 1
+            and target.shape[1] > source.shape[1]
             and source.shape[:1] == target.shape[:1]
             and source.shape[2:] == target.shape[2:]
         )

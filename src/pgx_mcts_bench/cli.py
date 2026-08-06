@@ -86,6 +86,8 @@ def braid_budget_heldout_gate(
     rung_simulations: Annotated[int, typer.Option(min=1)] = 128,
     seed: int = 20261140,
     device: str = "cpu",
+    training_bank: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
+    heldout_bank: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
 ) -> None:
     """Run the source-disjoint budget-calibration and retention gate."""
     from pgx_mcts_bench.budget_gate import run_budget_gate
@@ -104,6 +106,8 @@ def braid_budget_heldout_gate(
         rung_simulations=rung_simulations,
         seed=seed,
         device=device,
+        training_bank=training_bank,
+        heldout_bank=heldout_bank,
     )
     typer.echo(json.dumps({"summary": report["summary"], "decision": report["decision"]}, indent=2))
 
@@ -123,6 +127,7 @@ def braid_budget_critic_curriculum(
     rehearsal_games: Annotated[int, typer.Option(min=0)] = 8,
     seed: int = 20261040,
     device: str = "cpu",
+    bank: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
 ) -> None:
     """Train one budget-conditioned roster critic on the simplest knots."""
     from pgx_mcts_bench.budget_curriculum import train_budget_curriculum
@@ -143,8 +148,30 @@ def braid_budget_critic_curriculum(
         rehearsal_games=rehearsal_games,
         seed=seed,
         device=device,
+        bank=bank,
     )
     typer.echo(json.dumps(report["decision"], indent=2))
+
+
+@app.command("braid-fit-solve-calibration")
+def braid_fit_solve_calibration(
+    checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    validation_report: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output_checkpoint: Annotated[Path, typer.Option(dir_okay=False)],
+    output_report: Annotated[Path, typer.Option(dir_okay=False)],
+) -> None:
+    """Fit a monotone held-out p(solve) calibrator without changing weights."""
+    from pgx_mcts_bench.solve_calibration import fit_solve_calibration
+
+    report = fit_solve_calibration(
+        checkpoint, validation_report, output_checkpoint, output_report
+    )
+    typer.echo(
+        json.dumps(
+            {"calibration": report["calibration"], "fitted": report["fitted"]},
+            indent=2,
+        )
+    )
 
 
 @app.command("braid-budget-head-audit")
@@ -266,6 +293,443 @@ def braid_rapid_adaptation(
         gate_min_solve_rate=gate_min_solve_rate,
     )
     typer.echo(json.dumps(report, indent=2))
+
+
+@app.command("braid-policy-update-diagnostic")
+def braid_policy_update_diagnostic(
+    checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    old_bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    target: str = "11a_33",
+    scientist: str = "s-window-128",
+    ratio: float = 10.0,
+    simulations: Annotated[int, typer.Option(min=1)] = 64,
+    selfplay_games: Annotated[int, typer.Option(min=1)] = 8,
+    batch_size: Annotated[int, typer.Option(min=1)] = 32,
+    evaluation_games: Annotated[int, typer.Option(min=1)] = 8,
+    seeds: str = "20261361,20261362,20261363",
+    workers: Annotated[int, typer.Option(min=1)] = 7,
+    device: str = "cpu",
+    resume: bool = False,
+) -> None:
+    """Diagnose destructive task-local policy updates with paired pre/post probes."""
+    from pgx_mcts_bench.policy_update_diagnostic import run_policy_update_diagnostic
+
+    report = run_policy_update_diagnostic(
+        checkpoint,
+        bank,
+        old_bank,
+        output,
+        target=target,
+        scientist=scientist,
+        ratio=ratio,
+        simulations=simulations,
+        selfplay_games=selfplay_games,
+        batch_size=batch_size,
+        evaluation_games=evaluation_games,
+        seeds=tuple(int(value) for value in seeds.split(",") if value.strip()),
+        workers=workers,
+        device=device,
+        resume=resume,
+    )
+    typer.echo(json.dumps(report, indent=2))
+
+
+@app.command("braid-split-loss-gate")
+def braid_split_loss_gate(
+    checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    old_bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    scientist: str = "s-window-128",
+    ratio: float = 10.0,
+    simulations: Annotated[int, typer.Option(min=1)] = 64,
+    selfplay_games: Annotated[int, typer.Option(min=1)] = 8,
+    batch_size: Annotated[int, typer.Option(min=1)] = 32,
+    seeds: str = "20261420,20261421,20261422",
+    workers: Annotated[int, typer.Option(min=1)] = 7,
+    device: str = "cpu",
+    resume: bool = False,
+) -> None:
+    """Run the small paired admission gate for split-loss task learning."""
+    from pgx_mcts_bench.split_loss_gate import run_split_loss_gate
+
+    report = run_split_loss_gate(
+        checkpoint,
+        bank,
+        old_bank,
+        output,
+        scientist=scientist,
+        ratio=ratio,
+        simulations=simulations,
+        selfplay_games=selfplay_games,
+        batch_size=batch_size,
+        seeds=tuple(int(value) for value in seeds.split(",") if value.strip()),
+        workers=workers,
+        device=device,
+        resume=resume,
+    )
+    typer.echo(json.dumps(report, indent=2))
+
+
+@app.command("braid-native-learning-gate")
+def braid_native_learning_gate(
+    checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    scientist: str = "s-window-128",
+    ratio: float = 10.0,
+    evaluation_simulations: Annotated[int, typer.Option(min=1)] = 64,
+    train_steps: Annotated[int, typer.Option(min=1)] = 24,
+    batch_size: Annotated[int, typer.Option(min=1)] = 32,
+    seeds: str = "20261520,20261521,20261522",
+    device: str = "cpu",
+    resume: bool = False,
+) -> None:
+    """Run native discovery with transactional solved-set retention."""
+    from pgx_mcts_bench.native_learning_gate import run_native_learning_gate
+
+    report = run_native_learning_gate(
+        checkpoint,
+        bank,
+        output,
+        scientist=scientist,
+        ratio=ratio,
+        evaluation_simulations=evaluation_simulations,
+        train_steps=train_steps,
+        batch_size=batch_size,
+        seeds=tuple(int(value) for value in seeds.split(",") if value.strip()),
+        device=device,
+        resume=resume,
+    )
+    typer.echo(json.dumps(report, indent=2))
+
+
+@app.command("braid-replay-integrity-gate")
+def braid_replay_integrity_gate(
+    checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    scientist: str = "s-window-128",
+    ratio: float = 10.0,
+    simulations: Annotated[int, typer.Option(min=1)] = 32,
+    games_per_item: Annotated[int, typer.Option(min=1)] = 4,
+    capped_games_per_item: Annotated[int, typer.Option(min=1)] = 2,
+    capped_objective: Annotated[float, typer.Option(min=1.0)] = 12.0,
+    sample_size: Annotated[int, typer.Option(min=16)] = 512,
+    seed: int = 20260850,
+    device: str = "cpu",
+) -> None:
+    """Generate real attempts and audit replay-v3 sampling and resume state."""
+    from pgx_mcts_bench.replay_gate import run_replay_integrity_gate
+
+    report = run_replay_integrity_gate(
+        checkpoint,
+        bank,
+        output,
+        scientist=scientist,
+        ratio=ratio,
+        simulations=simulations,
+        games_per_item=games_per_item,
+        capped_games_per_item=capped_games_per_item,
+        capped_objective=capped_objective,
+        sample_size=sample_size,
+        seed=seed,
+        device=device,
+    )
+    typer.echo(json.dumps(report["decision"], indent=2))
+
+
+@app.command("braid-replay-learning-gate")
+def braid_replay_learning_gate(
+    checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    old_bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    scientist: str = "s-window-128",
+    ratio: float = 10.0,
+    simulations: Annotated[int, typer.Option(min=1)] = 64,
+    selfplay_games: Annotated[int, typer.Option(min=1)] = 8,
+    train_steps: Annotated[int, typer.Option(min=1)] = 24,
+    batch_size: Annotated[int, typer.Option(min=1)] = 32,
+    diagnostic_games: Annotated[int, typer.Option(min=1)] = 8,
+    seeds: str = "20260851,20260852",
+    workers: Annotated[int, typer.Option(min=1)] = 7,
+    device: str = "cpu",
+    resume: bool = False,
+) -> None:
+    """Compare old success-balanced replay with replay-v3 on paired tasks."""
+    from pgx_mcts_bench.replay_gate import run_replay_learning_gate
+
+    report = run_replay_learning_gate(
+        checkpoint,
+        bank,
+        old_bank,
+        output,
+        scientist=scientist,
+        ratio=ratio,
+        simulations=simulations,
+        selfplay_games=selfplay_games,
+        train_steps=train_steps,
+        batch_size=batch_size,
+        diagnostic_games=diagnostic_games,
+        seeds=tuple(int(value) for value in seeds.split(",") if value.strip()),
+        workers=workers,
+        device=device,
+        resume=resume,
+    )
+    typer.echo(json.dumps(report["decision"], indent=2))
+
+
+@app.command("braid-critic-readiness")
+def braid_critic_readiness(
+    validation_report: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    calibration_report: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(dir_okay=False)],
+) -> None:
+    """Apply current critic readiness rules to unrebalanced held-out evidence."""
+    from pgx_mcts_bench.critic_readiness import build_critic_readiness_report
+
+    report = build_critic_readiness_report(
+        validation_report, calibration_report, output
+    )
+    typer.echo(json.dumps(report["decision"], indent=2))
+
+
+@app.command("braid-sharing-admission-gate")
+def braid_sharing_admission_gate(
+    donor_checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    donor_replay: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    receiver: Annotated[list[str] | None, typer.Option()] = None,
+    donor_name: str = "s-window-128",
+    ratio: float = 10.0,
+    simulations: Annotated[int, typer.Option(min=1)] = 64,
+    evaluation_games: Annotated[int, typer.Option(min=1)] = 4,
+    train_steps: Annotated[int, typer.Option(min=1)] = 24,
+    batch_size: Annotated[int, typer.Option(min=1)] = 32,
+    seed: int = 20260853,
+    device: str = "cpu",
+) -> None:
+    """Test real witness translation, option learning, and receiver retention."""
+    from pgx_mcts_bench.sharing_gate import run_sharing_admission_gate
+
+    receivers: dict[str, Path] = {}
+    for assignment in receiver or []:
+        if "=" not in assignment:
+            raise typer.BadParameter("receiver must be NAME=CHECKPOINT")
+        name, path = assignment.split("=", 1)
+        checkpoint = Path(path)
+        if not checkpoint.is_file():
+            raise typer.BadParameter(f"missing receiver checkpoint: {checkpoint}")
+        receivers[name] = checkpoint
+    if not receivers:
+        raise typer.BadParameter("at least one --receiver NAME=CHECKPOINT is required")
+    report = run_sharing_admission_gate(
+        donor_checkpoint,
+        donor_replay,
+        bank,
+        receivers,
+        output,
+        donor_name=donor_name,
+        ratio=ratio,
+        simulations=simulations,
+        evaluation_games=evaluation_games,
+        train_steps=train_steps,
+        batch_size=batch_size,
+        seed=seed,
+        device=device,
+    )
+    typer.echo(json.dumps(report["decision"], indent=2))
+
+
+@app.command("braid-interleaved-sharing-gate")
+def braid_interleaved_sharing_gate(
+    donor_checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    donor_replay: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    receiver: Annotated[list[str] | None, typer.Option()] = None,
+    donor_name: str = "s-window-128",
+    ratio: float = 10.0,
+    simulations: Annotated[int, typer.Option(min=1)] = 64,
+    evaluation_games: Annotated[int, typer.Option(min=1)] = 4,
+    update_cycles: Annotated[int, typer.Option(min=1)] = 8,
+    batch_size: Annotated[int, typer.Option(min=1)] = 16,
+    option_learning_rate_scale: Annotated[float, typer.Option(min=0.001)] = 1.0,
+    option_target_reduction: Annotated[float, typer.Option(min=0.001, max=0.999)] = 0.1,
+    max_option_steps: Annotated[int, typer.Option(min=1)] = 16,
+    witness_bank: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
+    item: Annotated[list[str] | None, typer.Option()] = None,
+    target_item: Annotated[list[str] | None, typer.Option()] = None,
+    native_refresh_games: Annotated[int, typer.Option(min=0)] = 0,
+    evaluation_workers: Annotated[int, typer.Option(min=1)] = 1,
+    gated_adapter: bool = False,
+    route_gate_weight: Annotated[float, typer.Option(min=0.0)] = 0.1,
+    off_route_kl_weight: Annotated[float, typer.Option(min=0.0)] = 1.0,
+    off_route_gate_weight: Annotated[float, typer.Option(min=0.0)] = 0.1,
+    off_route_batch_size: Annotated[int, typer.Option(min=1)] = 32,
+    seed: int = 20260854,
+    device: str = "cpu",
+) -> None:
+    """Compare native-plus-option sharing with matched native-only updates."""
+    from pgx_mcts_bench.sharing_gate import run_interleaved_sharing_gate
+
+    receivers: dict[str, Path] = {}
+    for assignment in receiver or []:
+        if "=" not in assignment:
+            raise typer.BadParameter("receiver must be NAME=CHECKPOINT")
+        name, path = assignment.split("=", 1)
+        checkpoint = Path(path)
+        if not checkpoint.is_file():
+            raise typer.BadParameter(f"missing receiver checkpoint: {checkpoint}")
+        receivers[name] = checkpoint
+    if not receivers:
+        raise typer.BadParameter("at least one --receiver NAME=CHECKPOINT is required")
+    report = run_interleaved_sharing_gate(
+        donor_checkpoint,
+        donor_replay,
+        bank,
+        receivers,
+        output,
+        donor_name=donor_name,
+        ratio=ratio,
+        simulations=simulations,
+        evaluation_games=evaluation_games,
+        update_cycles=update_cycles,
+        batch_size=batch_size,
+        option_learning_rate_scale=option_learning_rate_scale,
+        option_target_reduction=option_target_reduction,
+        max_option_steps=max_option_steps,
+        witness_bank=witness_bank,
+        item_ids=tuple(item or ()),
+        target_item_ids=tuple(target_item or ()),
+        native_refresh_games=native_refresh_games,
+        evaluation_workers=evaluation_workers,
+        gated_adapter=gated_adapter,
+        route_gate_weight=route_gate_weight,
+        off_route_kl_weight=off_route_kl_weight,
+        off_route_gate_weight=off_route_gate_weight,
+        off_route_batch_size=off_route_batch_size,
+        seed=seed,
+        device=device,
+    )
+    typer.echo(json.dumps(report["decision"], indent=2))
+
+
+@app.command("braid-multi-witness-screen")
+def braid_multi_witness_screen(
+    source_run: Annotated[Path, typer.Option(exists=True, file_okay=False)],
+    receiver_checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    receiver_name: str = "s-w11-128",
+    candidate: Annotated[list[str] | None, typer.Option()] = None,
+    ratio: float = 10.0,
+    simulations: Annotated[int, typer.Option(min=1)] = 128,
+    games: Annotated[int, typer.Option(min=1)] = 16,
+    seed_blocks: Annotated[int, typer.Option(min=1)] = 1,
+    panel_size: Annotated[int, typer.Option(min=1)] = 8,
+    retention_size: Annotated[int, typer.Option(min=0)] = 8,
+    workers: Annotated[int, typer.Option(min=1)] = 1,
+    seed: int = 20260900,
+    device: str = "cpu",
+) -> None:
+    """Freeze a certified panel the receiver never solves in strong screening."""
+    from pgx_mcts_bench.multi_witness import run_multi_witness_screen
+
+    report = run_multi_witness_screen(
+        source_run,
+        receiver_name,
+        receiver_checkpoint,
+        output,
+        candidate_ids=tuple(candidate or ()),
+        ratio=ratio,
+        simulations=simulations,
+        games=games,
+        seed_blocks=seed_blocks,
+        panel_size=panel_size,
+        retention_size=retention_size,
+        workers=workers,
+        seed=seed,
+        device=device,
+    )
+    typer.echo(json.dumps(report["decision"], indent=2))
+
+
+@app.command("braid-adapter-counterfactual")
+def braid_adapter_counterfactual(
+    source_checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    trained_checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    scientist_name: str = "s-tape4-h5",
+    item: Annotated[list[str] | None, typer.Option()] = None,
+    ratio: float = 10.0,
+    simulations: Annotated[int, typer.Option(min=1)] = 128,
+    evaluation_games: Annotated[int, typer.Option(min=1)] = 8,
+    evaluation_workers: Annotated[int, typer.Option(min=1)] = 4,
+    evaluation_seed: int = 820260950,
+    device: str = "cpu",
+) -> None:
+    """Compare a trained sharing scientist with its adapter bypassed."""
+    from pgx_mcts_bench.sharing_gate import run_adapter_counterfactual
+
+    if not item:
+        raise typer.BadParameter("at least one --item is required")
+    report = run_adapter_counterfactual(
+        source_checkpoint,
+        trained_checkpoint,
+        bank,
+        output,
+        scientist_name=scientist_name,
+        item_ids=tuple(item),
+        ratio=ratio,
+        simulations=simulations,
+        evaluation_games=evaluation_games,
+        evaluation_workers=evaluation_workers,
+        evaluation_seed=evaluation_seed,
+        device=device,
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "enabled_only": report["enabled_only"],
+                "disabled_only": report["disabled_only"],
+                "enabled_capped_loss": report["enabled_capped_loss"],
+                "disabled_capped_loss": report["disabled_capped_loss"],
+            },
+            indent=2,
+        )
+    )
+
+
+@app.command("braid-rung-parity-gate")
+def braid_rung_parity_gate(
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    seed: int = 0,
+    stop_after: Annotated[int, typer.Option(min=0, max=9)] = 9,
+    max_iterations: Annotated[int, typer.Option(min=1)] = 100,
+    eval_games: Annotated[int, typer.Option(min=4)] = 12,
+    retro_games: Annotated[int, typer.Option(min=0)] = 4,
+    workers: Annotated[int, typer.Option(min=1, max=2)] = 2,
+    device: str = "cpu",
+) -> None:
+    """Reproduce the successful rung-18 recipe on the first ladder rungs."""
+    from pgx_mcts_bench.readiness_gates import run_rung_parity_gate
+
+    report = run_rung_parity_gate(
+        output,
+        seed=seed,
+        stop_after=stop_after,
+        max_iterations=max_iterations,
+        eval_games=eval_games,
+        retro_games=retro_games,
+        workers=workers,
+        device=device,
+    )
+    typer.echo(json.dumps(report["decision"], indent=2))
 
 
 @app.command("braid-distillation-degradation-train")
@@ -429,7 +893,8 @@ def braid_collaborative_scientists(
         str,
         typer.Option(
             help="adaptive-sharing, adaptive-sharing-aux-only, "
-            "adaptive-no-sharing, static-sharing, or static-no-sharing"
+            "adaptive-no-sharing, static-sharing, static-no-sharing, "
+            "or solo-compute-matched"
         ),
     ] = "adaptive-sharing",
     rounds: Annotated[int, typer.Option(min=1)] = 200,
@@ -636,6 +1101,31 @@ def braid_build_development_bank(
         output_bank,
         output_manifest,
         size=size,
+        seed=seed,
+        max_stage=max_stage,
+    )
+    typer.echo(json.dumps(report, indent=2))
+
+
+@app.command("braid-build-critic-banks")
+def braid_build_critic_banks(
+    protected_bank: Annotated[list[Path], typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    train_size: Annotated[int, typer.Option(min=4)] = 60,
+    validation_size: Annotated[int, typer.Option(min=4)] = 20,
+    decision_size: Annotated[int, typer.Option(min=4)] = 20,
+    seed: int = 20261310,
+    max_stage: Annotated[int, typer.Option(min=0)] = 22,
+) -> None:
+    """Build critic splits disjoint from endpoints and ladder identities."""
+    from pgx_mcts_bench.bank_audit import build_critic_calibration_banks
+
+    report = build_critic_calibration_banks(
+        protected_bank,
+        output,
+        train_size=train_size,
+        validation_size=validation_size,
+        decision_size=decision_size,
         seed=seed,
         max_stage=max_stage,
     )

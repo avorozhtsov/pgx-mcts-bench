@@ -19,14 +19,18 @@ from pgx_mcts_bench.collaborative_scientists import (
     _atomic_json,
     _bank_from_payload,
     _json_hash,
+    _replay_representation_embedding,
     _sha256,
     verified_record_cost,
 )
 from pgx_mcts_bench.game import make_game
 from pgx_mcts_bench.ladder import _config, candidates, evaluate_stage
-from pgx_mcts_bench.networks import load_policy_value_state_dict, make_braid_network
 from pgx_mcts_bench.search import NeuralMCTS
-from pgx_mcts_bench.training import play_selfplay_games, train_alphazero_step
+from pgx_mcts_bench.training import (
+    attach_policy_value_preservation_teacher,
+    play_selfplay_games,
+    train_alphazero_step,
+)
 
 F_LEVELS = (5, 8, 10, 12, 14, 16)
 BLOCK_SIZES = (20, 40, 40, 40, 40, 20)
@@ -76,12 +80,23 @@ def checkpoint_regression_gate(
     if simulations:
         candidate = replace(candidate, simulations=simulations)
     stage = (metadata["source"], metadata["scramble"])
+    loaded = load_scientist(
+        scientist,
+        checkpoint,
+        seed=seed,
+        device=device,
+        simulations=simulations,
+        require_factorized=True,
+        objective_budget_channel=True,
+    )
     config = _config(candidate, stage, seed, device, selfplay_games=1)
+    config = replace(
+        config,
+        game=replace(config.game, objective_budget_channel=True),
+        model=loaded.config.model,
+    )
     game = make_game(config.game)
-    network = make_braid_network(config.game, config.model).to(torch.device(device))
-    payload = torch.load(checkpoint, map_location=device, weights_only=False)
-    load_policy_value_state_dict(network, payload["network"])
-    network.eval()
+    network = loaded.network.eval()
     measured = evaluate_stage(
         game,
         network,
@@ -156,6 +171,56 @@ def _iteration_schedule(current_iterations: int, old_items: list[Any]) -> list[t
     return schedule
 
 
+def replay_has_native_success(scientist: Any) -> bool:
+    """Whether replay contains a genuine solved self-play episode."""
+    return any(
+        game
+        and not bool(getattr(game[0], "shared_witness", False))
+        and not bool(getattr(game[0], "objective_censored", False))
+        and float(getattr(game[0], "solved", -1.0)) > 0.5
+        for game in scientist.replay.games
+    )
+
+
+def _diagnostic_evaluation(
+    scientist: Any,
+    target: KnotItem,
+    ratio: float,
+    simulations: int,
+    seed: int,
+    games: int,
+) -> tuple[dict[str, Any], int]:
+    rows = []
+    compute = 0
+    for game_index in range(games):
+        verified, measured = _evaluation_record(
+            scientist,
+            target,
+            ratio,
+            simulations,
+            seed + game_index,
+        )
+        compute += int(measured["scheduled_network_evaluations"])
+        rows.append(
+            {
+                "seed": seed + game_index,
+                "solved": verified is not None,
+                "crossing_changes": verified[0] if verified is not None else None,
+                "moves": verified[1] if verified is not None else None,
+                "objective": (
+                    ratio * verified[0] + verified[1] if verified is not None else None
+                ),
+            }
+        )
+    return {
+        "games": games,
+        "solved": sum(bool(row["solved"]) for row in rows),
+        "solve_rate": sum(bool(row["solved"]) for row in rows) / games,
+        "solved_seeds": [row["seed"] for row in rows if row["solved"]],
+        "rows": rows,
+    }, compute
+
+
 def _run_one_task(payload: dict[str, Any]) -> dict[str, Any]:
     torch.set_num_threads(1)
     started = time.perf_counter()
@@ -169,7 +234,23 @@ def _run_one_task(payload: dict[str, Any]) -> dict[str, Any]:
         device=payload["device"],
         simulations=payload["simulations"],
         require_factorized=True,
+        objective_budget_channel=True,
     )
+    if payload.get("preservation_teacher", False):
+        attach_policy_value_preservation_teacher(scientist.network)
+    diagnostic_games = int(payload.get("diagnostic_evaluation_games", 0))
+    diagnostic_seed = int(payload.get("diagnostic_evaluation_seed", payload["seed"] + 850_000_000))
+    before_diagnostic = None
+    diagnostic_compute = 0
+    if diagnostic_games:
+        before_diagnostic, diagnostic_compute = _diagnostic_evaluation(
+            scientist,
+            target,
+            payload["ratio"],
+            payload["simulations"],
+            diagnostic_seed,
+            diagnostic_games,
+        )
     best: tuple[int, int, list[int]] | None = None
     adaptation_compute = 0
     training_seconds = 0.0
@@ -205,8 +286,12 @@ def _run_one_task(payload: dict[str, Any]) -> dict[str, Any]:
             12,
         )
         selfplay_seconds = time.perf_counter() - phase
+        if payload.get("replay_sampler") == "v3":
+            scientist.replay.set_representation_embedding(
+                knot.name, _replay_representation_embedding(knot)
+            )
         for record in records:
-            scientist.replay.add(record)
+            scientist.replay.add(record, representation_id=knot.name)
             adaptation_compute += len(record) * (payload["simulations"] + 1)
             if kind == "current":
                 verified = verified_record_cost(scientist.game, target, payload["ratio"], record)
@@ -225,16 +310,38 @@ def _run_one_task(payload: dict[str, Any]) -> dict[str, Any]:
                     }
         phase = time.perf_counter()
         losses = []
-        for _ in range(payload["train_steps"]):
-            losses.append(
-                train_alphazero_step(
-                    scientist.network,
-                    scientist.optimizer,
-                    scientist.replay,
-                    payload["batch_size"],
-                    torch.device(payload["device"]),
+        requested_steps = int(payload["train_steps"])
+        can_train = not payload.get("require_replay_success", False) or replay_has_native_success(
+            scientist
+        )
+        if can_train:
+            for _ in range(requested_steps):
+                losses.append(
+                    train_alphazero_step(
+                        scientist.network,
+                        scientist.optimizer,
+                        scientist.replay,
+                        payload["batch_size"],
+                        torch.device(payload["device"]),
+                        collaboration_replay=payload.get("success_balanced_replay", False),
+                        shared_fraction=0.0,
+                        policy_value_success_only=payload.get(
+                            "policy_value_success_only", False
+                        ),
+                        replay_current_representation=(
+                            target.name if payload.get("replay_sampler") == "v3" else ""
+                        ),
+                        replay_current_fraction=(
+                            0.25 if payload.get("replay_sampler") == "v3" else 0.0
+                        ),
+                        replay_similar_fraction=(
+                            0.25 if payload.get("replay_sampler") == "v3" else 0.0
+                        ),
+                        replay_positions_per_episode=(
+                            4 if payload.get("replay_sampler") == "v3" else 1
+                        ),
+                    )
                 )
-            )
         train_seconds = time.perf_counter() - phase
         training_seconds += train_seconds
         iteration_rows.append(
@@ -248,9 +355,28 @@ def _run_one_task(payload: dict[str, Any]) -> dict[str, Any]:
                 ),
                 "selfplay_seconds": selfplay_seconds,
                 "training_seconds": train_seconds,
+                "train_steps_requested": requested_steps,
+                "train_steps_applied": len(losses),
+                "train_steps_without_policy_value_targets": sum(
+                    loss["policy_value_targets"] == 0.0 for loss in losses
+                ),
+                "train_skipped_no_success": bool(requested_steps and not can_train),
+                "replay_had_success": replay_has_native_success(scientist),
                 "last_loss": losses[-1] if losses else None,
             }
         )
+
+    after_diagnostic = None
+    if diagnostic_games:
+        after_diagnostic, after_compute = _diagnostic_evaluation(
+            scientist,
+            target,
+            payload["ratio"],
+            payload["simulations"],
+            diagnostic_seed,
+            diagnostic_games,
+        )
+        diagnostic_compute += after_compute
 
     final_verified, final_compute = _evaluation_record(
         scientist,
@@ -295,18 +421,24 @@ def _run_one_task(payload: dict[str, Any]) -> dict[str, Any]:
         "item": target.name,
         "f": payload["f"],
         "f_old": payload["f_old"],
+        "replay_sampler": payload.get("replay_sampler", "ordinary"),
         "old_items": [item.id for item in old_items],
         "solved": best is not None,
         "best_crossing_changes": best[0] if best is not None else None,
         "best_moves": best[1] if best is not None else None,
         "best_objective": (payload["ratio"] * best[0] + best[1] if best is not None else None),
         "first_solve": first_solve,
+        "diagnostic_evaluation": {
+            "before": before_diagnostic,
+            "after": after_diagnostic,
+        },
         "old_retention": retention,
         "iterations": iteration_rows,
         "compute": {
             "adaptation_scheduled_network_evaluations": adaptation_compute,
             "final_scheduled_network_evaluations": final_compute["scheduled_network_evaluations"],
             "retention_scheduled_network_evaluations": retention_compute,
+            "diagnostic_scheduled_network_evaluations": diagnostic_compute,
             "training_seconds": training_seconds,
             "wall_seconds": time.perf_counter() - started,
         },

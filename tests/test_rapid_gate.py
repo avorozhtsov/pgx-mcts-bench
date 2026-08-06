@@ -27,10 +27,10 @@ def _row(item: str, solved: bool, *, before: bool = False, retention: bool = Tru
 
 def test_paired_gate_requires_post_training_rescues_in_two_seeds(tmp_path: Path) -> None:
     for seed_index in range(3):
-        for arm in ("frozen-5+1", "train-5+0", "train-5+1"):
+        for arm in ("frozen-8+1", "train-8+0", "train-8+1"):
             directory = tmp_path / f"seed-{seed_index}" / arm
             directory.mkdir(parents=True)
-            rows = [_row("a", True, before=True), _row("b", arm == "train-5+1")]
+            rows = [_row("a", True, before=True), _row("b", arm == "train-8+1")]
             for index, row in enumerate(rows):
                 (directory / f"{index:04d}.json").write_text(json.dumps(row))
 
@@ -43,4 +43,4 @@ def test_paired_gate_requires_post_training_rescues_in_two_seeds(tmp_path: Path)
 
     assert report["decision"]["passed"] is True
     assert report["decision"]["seeds_with_post_training_rescue"] == 3
-    assert report["by_seed"]["1"]["comparisons"]["frozen-5+1"]["treatment_only"] == ["b"]
+    assert report["by_seed"]["1"]["comparisons"]["frozen-8+1"]["treatment_only"] == ["b"]

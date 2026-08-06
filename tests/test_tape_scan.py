@@ -4,7 +4,8 @@ import numpy as np
 import torch
 
 from pgx_mcts_bench.config import BraidGameConfig, ModelConfig
-from pgx_mcts_bench.ladder import tape_scan_arms
+from pgx_mcts_bench.game import make_game
+from pgx_mcts_bench.ladder import candidates, tape_scan_arms
 from pgx_mcts_bench.networks import SequenceBraidNet, make_braid_network
 from pgx_mcts_bench.serial_braid import (
     SERIAL_BRAID,
@@ -119,3 +120,27 @@ def test_recommended_arms_are_matched_and_use_advanced_value() -> None:
     ]
     assert all(arm.use_auxiliary_value for arm in arms)
     assert len({(arm.simulations, arm.train_steps, arm.serial_window) for arm in arms}) == 1
+
+
+def test_tape4_h5_exposes_remaining_internal_budget() -> None:
+    candidate = next(candidate for candidate in candidates() if candidate.name == "s-tape4-h5")
+    assert candidate.serial_internal_horizon == 5
+    assert candidate.serial_internal_budget_remaining
+    game = make_game(
+        replace(
+            BASE,
+            serial_tape_symbols=4,
+            serial_internal_horizon=5,
+            serial_internal_budget_remaining=True,
+        )
+    )
+    transition = game.from_word([1, 2, 1], 3)
+    internal_channel = -1
+    assert np.allclose(transition.observation[..., internal_channel], 1.0)
+    shift = next(
+        action
+        for action in range(game.num_actions)
+        if game.describe(action) == "SHIFT_RIGHT(1,WRITE(1))"
+    )
+    after = game.step(transition.state, shift)
+    assert np.allclose(after.observation[..., internal_channel], 0.8)
