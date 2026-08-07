@@ -661,3 +661,92 @@ pass a fresh preflight. Do not run the three-seed confirmation or long sharing
 arms from these checkpoints. The next valid sharing test must preregister a
 learning change such as repeated blocks or a target-conditioned option policy;
 raising final search after observing a result is not sufficient.
+
+## Continual-learning portfolio criterion
+
+Exact per-representation retention is not the primary continual-learning
+invariant. Training on a new representation may lose an old solve, and rehearsal
+may lose a recent gain. The experiment therefore maintains two separate ledgers:
+
+* the current network is evaluated on one fixed old-plus-seen portfolio; and
+* the permanent solution bank keeps the best verified semantic solution ever
+  found for every representation.
+
+For `L10`, the failure penalty is one empirical cap frozen before learning: the
+maximum verified `L10` on the registered calibration panel. Both paired arms use
+the same cap and exactly the same task denominator. Every ten rounds, the current
+network may retain the block when total solved count is nondecreasing and capped
+portfolio `L10` is nonincreasing. At least one block must make a strict
+improvement. A regressing block receives targeted recovery; if recovery still
+fails, the network and optimizer return to the block-start state while the
+permanent solution bank remains intact.
+
+The preceding `L1000` engineering diagnostic demonstrated why the split matters:
+the continual arm's permanent archive covered 20 representations while its final
+network reproduced 18 of them. Its final new-panel solve rate was 13/20, below the
+registered 70% floor, so it did not open a longer gate. The corrected `L10` smoke
+uses 64 simulations, four attempts, `F_new=5`, `F_old=1`, and ten-round blocks;
+its registered artifact is
+`artifacts/portfolio-progress-smoke-swindow-seed20261720-20260807`.
+
+The smoke completed in 70 minutes. Both treatment blocks improved their own
+complete portfolios: block 1 kept 15/16 solves and reduced capped `L10` from 807
+to 785; block 2 moved from 17/26 to 18/26 and from 1,579 to 1,537. Neither block
+needed recovery. Replay was balanced at 45,713 positive and 46,080 negative
+positions; 5.0% of treatment failures were budget-censored.
+
+The longer gate nevertheless remains closed. Final treatment coverage was 12/20
+on NEW, 6/6 on old rehearsal, 3/10 on held-out, and 0/4 on hard stress. It kept
+the exact initial NEW solved set while improving NEW capped `L10` by 35. The
+transactional diagnostic finished at 13/20 NEW and gained `11a_288`. On the
+common 26-item current-network portfolio, treatment/control were 18/19 solves
+and capped `L10` 1,537/1,523; their lifetime banks were 19/20 and 1,424/1,412.
+Treatment did win held-out capped `L10` by 22, but both NEW solve rates missed the
+70% floor. Do not start the 50-item or collaboration gates from this result.
+
+## Joint-pretraining rewind audit
+
+`braid-joint-pretrain` defines a budget-aware `s-window-128` with the historical
+two residual blocks and width 32. Remaining semantic `L` is appended as a
+function-preserving input; the H5 ablation also appends remaining internal
+budget. Solve BCE may update the shared encoder, while cc/moves regression is
+kept out of it. Cost heads still learn from shared features. Migration of the
+real independent checkpoint changed every policy/value/cost output by exactly
+zero.
+
+The conservative arm reproduced rungs 0--9 at 100% in two iterations each, and
+its internal budget gate kept 80/80 easy-prefix solves while making 20/20 train
+and 20/20 held-out curves monotone. That apparent success failed the mandatory
+source-disjoint gate. Restarting a rung-21 network at rung 0 reduced its original
+promoted-rung solve rate from 12/12 to 2/12 before budget calibration and 3/12
+afterward. The fixed 400-attempt `L10` panel fell from 16 solves to 3; `L1000`
+fell from 14 to 6. The critic still had good rank AUC, demonstrating that critic
+quality cannot substitute for solver retention.
+
+Random initialization did learn the first five rungs, while H5 matched the warm
+model's two-iteration progression. The channels and existing depth are therefore
+not the immediate problem. The invalid operation is rewinding a promoted model
+onto an easy-only mixture that omits the later mastered rungs. The command now
+rejects this unless `--allow-warm-rewind-ablation` is explicit, and an internal
+checkpoint is never labelled admitted before the untouched gate.
+
+Use the already admitted independent calibrated checkpoint for the near-term
+roster. A new from-scratch controller must climb the full ladder forward once,
+with explicit old-rung rehearsal; do not widen or deepen it until that valid
+curriculum reaches a measured capacity limit.
+
+The independent checkpoint also passed the matching 400-attempt `L1000` gate:
+18 solves versus 14 for the original rung-18 network, four calibrated-only
+solves, no original-only solve, and exact 12/12 promoted-rung retention. Its
+critic scored AUC 0.964, Brier 0.0323, Brier skill 0.248, and ECE 0.0273, with
+20/20 monotone held-out budget curves.
+
+`run_ladder` now supports `rehearsal_games_per_cleared_stage`. These episodes are
+pinned to each cleared rung and are additional to the stochastic geometric
+mixture, so `F_old=1` has an exact auditable meaning. The first valid scratch
+pilot cleared rungs 0--4 but showed that this fixed dose is insufficient:
+`unknot+6` fluctuated from 2/4 to 4/4 to 3/4 during later rungs. The final budget
+block kept 34/40 solved attempts but worsened capped `L10 + L1000` from 205,540
+to 208,571 and was rolled back. Future acceptance uses aggregate solved attempts
+and capped objective; exact cell retention is secondary. Use targeted recovery
+and block-start rollback before extending the scratch curriculum.

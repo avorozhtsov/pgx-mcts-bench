@@ -115,6 +115,7 @@ def _discover(
     seed: int,
     tiers: tuple[tuple[int, int, int], ...],
     device: str,
+    objective_cap: float | None = None,
 ) -> tuple[list[Any], list[dict[str, Any]]]:
     records = []
     rows = []
@@ -131,6 +132,8 @@ def _discover(
                     "games": 0,
                     "skipped_not_promising": True,
                     "skipped_not_near_solved": False,
+                    "scheduled_network_evaluations": 0,
+                    "allocated_network_evaluations": 0,
                 }
             )
             continue
@@ -142,6 +145,8 @@ def _discover(
                     "games": 0,
                     "skipped_not_promising": False,
                     "skipped_not_near_solved": True,
+                    "scheduled_network_evaluations": 0,
+                    "allocated_network_evaluations": 0,
                 }
             )
             continue
@@ -151,7 +156,13 @@ def _discover(
         tier_pairs = []
         for game_index in range(games):
             variant = _rotated(item.knot, tier_index + game_index)
-            fixed = FixedWordGame(search_game, variant, ratio)
+            fixed = FixedWordGame(
+                search_game,
+                variant,
+                ratio,
+                objective_cap=objective_cap,
+                cap_type="empirical-global" if objective_cap is not None else "global",
+            )
             search = NeuralMCTS(
                 fixed,
                 scientist.network,
@@ -201,6 +212,12 @@ def _discover(
                 "promising": promising,
                 "skipped_not_promising": False,
                 "skipped_not_near_solved": False,
+                "scheduled_network_evaluations": sum(
+                    len(record) * (simulations + 1) for _, record in tier_pairs
+                ),
+                "allocated_network_evaluations": (
+                    games * action_horizon * (simulations + 1)
+                ),
             }
         )
         if solved:

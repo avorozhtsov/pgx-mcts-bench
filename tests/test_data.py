@@ -201,6 +201,46 @@ def test_collaboration_replay_prefers_less_exposed_attempts() -> None:
     assert seeds.count(2) > seeds.count(1)
 
 
+def test_continual_replay_balances_outcomes_and_new_old_successes() -> None:
+    replay = ReplayBuffer(1_000, np.random.default_rng(29))
+    replay.add(_episode("current", 1.0), representation_id="current")
+    replay.add(_episode("old-a", 1.0), representation_id="old-a")
+    replay.add(_episode("old-b", 1.0), representation_id="old-b")
+    replay.add(_episode("failed-a", 0.0), representation_id="failed-a")
+    replay.add(_episode("failed-b", 0.0), representation_id="failed-b")
+
+    batch = replay.sample_continual_positions(
+        32,
+        current_representation="current",
+        rehearsal_representations={"old-a", "old-b"},
+        positions_per_episode=4,
+    )
+
+    assert sum(position.solved > 0.5 for position in batch) == 16
+    success_ids = [position.representation_id for position in batch if position.solved > 0.5]
+    assert success_ids.count("current") == 8
+    assert sum(identity.startswith("old-") for identity in success_ids) == 8
+    strata = [row["requested_stratum"] for row in replay.last_collaboration_sample_trace]
+    assert strata.count("current-success") == 2
+    assert strata.count("rehearsal-success") == 2
+    assert strata.count("ordinary-failure") == 4
+
+
+def test_native_solution_bank_survives_replay_eviction_and_returns_a_copy() -> None:
+    replay = ReplayBuffer(3, np.random.default_rng(31))
+    best = _solution("old", 10.0, 2.0, 3.0, shared=False)
+    replay.add(best)
+    replay.add(_episode("new", 0.0, length=3), representation_id="new")
+
+    assert all(game[0].representation_id != "old" for game in replay.games)
+    archived = replay.best_native_solution_record("old", 10.0)
+    assert archived is not None
+    assert archived is not best
+    assert archived[0].representation_id == "old"
+    archived[0].action = 0
+    assert replay.best_native_solution_record("old", 10.0)[0].action != 0
+
+
 def test_distillation_uses_only_best_donation_strictly_better_than_native_archive() -> None:
     replay = ReplayBuffer(1_000, np.random.default_rng(19))
     replay.add(_solution("knot", 10.0, 5.0, 50.0, shared=False))  # L10 = 100

@@ -68,8 +68,22 @@ def export_collaboration_scientist(run: Path, name: str, output: Path) -> dict[s
     return report
 
 
-def _evaluation_record(scientist, knot, ratio: float, simulations: int, seed: int):
-    fixed = FixedWordGame(scientist.game, knot, ratio)
+def _evaluation_record(
+    scientist,
+    knot,
+    ratio: float,
+    simulations: int,
+    seed: int,
+    *,
+    objective_cap: float | None = None,
+):
+    fixed = FixedWordGame(
+        scientist.game,
+        knot,
+        ratio,
+        objective_cap=objective_cap,
+        cap_type="empirical-global" if objective_cap is not None else "global",
+    )
     search_config = replace(scientist.config.search, simulations=simulations)
     search = NeuralMCTS(
         fixed, scientist.network, search_config, scientist.config.train.device

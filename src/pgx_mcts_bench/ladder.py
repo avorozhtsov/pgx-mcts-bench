@@ -170,6 +170,16 @@ class Candidate:
     serial_ensemble: str = ""
     serial_internal_horizon: int = 0
     serial_internal_budget_remaining: bool = False
+    # Opt-in joint-curriculum controls.  They are deliberately absent from the
+    # historical arms so old checkpoints and published ladder measurements keep
+    # their exact meaning.
+    objective_budget_channel: bool = False
+    residual_blocks: int = 2
+    auxiliary_value_loss_weight: float = 0.1
+    auxiliary_backprop_to_encoder: bool = False
+    auxiliary_solve_backprop_to_encoder: bool = False
+    auxiliary_budget_monotonic_weight: float = 0.0
+    auxiliary_budget_conditioning: bool = False
     use_auxiliary_value: bool = False
     train: bool = True
 
@@ -709,13 +719,20 @@ def _config(
         serial_ensemble=candidate.serial_ensemble,
         serial_internal_horizon=candidate.serial_internal_horizon,
         serial_internal_budget_remaining=candidate.serial_internal_budget_remaining,
+        objective_budget_channel=candidate.objective_budget_channel,
     )
     return ExperimentConfig(
         game=game,
         search=SearchConfig(simulations=candidate.simulations, exploration=candidate.exploration),  # type: ignore[arg-type]
         model=ModelConfig(
             channels=candidate.channels,
+            residual_blocks=candidate.residual_blocks,
             latent_channels=candidate.channels,
+            auxiliary_value_loss_weight=candidate.auxiliary_value_loss_weight,
+            auxiliary_backprop_to_encoder=candidate.auxiliary_backprop_to_encoder,
+            auxiliary_solve_backprop_to_encoder=(candidate.auxiliary_solve_backprop_to_encoder),
+            auxiliary_budget_monotonic_weight=(candidate.auxiliary_budget_monotonic_weight),
+            auxiliary_budget_conditioning=candidate.auxiliary_budget_conditioning,
             use_auxiliary_value=candidate.use_auxiliary_value,
         ),
         train=TrainConfig(
@@ -1019,6 +1036,13 @@ def _restore_ladder_progress(
 
 
 _COMPATIBLE_NEW_CANDIDATE_FIELDS = {
+    "auxiliary_backprop_to_encoder",
+    "auxiliary_budget_conditioning",
+    "auxiliary_budget_monotonic_weight",
+    "auxiliary_solve_backprop_to_encoder",
+    "auxiliary_value_loss_weight",
+    "objective_budget_channel",
+    "residual_blocks",
     "serial_ensemble",
     "serial_internal_budget_remaining",
     "serial_internal_horizon",
@@ -1062,8 +1086,13 @@ def run_ladder(
     retro_games: int = 6,
     policy_value_success_only: bool = False,
     policy_value_success_gated: bool = False,
+    balanced_replay: bool = False,
+    rehearsal_games_per_cleared_stage: int = 0,
+    initial_checkpoint: Path | None = None,
     log=print,
 ) -> LadderResult:
+    if rehearsal_games_per_cleared_stage < 0:
+        raise ValueError("rehearsal games per cleared stage must be non-negative")
     started = time.perf_counter()
     rng = np.random.default_rng(seed)
     torch.manual_seed(seed)
@@ -1099,6 +1128,22 @@ def run_ladder(
         signal.signal(signal.SIGTERM, request_termination)
     partial: dict | None = None
     consecutive_caps = 0
+    if initial_checkpoint is not None and path is not None and path.exists():
+        log(
+            f"    [{candidate.name}] ignoring initial checkpoint because a ladder "
+            "resume checkpoint exists"
+        )
+    elif initial_checkpoint is not None:
+        payload = torch.load(initial_checkpoint, map_location=device, weights_only=False)
+        state = payload.get("network", payload) if isinstance(payload, dict) else payload
+        migrated = load_policy_value_state_dict(network, state)
+        if migrated:
+            log(
+                f"    [{candidate.name}] warm-started from {initial_checkpoint}; "
+                "new input channels are zero-initialized"
+            )
+        else:
+            log(f"    [{candidate.name}] warm-started from {initial_checkpoint}")
     if path is not None and path.exists():
         saved = torch.load(path, map_location=device, weights_only=False)
         migrated = load_policy_value_state_dict(network, saved["network"])
@@ -1362,10 +1407,49 @@ def run_ladder(
                     )
                     for record in records:
                         replay.add(record)
+                    rehearsal_records = 0
+                    # The geometric stage mixture makes old rungs merely
+                    # probable, and its oldest probabilities become tiny.  An
+                    # explicit F_old dose guarantees that every already-cleared
+                    # representation contributes fresh search targets during
+                    # every frontier iteration.  Each rehearsal game is pinned
+                    # to its rung; it cannot silently sample the frontier again.
+                    for old_index in range(index):
+                        if rehearsal_games_per_cleared_stage == 0:
+                            break
+                        old_config = _config(
+                            candidate,
+                            STAGES[old_index],
+                            seed,
+                            device,
+                            selfplay_games=rehearsal_games_per_cleared_stage,
+                        )
+                        old_game = make_game(old_config.game)
+                        old_search = NeuralMCTS(old_game, network, old_config.search, device)
+                        old_seeds = [
+                            seed
+                            + 90_000_000
+                            + index * 100_000
+                            + iteration * 1_000
+                            + old_index * rehearsal_games_per_cleared_stage
+                            + game_index
+                            for game_index in range(rehearsal_games_per_cleared_stage)
+                        ]
+                        old_records = play_selfplay_games(
+                            old_game,
+                            old_search,
+                            [np.random.default_rng(old_seed + 7) for old_seed in old_seeds],
+                            old_seeds,
+                            12,
+                        )
+                        for record in old_records:
+                            replay.add(record)
+                        rehearsal_records += len(old_records)
                     selfplay_seconds = time.perf_counter() - phase_started
                     log(
                         f"    [{candidate.name}] rung {index} iteration {current_iteration}: "
-                        f"self-play {len(records)} games in {_duration(selfplay_seconds)}"
+                        f"self-play {len(records)} frontier + {rehearsal_records} "
+                        f"explicit rehearsal games in {_duration(selfplay_seconds)}"
                     )
                 terminate_if_requested(
                     stage_index=index,
@@ -1408,7 +1492,8 @@ def run_ladder(
                         32,
                         torch.device(device),
                         collaboration_replay=(
-                            policy_value_success_only
+                            balanced_replay
+                            or policy_value_success_only
                             or (policy_value_success_gated and sparse_positive_replay)
                         ),
                         shared_fraction=0.0,

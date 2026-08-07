@@ -138,6 +138,7 @@ def braid_budget_heldout_gate(
     training_items: Annotated[int, typer.Option(min=1)] = 5,
     heldout_start: Annotated[int, typer.Option(min=1)] = 5,
     heldout_items: Annotated[int, typer.Option(min=1)] = 10,
+    ratio: Annotated[float, typer.Option(min=0.01)] = 10.0,
     games_per_cap: Annotated[int, typer.Option(min=1)] = 4,
     simulations: Annotated[int, typer.Option(min=1)] = 32,
     rung_eval_games: Annotated[int, typer.Option(min=1)] = 12,
@@ -158,6 +159,7 @@ def braid_budget_heldout_gate(
         training_items=training_items,
         heldout_start=heldout_start,
         heldout_items=heldout_items,
+        ratio=ratio,
         games_per_cap=games_per_cap,
         simulations=simulations,
         rung_eval_games=rung_eval_games,
@@ -198,9 +200,7 @@ def braid_budget_critic_curriculum(
         scientist_name=scientist,
         items=items,
         ratio=ratio,
-        cap_fractions=tuple(
-            float(value) for value in cap_fractions.split(",") if value.strip()
-        ),
+        cap_fractions=tuple(float(value) for value in cap_fractions.split(",") if value.strip()),
         games_per_cap=games_per_cap,
         train_steps_per_item=train_steps_per_item,
         simulations=simulations,
@@ -261,9 +261,7 @@ def braid_fit_solve_calibration(
     """Fit a monotone held-out p(solve) calibrator without changing weights."""
     from pgx_mcts_bench.solve_calibration import fit_solve_calibration
 
-    report = fit_solve_calibration(
-        checkpoint, validation_report, output_checkpoint, output_report
-    )
+    report = fit_solve_calibration(checkpoint, validation_report, output_checkpoint, output_report)
     typer.echo(
         json.dumps(
             {"calibration": report["calibration"], "fitted": report["fitted"]},
@@ -504,6 +502,92 @@ def braid_native_learning_gate(
     typer.echo(json.dumps(report, indent=2))
 
 
+@app.command("braid-continual-learning-smoke")
+def braid_continual_learning_smoke(
+    checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    source_bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    hard_stress_bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    scientist: str = "s-window-128",
+    ratio: float = 1000.0,
+    evaluation_attempts: Annotated[int, typer.Option(min=1)] = 4,
+    evaluation_action_horizon: Annotated[int, typer.Option(min=1)] = 64,
+    f_new: Annotated[int, typer.Option(min=1)] = 5,
+    train_steps_per_iteration: Annotated[int, typer.Option(min=1)] = 24,
+    batch_size: Annotated[int, typer.Option(min=2)] = 32,
+    block_size: Annotated[int, typer.Option(min=1)] = 10,
+    seed: int = 20261700,
+    device: str = "cpu",
+    resume: bool = False,
+    torch_threads_per_arm: Annotated[int, typer.Option(min=1)] = 4,
+) -> None:
+    """Run the paired 20-round continual-rehearsal engineering smoke."""
+    from pgx_mcts_bench.continual_learning_gate import run_continual_learning_smoke
+
+    report = run_continual_learning_smoke(
+        checkpoint,
+        source_bank,
+        hard_stress_bank,
+        output,
+        scientist=scientist,
+        ratio=ratio,
+        evaluation_attempts=evaluation_attempts,
+        evaluation_action_horizon=evaluation_action_horizon,
+        f_new=f_new,
+        train_steps_per_iteration=train_steps_per_iteration,
+        batch_size=batch_size,
+        block_size=block_size,
+        seed=seed,
+        device=device,
+        resume=resume,
+        torch_threads_per_arm=torch_threads_per_arm,
+    )
+    typer.echo(json.dumps(report, indent=2))
+
+
+@app.command("braid-portfolio-progress-smoke")
+def braid_portfolio_progress_smoke(
+    checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    source_bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    hard_stress_bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    scientist: str = "s-window-128",
+    evaluation_attempts: Annotated[int, typer.Option(min=1)] = 4,
+    evaluation_action_horizon: Annotated[int, typer.Option(min=1)] = 64,
+    f_new: Annotated[int, typer.Option(min=1)] = 5,
+    train_steps_per_iteration: Annotated[int, typer.Option(min=1)] = 24,
+    batch_size: Annotated[int, typer.Option(min=2)] = 32,
+    block_size: Annotated[int, typer.Option(min=1)] = 10,
+    maximum_recovery_tasks: Annotated[int, typer.Option(min=1)] = 5,
+    seed: int = 20261720,
+    device: str = "cpu",
+    resume: bool = False,
+    torch_threads_per_arm: Annotated[int, typer.Option(min=1)] = 4,
+) -> None:
+    """Run the corrected complete-portfolio L10 progress smoke."""
+    from pgx_mcts_bench.continual_learning_gate import run_portfolio_progress_smoke
+
+    report = run_portfolio_progress_smoke(
+        checkpoint,
+        source_bank,
+        hard_stress_bank,
+        output,
+        scientist=scientist,
+        evaluation_attempts=evaluation_attempts,
+        evaluation_action_horizon=evaluation_action_horizon,
+        f_new=f_new,
+        train_steps_per_iteration=train_steps_per_iteration,
+        batch_size=batch_size,
+        block_size=block_size,
+        maximum_recovery_tasks=maximum_recovery_tasks,
+        seed=seed,
+        device=device,
+        resume=resume,
+        torch_threads_per_arm=torch_threads_per_arm,
+    )
+    typer.echo(json.dumps(report, indent=2))
+
+
 @app.command("braid-replay-integrity-gate")
 def braid_replay_integrity_gate(
     checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
@@ -589,9 +673,7 @@ def braid_critic_readiness(
     """Apply current critic readiness rules to unrebalanced held-out evidence."""
     from pgx_mcts_bench.critic_readiness import build_critic_readiness_report
 
-    report = build_critic_readiness_report(
-        validation_report, calibration_report, output
-    )
+    report = build_critic_readiness_report(validation_report, calibration_report, output)
     typer.echo(json.dumps(report["decision"], indent=2))
 
 
@@ -828,9 +910,7 @@ def braid_mine_semantic_witnesses(
     """Replay historical native solutions into a semantic-cost v2 witness bank."""
     from pgx_mcts_bench.multi_witness import write_certified_witness_bank
 
-    report = write_certified_witness_bank(
-        source_run, output, ratio=ratio, device=device
-    )
+    report = write_certified_witness_bank(source_run, output, ratio=ratio, device=device)
     typer.echo(json.dumps(report, indent=2))
 
 
@@ -1846,6 +1926,62 @@ def braid_ladder(
                 )
                 save(results, out)
     typer.echo(f"Saved: {out / 'ladder.md'}")
+
+
+@app.command("braid-joint-pretrain")
+def braid_joint_pretrain(
+    source_checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    smoke_stop_after: Annotated[int, typer.Option(min=0)] = 9,
+    continue_stop_after: Annotated[int, typer.Option(min=0)] = 9,
+    include_warm: bool = True,
+    include_scratch: bool = True,
+    include_h5: bool = True,
+    allow_warm_rewind_ablation: bool = False,
+    max_iterations: Annotated[int, typer.Option(min=1)] = 100,
+    selfplay_games: Annotated[int, typer.Option(min=1)] = 8,
+    eval_games: Annotated[int, typer.Option(min=4)] = 12,
+    simulations: Annotated[int, typer.Option(min=1)] = 128,
+    train_steps: Annotated[int, typer.Option(min=1)] = 96,
+    rehearsal_games_per_cleared_stage: Annotated[int, typer.Option(min=0)] = 1,
+    minimum_solve_rate: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.8,
+    budget_items: Annotated[int, typer.Option(min=1)] = 10,
+    budget_games_per_cap: Annotated[int, typer.Option(min=1)] = 2,
+    budget_train_steps_per_item: Annotated[int, typer.Option(min=1)] = 32,
+    budget_simulations: Annotated[int, typer.Option(min=1)] = 64,
+    seed: int = 20261780,
+    device: str = "cpu",
+) -> None:
+    """Jointly pretrain the budget-aware window scientist on the easy ladder."""
+    from pgx_mcts_bench.braid_sweep import _worker_init
+    from pgx_mcts_bench.joint_pretraining import run_joint_pretraining
+
+    _worker_init()
+    report = run_joint_pretraining(
+        source_checkpoint,
+        output,
+        smoke_stop_after=smoke_stop_after,
+        continue_stop_after=continue_stop_after,
+        include_warm=include_warm,
+        include_scratch=include_scratch,
+        include_h5=include_h5,
+        allow_warm_rewind_ablation=allow_warm_rewind_ablation,
+        max_iterations_per_stage=max_iterations,
+        selfplay_games=selfplay_games,
+        eval_games=eval_games,
+        simulations=simulations,
+        train_steps=train_steps,
+        rehearsal_games_per_cleared_stage=rehearsal_games_per_cleared_stage,
+        minimum_solve_rate=minimum_solve_rate,
+        budget_items=budget_items,
+        budget_games_per_cap=budget_games_per_cap,
+        budget_train_steps_per_item=budget_train_steps_per_item,
+        budget_simulations=budget_simulations,
+        seed=seed,
+        device=device,
+        log=typer.echo,
+    )
+    typer.echo(json.dumps(report["decision"], indent=2))
 
 
 @app.command()

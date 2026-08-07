@@ -296,6 +296,8 @@ def train_alphazero_step(
     replay_similar_representation_count: int = 8,
     replay_positions_per_episode: int = 1,
     replay_max_position_uses: int = 0,
+    continual_replay: bool = False,
+    replay_rehearsal_representations: set[str] | None = None,
 ) -> dict[str, float]:
     network.train()
     optimized_parameters = _optimizer_parameters(optimizer)
@@ -305,7 +307,15 @@ def train_alphazero_step(
             if isinstance(module, nn.modules.batchnorm._BatchNorm):
                 module.eval()
     batch = (
-        replay.sample_collaboration_positions(
+        replay.sample_continual_positions(
+            batch_size,
+            current_representation=replay_current_representation,
+            rehearsal_representations=replay_rehearsal_representations or set(),
+            positions_per_episode=replay_positions_per_episode,
+            max_position_uses=replay_max_position_uses,
+        )
+        if continual_replay
+        else replay.sample_collaboration_positions(
             batch_size,
             shared_fraction,
             current_representation=replay_current_representation,
@@ -379,6 +389,7 @@ def train_alphazero_step(
         preservation_value = F.mse_loss(values, teacher_values)
     auxiliary_loss = solve_loss = crossings_loss = moves_loss = monotonic_loss = zero
     solve_brier = shadow_mae = zero
+    crossing_target_count = move_target_count = 0
     if auxiliary is not None:
         solve_logits, predicted_crossings, predicted_moves = auxiliary
         members = solve_logits.shape[1]
@@ -438,6 +449,16 @@ def train_alphazero_step(
             ),
             solved_mask & torch.isfinite(move_targets),
         )
+        crossing_target_count = int(
+            ((solved > 0.5) & eligible & torch.isfinite(crossing_targets[:, 0]))
+            .sum()
+            .item()
+        )
+        move_target_count = int(
+            ((solved > 0.5) & eligible & torch.isfinite(move_targets[:, 0]))
+            .sum()
+            .item()
+        )
         monotonic_weight = float(
             getattr(network, "auxiliary_budget_monotonic_weight", 0.0)
         )
@@ -488,6 +509,12 @@ def train_alphazero_step(
     loss.backward()
     nn.utils.clip_grad_norm_(optimized_parameters, 5.0)
     optimizer.step()
+    replay_strata: dict[str, int] = {}
+    for row in replay.last_collaboration_sample_trace:
+        stratum = str(row.get("requested_stratum", "unknown"))
+        replay_strata[stratum] = replay_strata.get(stratum, 0) + int(
+            row.get("positions", 0)
+        )
     return {
         "loss": float(loss.item()),
         "policy": float(p_loss.item()),
@@ -504,6 +531,8 @@ def train_alphazero_step(
         "relation": float(relation.item()),
         "policy_value_targets": float(native_targets.sum().item()),
         "solve_targets": float(eligible.sum().item()) if auxiliary is not None else 0.0,
+        "crossing_targets": float(crossing_target_count),
+        "move_targets": float(move_target_count),
         "replay_success_fraction": float((solved > 0.5).float().mean().item()),
         "replay_censored_fraction": float(censored_positions.float().mean().item()),
         "replay_shared_fraction": float(shared_positions.float().mean().item()),
@@ -523,6 +552,18 @@ def train_alphazero_step(
                     for position in batch
                 ]
             )
+        ),
+        "replay_current_success_positions": float(
+            replay_strata.get("current-success", 0)
+        ),
+        "replay_rehearsal_success_positions": float(
+            replay_strata.get("rehearsal-success", 0)
+        ),
+        "replay_ordinary_failure_positions": float(
+            replay_strata.get("ordinary-failure", 0)
+        ),
+        "replay_budget_censored_failure_positions": float(
+            replay_strata.get("budget-censored-failure", 0)
         ),
     }
 

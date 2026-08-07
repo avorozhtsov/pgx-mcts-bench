@@ -797,3 +797,44 @@ def test_sigterm_checkpoint_resumes_inside_training_step(tmp_path, monkeypatch) 
     )
     assert progress["stage_complete"]
     assert progress["iteration"] == 1
+
+
+def test_explicit_rehearsal_pins_each_cleared_stage(monkeypatch) -> None:
+    import pgx_mcts_bench.ladder as ladder
+
+    calls: list[tuple[tuple, str, int, int]] = []
+
+    def record_selfplay(game, _search, _rngs, seeds, _temperature_moves):
+        calls.append(
+            (
+                tuple(game.config.stage_mix),
+                game.config.stage_source,
+                game.config.stage_scramble,
+                len(seeds),
+            )
+        )
+        return []
+
+    def solved_evaluation(*_args, **_kwargs):
+        return {ratio: {"solved": 1.0, "crossings": 0.0, "moves": 1.0} for ratio in ladder.RATIOS}
+
+    monkeypatch.setattr(ladder, "play_selfplay_games", record_selfplay)
+    monkeypatch.setattr(ladder, "train_alphazero_step", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ladder, "evaluate_stage", solved_evaluation)
+
+    candidate = parallel_arms()[1]
+    result = ladder.run_ladder(
+        candidate,
+        max_iterations_per_stage=1,
+        selfplay_games=1,
+        eval_every=1,
+        eval_games=4,
+        retro_games=0,
+        stop_after=1,
+        rehearsal_games_per_cleared_stage=2,
+        log=lambda *_args, **_kwargs: None,
+    )
+
+    assert result.highest_stage == 1
+    pinned_rehearsal = [call for call in calls if not call[0] and call[3] == 2]
+    assert pinned_rehearsal == [((), STAGES[0][0], STAGES[0][1], 2)]

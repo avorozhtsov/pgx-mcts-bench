@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from typing import Any
 
@@ -89,6 +90,10 @@ class ReplayBuffer:
         # still beneficial.
         self.best_native_solution_objectives: dict[tuple[str, float], float] = {}
         self.best_shared_solution_objectives: dict[tuple[str, float], float] = {}
+        # Unlike ordinary replay, this bank is not capacity-evicted.  Continual
+        # learning can therefore rehearse the best certified native trajectory
+        # for an old representation even after its original episodes age out.
+        self.best_native_solution_records: dict[tuple[str, float], GameRecord] = {}
 
     def _ensure_replay_state(self) -> None:
         """Populate fields missing from pre-replay-v2 pickles."""
@@ -104,6 +109,8 @@ class ReplayBuffer:
             self.best_native_solution_objectives = {}
         if not hasattr(self, "best_shared_solution_objectives"):
             self.best_shared_solution_objectives = {}
+        if not hasattr(self, "best_native_solution_records"):
+            self.best_native_solution_records = {}
 
     @staticmethod
     def _representation(game: GameRecord) -> str:
@@ -147,7 +154,10 @@ class ReplayBuffer:
             if shared
             else self.best_native_solution_objectives
         )
-        archive[key] = min(objective, archive.get(key, float("inf")))
+        incumbent = archive.get(key, float("inf"))
+        archive[key] = min(objective, incumbent)
+        if not shared and objective < incumbent:
+            self.best_native_solution_records[key] = copy.deepcopy(game)
 
     def best_native_objective(
         self, representation_id: str, ratio: float
@@ -169,6 +179,16 @@ class ReplayBuffer:
         self.best_native_solution_objectives[key] = min(
             value, self.best_native_solution_objectives.get(key, float("inf"))
         )
+
+    def best_native_solution_record(
+        self, representation_id: str, ratio: float
+    ) -> GameRecord | None:
+        """Return a fresh copy of the permanent best native solution."""
+        self._ensure_replay_state()
+        record = self.best_native_solution_records.get(
+            (str(representation_id), float(ratio))
+        )
+        return copy.deepcopy(record) if record is not None else None
 
     def active_distillation_records(self) -> list[GameRecord]:
         """Return only the best donations that still beat native incumbents."""
@@ -425,6 +445,154 @@ class ReplayBuffer:
             )
             batch.extend(positions)
             episode_trace["positions"] = len(positions)
+        self.last_collaboration_sample_trace = trace
+        return batch
+
+    def sample_continual_positions(
+        self,
+        batch_size: int,
+        *,
+        current_representation: str,
+        rehearsal_representations: set[str],
+        positions_per_episode: int = 4,
+        max_position_uses: int = 0,
+    ) -> list[Position]:
+        """Sample exact outcome and new/rehearsal strata when available.
+
+        With an even number of episode slots, native successes and failures get
+        equal slots.  Successful slots are then split equally between the
+        current representation and the old-solution bank whenever both exist.
+        Episodes are uniform by representation and inverse-weighted by prior
+        exposure; positions are deliberately spread within an episode.
+        """
+        if batch_size < 1 or positions_per_episode < 1:
+            raise ValueError("batch and positions_per_episode must be positive")
+        if max_position_uses < 0:
+            raise ValueError("max_position_uses must be non-negative")
+        self._ensure_replay_state()
+
+        def eligible(game: GameRecord) -> bool:
+            return bool(game) and (
+                max_position_uses == 0
+                or any(
+                    int(getattr(position, "replay_position_uses", 0))
+                    < max_position_uses
+                    for position in game
+                )
+            )
+
+        native = [
+            game
+            for game in self.games
+            if eligible(game)
+            and not bool(getattr(game[0], "shared_witness", False))
+        ]
+        successes = [
+            game
+            for game in native
+            if not bool(getattr(game[0], "objective_censored", False))
+            and float(getattr(game[0], "solved", -1.0)) > 0.5
+        ]
+        ordinary_failures = [
+            game
+            for game in native
+            if not bool(getattr(game[0], "objective_censored", False))
+            and float(getattr(game[0], "solved", -1.0)) <= 0.5
+        ]
+        capped_failures = [
+            game
+            for game in native
+            if bool(getattr(game[0], "objective_censored", False))
+        ]
+        failures = ordinary_failures + capped_failures
+        if not successes and not failures:
+            if self.games and max_position_uses:
+                raise RuntimeError("All replay positions reached max_position_uses")
+            raise RuntimeError("Cannot sample an empty continual replay")
+
+        slots = max(1, int(np.ceil(batch_size / positions_per_episode)))
+        if successes and failures:
+            success_slots = slots // 2
+            failure_slots = slots - success_slots
+        elif successes:
+            success_slots, failure_slots = slots, 0
+        else:
+            success_slots, failure_slots = 0, slots
+
+        current_successes = [
+            game
+            for game in successes
+            if self._representation(game) == current_representation
+        ]
+        rehearsal_successes = [
+            game
+            for game in successes
+            if self._representation(game) in rehearsal_representations
+        ]
+        success_requests: list[tuple[str, list[GameRecord]]] = []
+        if current_successes and rehearsal_successes:
+            current_slots = success_slots // 2
+            rehearsal_slots = success_slots - current_slots
+            success_requests.extend(
+                [("current-success", current_successes)] * current_slots
+            )
+            success_requests.extend(
+                [("rehearsal-success", rehearsal_successes)] * rehearsal_slots
+            )
+        else:
+            pool = current_successes or rehearsal_successes or successes
+            label = (
+                "current-success"
+                if current_successes
+                else "rehearsal-success"
+                if rehearsal_successes
+                else "global-success"
+            )
+            success_requests.extend([(label, pool)] * success_slots)
+
+        failure_requests: list[tuple[str, list[GameRecord]]] = []
+        if ordinary_failures and capped_failures:
+            capped_slots = max(1, min(failure_slots // 3, failure_slots - 1))
+            failure_requests.extend(
+                [("ordinary-failure", ordinary_failures)]
+                * (failure_slots - capped_slots)
+            )
+            failure_requests.extend(
+                [("budget-censored-failure", capped_failures)] * capped_slots
+            )
+        elif failures:
+            label = (
+                "ordinary-failure" if ordinary_failures else "budget-censored-failure"
+            )
+            failure_requests.extend([(label, failures)] * failure_slots)
+
+        requests = success_requests + failure_requests
+        self.rng.shuffle(requests)
+        batch: list[Position] = []
+        trace: list[dict[str, Any]] = []
+        for label, pool in requests:
+            if len(batch) >= batch_size:
+                break
+            game = self._draw_exposure_balanced_episode(pool)
+            eligible_positions = [
+                position
+                for position in game
+                if max_position_uses == 0
+                or int(getattr(position, "replay_position_uses", 0))
+                < max_position_uses
+            ]
+            positions = self._spread_positions(
+                eligible_positions,
+                min(positions_per_episode, batch_size - len(batch), len(eligible_positions)),
+            )
+            batch.extend(positions)
+            trace.append(
+                {
+                    "requested_stratum": label,
+                    "actual_representation": self._representation(game),
+                    "positions": len(positions),
+                }
+            )
         self.last_collaboration_sample_trace = trace
         return batch
 
