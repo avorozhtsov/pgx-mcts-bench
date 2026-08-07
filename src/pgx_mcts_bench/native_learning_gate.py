@@ -23,6 +23,7 @@ from pgx_mcts_bench.collaborative_scientists import (
     _sha256,
     verified_record_cost,
 )
+from pgx_mcts_bench.game import make_game
 from pgx_mcts_bench.rapid_adaptation import checkpoint_regression_gate
 from pgx_mcts_bench.search import NeuralMCTS
 from pgx_mcts_bench.training import play_selfplay_games, train_alphazero_step
@@ -31,7 +32,10 @@ RETENTION_ITEMS = ("12a_146", "11a_26", "11a_33")
 TRANSITION_ITEMS = ("10_149", "12a_1168", "12a_981", "12n_830", "9_28", "11a_106")
 FROZEN_NEVER_ITEMS = ("11n_107", "10_71", "10_137")
 PANEL_ITEMS = RETENTION_ITEMS + TRANSITION_ITEMS + FROZEN_NEVER_ITEMS
-SEARCH_TIERS = ((64, 4), (128, 2), (256, 1))
+# (simulations per move, attempts, native action horizon).  Search escalation
+# changes both breadth and the episode clock: increasing simulations alone
+# cannot finish a promising trajectory censored at 64 native actions.
+SEARCH_TIERS = ((64, 4, 64), (128, 2, 96), (256, 2, 128), (512, 1, 128))
 
 
 def _rotated(knot: KnotItem, offset: int) -> KnotItem:
@@ -109,30 +113,52 @@ def _discover(
     *,
     ratio: float,
     seed: int,
-    tiers: tuple[tuple[int, int], ...],
+    tiers: tuple[tuple[int, int, int], ...],
     device: str,
 ) -> tuple[list[Any], list[dict[str, Any]]]:
     records = []
     rows = []
     initial_length = len(item.knot.word)
     promising = True
-    for tier_index, (simulations, games) in enumerate(tiers):
+    near_solved = False
+    best_seen = initial_length
+    for tier_index, (simulations, games, action_horizon) in enumerate(tiers):
         if tier_index and not promising:
             rows.append(
-                {"simulations": simulations, "games": 0, "skipped_not_promising": True}
+                {
+                    "simulations": simulations,
+                    "action_horizon": action_horizon,
+                    "games": 0,
+                    "skipped_not_promising": True,
+                    "skipped_not_near_solved": False,
+                }
             )
             continue
+        if tier_index >= 2 and not near_solved:
+            rows.append(
+                {
+                    "simulations": simulations,
+                    "action_horizon": action_horizon,
+                    "games": 0,
+                    "skipped_not_promising": False,
+                    "skipped_not_near_solved": True,
+                }
+            )
+            continue
+        search_game = make_game(
+            replace(scientist.config.game, simplify_budget=action_horizon)
+        )
         tier_pairs = []
         for game_index in range(games):
             variant = _rotated(item.knot, tier_index + game_index)
-            fixed = FixedWordGame(scientist.game, variant, ratio)
+            fixed = FixedWordGame(search_game, variant, ratio)
             search = NeuralMCTS(
                 fixed,
                 scientist.network,
                 replace(
                     scientist.config.search,
                     simulations=simulations,
-                    cpuct=(1.25, 1.5, 2.0)[min(tier_index, 2)],
+                    cpuct=(1.25, 1.5, 2.0, 2.5)[min(tier_index, 3)],
                 ),
                 device,
             )
@@ -149,7 +175,7 @@ def _discover(
             tier_pairs.append((variant, record))
             records.append(record)
         solved = sum(
-            verified_record_cost(scientist.game, variant, ratio, record) is not None
+            verified_record_cost(search_game, variant, ratio, record) is not None
             for variant, record in tier_pairs
         )
         residuals = [
@@ -158,15 +184,23 @@ def _discover(
             if record and int(record[0].best_residual_word_length) >= 0
         ]
         best_residual = min(residuals, default=initial_length)
-        promising = bool(solved) or best_residual < initial_length
+        best_seen = min(best_seen, best_residual)
+        promising = bool(solved) or best_seen < initial_length
+        near_threshold = max(4, int(np.ceil(0.75 * initial_length)))
+        near_solved = bool(solved) or best_seen <= near_threshold
         rows.append(
             {
                 "simulations": simulations,
+                "action_horizon": action_horizon,
                 "games": games,
                 "solved": solved,
                 "best_residual_word_length": best_residual,
+                "best_residual_seen": best_seen,
+                "near_solved_threshold": near_threshold,
+                "near_solved": near_solved,
                 "promising": promising,
                 "skipped_not_promising": False,
+                "skipped_not_near_solved": False,
             }
         )
         if solved:
@@ -213,7 +247,7 @@ def _run_seed(payload: dict[str, Any]) -> dict[str, Any]:
             by_id[identity],
             ratio=payload["ratio"],
             seed=seed + 100_000_000 + index * 10_000,
-            tiers=((64, 2),),
+            tiers=((64, 2, 64),),
             device=payload["device"],
         )
         _add_records(scientist, by_id[identity], records)
@@ -321,7 +355,19 @@ def analyze_native_learning(rows: list[dict[str, Any]]) -> dict[str, Any]:
         row["final"]["capped_objective"] <= row["initial"]["capped_objective"]
         for row in rows
     )
-    passed = retained and objective_noninferior and len(replicated) >= 2
+    final_solve_rates = [
+        len(row["final"]["solved"]) / len(PANEL_ITEMS) for row in rows
+    ]
+    minimum_final_solve_rate = 0.70
+    coverage_sufficient = all(
+        solve_rate >= minimum_final_solve_rate for solve_rate in final_solve_rates
+    )
+    passed = (
+        retained
+        and objective_noninferior
+        and coverage_sufficient
+        and len(replicated) >= 2
+    )
     return {
         "rescue_seed_counts": rescue_counts,
         "replicated_rescues": replicated,
@@ -329,6 +375,9 @@ def analyze_native_learning(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "passed": passed,
             "exact_retention_all_seeds": retained,
             "capped_objective_noninferior_all_seeds": objective_noninferior,
+            "minimum_final_solve_rate": minimum_final_solve_rate,
+            "final_solve_rates": final_solve_rates,
+            "minimum_final_solve_rate_all_seeds": coverage_sufficient,
             "required_replicated_rescues": 2,
             "next_step": (
                 "run the 20-representation no-sharing progression smoke"
@@ -345,7 +394,7 @@ def run_native_learning_gate(
     output: Path,
     *,
     scientist: str = "s-window-128",
-    ratio: float = 10.0,
+    ratio: float = 1000.0,
     evaluation_simulations: int = 64,
     train_steps: int = 24,
     batch_size: int = 32,
@@ -369,7 +418,7 @@ def run_native_learning_gate(
         device=device,
     )
     protocol = {
-        "schema": "transactional-native-learning-gate-v2",
+        "schema": "transactional-native-learning-gate-v3-horizon-escalation",
         "scientist": scientist,
         "checkpoint": str(checkpoint.resolve()),
         "checkpoint_sha256": _sha256(checkpoint),
@@ -382,7 +431,11 @@ def run_native_learning_gate(
             "frozen_never": list(FROZEN_NEVER_ITEMS),
         },
         "search_tiers": [list(tier) for tier in SEARCH_TIERS],
-        "search_variants": "cyclic braid-word conjugates with tier-specific PUCT",
+        "search_tier_fields": ["simulations_per_move", "attempts", "action_horizon"],
+        "search_variants": (
+            "cyclic braid-word conjugates with tier-specific PUCT; higher action "
+            "horizons only after residual-progress and near-solve gates"
+        ),
         "ratio": ratio,
         "evaluation_simulations": evaluation_simulations,
         "train_steps": train_steps,

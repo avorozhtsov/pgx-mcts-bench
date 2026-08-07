@@ -18,20 +18,26 @@ def test_admission_requires_retention_and_observable_improvement():
 
 
 def test_gate_requires_two_distinct_replicated_rescues_and_exact_retention():
+    covered = {f"covered-{index}" for index in range(9)}
     rows = [
         {
             "gained": ["10_149", "12a_1168"],
             "lost": [],
             "initial": panel([], 100),
-            "final": panel([], 90),
+            "final": panel(covered, 90),
         },
         {
             "gained": ["10_149", "12a_1168"],
             "lost": [],
             "initial": panel([], 100),
-            "final": panel([], 95),
+            "final": panel(covered, 95),
         },
-        {"gained": [], "lost": [], "initial": panel([], 100), "final": panel([], 100)},
+        {
+            "gained": [],
+            "lost": [],
+            "initial": panel([], 100),
+            "final": panel(covered, 100),
+        },
     ]
     report = analyze_native_learning(rows)
     assert report["decision"]["passed"]
@@ -54,3 +60,28 @@ def test_gate_rejects_any_seed_with_a_lost_identity():
         },
     ]
     assert not analyze_native_learning(rows)["decision"]["passed"]
+
+
+def test_gate_requires_at_least_seventy_percent_final_panel_coverage():
+    replicated = ["10_149", "12a_1168"]
+    rows = [
+        {
+            "gained": replicated,
+            "lost": [],
+            "initial": panel([], 100),
+            "final": {
+                **panel({"a", "b", "c", "d", "e", "f", "g", "h"}, 90),
+            },
+        },
+        {
+            "gained": replicated,
+            "lost": [],
+            "initial": panel([], 100),
+            "final": {
+                **panel({"a", "b", "c", "d", "e", "f", "g", "h", "i"}, 90),
+            },
+        },
+    ]
+    decision = analyze_native_learning(rows)["decision"]
+    assert not decision["passed"]
+    assert not decision["minimum_final_solve_rate_all_seeds"]

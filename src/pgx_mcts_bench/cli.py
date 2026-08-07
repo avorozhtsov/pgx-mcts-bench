@@ -71,6 +71,64 @@ def braid_budget_search_savings(
     typer.echo(json.dumps({"summary": report["summary"], "decision": report["decision"]}, indent=2))
 
 
+@app.command("braid-structural-budget-audit")
+def braid_structural_budget_audit(
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    scientist: Annotated[
+        list[str],
+        typer.Option(help="Repeat NAME=CHECKPOINT for the paired portfolio"),
+    ],
+    representations: Annotated[int, typer.Option(min=100)] = 100,
+    calibration_representations: Annotated[int, typer.Option(min=10)] = 20,
+    attempts_per_representation: Annotated[int, typer.Option(min=1)] = 2,
+    ratio: Annotated[float, typer.Option(min=0.01)] = 1000.0,
+    simulation_doses: str = "32,64,128",
+    minimum_solve_rate: Annotated[float, typer.Option(min=0.7, max=1.0)] = 0.70,
+    seed: int = 20261600,
+    workers: Annotated[int, typer.Option(min=1)] = 3,
+    device: str = "cpu",
+    resume: bool = False,
+) -> None:
+    """Audit structural-first search against paired direct-global attempts."""
+    from pgx_mcts_bench.structural_budget_audit import run_structural_budget_audit
+
+    checkpoints: dict[str, Path] = {}
+    for value in scientist:
+        if "=" not in value:
+            raise typer.BadParameter("--scientist must be NAME=CHECKPOINT")
+        name, raw_path = value.split("=", 1)
+        path = Path(raw_path)
+        if not path.is_file():
+            raise typer.BadParameter(f"checkpoint does not exist: {path}")
+        checkpoints[name] = path
+    report = run_structural_budget_audit(
+        checkpoints,
+        output,
+        representations=representations,
+        calibration_representations=calibration_representations,
+        attempts_per_representation=attempts_per_representation,
+        ratio=ratio,
+        simulation_doses=tuple(
+            int(value) for value in simulation_doses.split(",") if value.strip()
+        ),
+        minimum_solve_rate=minimum_solve_rate,
+        seed=seed,
+        workers=workers,
+        device=device,
+        resume=resume,
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "selected_simulations": report.get("selected_simulations"),
+                "pair_summary": report.get("pair_summary"),
+                "decision": report["decision"],
+            },
+            indent=2,
+        )
+    )
+
+
 @app.command("braid-budget-heldout-gate")
 def braid_budget_heldout_gate(
     baseline_checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
@@ -419,7 +477,7 @@ def braid_native_learning_gate(
     bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
     output: Annotated[Path, typer.Option(file_okay=False)],
     scientist: str = "s-window-128",
-    ratio: float = 10.0,
+    ratio: float = 1000.0,
     evaluation_simulations: Annotated[int, typer.Option(min=1)] = 64,
     train_steps: Annotated[int, typer.Option(min=1)] = 24,
     batch_size: Annotated[int, typer.Option(min=1)] = 32,

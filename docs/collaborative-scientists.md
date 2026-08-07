@@ -503,9 +503,54 @@ failure is not repeated because the objective cap did not censor it. The old
 10% predicted-cap audit option has been removed from the collaboration command
 and launcher.
 
-### K=3 architecture repair and fast-learning gate, 2026-08-04
+The first v5 equivalence audit used the independent K=3 rung checkpoints,
+`L1000`, 100 distinct representations from the mastered scrambled prefix of the
+ladder, two paired attempts per representation, and a separate 20-representation
+simulation calibration split. The lowest registered dose, 32 simulations, gave
+20/20 portfolio calibration coverage. On the audit panel, direct-global and
+structural-first/global-restart both solved 92/100 representations with identical
+capped `L1000 = 639,569`. All 600 paired final outcomes and all solved costs
+matched; 598/600 native action sequences matched exactly. The two differing
+sequences were failures with the same registered outcome.
 
-The remaining-budget repair now applies to the preregistered K=3 roster:
+Equivalence therefore passes, but economy does not: 36 restarts increased
+scheduled network evaluations from 578,424 to 617,133, or 6.69%. Keep the
+structural protocol opt-in and disabled in the main five-arm comparison. Its
+artifact is
+`artifacts/structural-budget-equivalence-k3-100-seed20261600-20260807/report.json`.
+
+### Transactional positive-acquisition gate v3, 2026-08-07
+
+The next native-learning gate moved the final objective to `L1000` and expanded
+search tiers from simulations alone to `(simulations, native action horizon)`:
+`(64,64)`, `(128,96)`, `(256,128)`, and `(512,128)`. Higher tiers require
+residual progress, and the final two require a registered near-solve. The
+starting `s-window-128` checkpoint still passed its promoted-rung regression at
+12/12 under `L1000`.
+
+The fixed 12-representation development panel started at 4/12 solved in every
+seed. Transactional rollback retained every initial solved identity and improved
+capped `L1000` from 179,560 to 149,459, 162,509, and 147,457. Final coverage was
+only 6/12, 5/12, and 6/12, however. `12a_981` was the only declared discovery
+identity rescued in at least two seeds; the gate required two identities and at
+least 70% final panel coverage in every seed.
+
+The failure separates search from learning. Search solved `10_149` in all 4/4
+native attempts in every seed, but each 24-step consolidation candidate was
+rolled back because it lost `11a_26` or worsened capped `L1000`. Conversely, the
+hard frontier produced no certified positive: `11n_107` remained at residual
+length 11 at both `(64,64)` and `(128,96)`, just outside the preregistered
+near-solve threshold 10, while `10_71` and `10_137` made no residual progress.
+No task qualified for the 128-action tiers.
+
+Thus horizon escalation does not open the K=4 smoke. The next bounded repair
+belongs in success consolidation—dose selection inside a transaction or an
+explicit canary-preserving update—not in more search on `10_149`. The artifact
+is `artifacts/native-learning-gate-swindow-v3-horizon-L1000-20260807/report.json`.
+
+### Historical distilled-tape K=3 critic gate, 2026-08-04
+
+This historical predicted-budget ablation used the temporary K=3 roster
 `s-window-128`, `d-tape4-u1`, and `s-w11-128`. All three use cost-first
 `cc`/moves prediction, exact `L=A*cc+B*moves`, a residual solve branch conditioned
 on shared features and remaining budget, solve gradients into the shared encoder,
@@ -545,6 +590,12 @@ This is a fast **critic-learning** result, not evidence that all three solver
 policies improve quickly: paired coverage was -1, 0, and +1 respectively. It does
 not unblock the persistent-RL or sharing gates for the 200-representation
 experiment.
+
+The current collaboration roster instead uses `s-window-128`, independent
+`s-tape4`, and `s-w11-128`. Its `s-tape4` stage-18 checkpoint was trained through
+the native rung ladder and contains no distilled weights. `d-tape4-u1` remains a
+separate reproducibility artifact whose `d` prefix and `-u1` suffix identify
+distillation from the `u1-puct` teacher.
 
 At the 2026-08-02 listed Nebius rates, 32 vCPU plus 128 GiB RAM costs about
 USD 0.7936/hour. Seventy hours is USD 55.55; a 200-GiB network SSD for that period
