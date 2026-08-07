@@ -1007,6 +1007,8 @@ def _manifest(
     objective_budget: bool,
     remaining_budget_channel: bool,
     native_action_horizon: int,
+    input_bank: Path | None,
+    input_anchor_bank: Path | None,
     bank_seed: int,
     seed: int,
 ) -> dict[str, Any]:
@@ -1027,6 +1029,21 @@ def _manifest(
         "attempt_workers": attempt_workers,
         "objective_budget": objective_budget,
         "remaining_budget_channel": remaining_budget_channel,
+        "input_banks": {
+            "base": (
+                {"path": str(input_bank.resolve()), "sha256": _sha256(input_bank)}
+                if input_bank is not None
+                else None
+            ),
+            "anchor": (
+                {
+                    "path": str(input_anchor_bank.resolve()),
+                    "sha256": _sha256(input_anchor_bank),
+                }
+                if input_anchor_bank is not None
+                else None
+            ),
+        },
         "objective_budget_encoding": "remaining-semantic-L-absolute-global-v3",
         "objective_budget_attempt_protocol": {
             "first_cap": (
@@ -1150,6 +1167,8 @@ def run_collaborative_scientists(
     objective_budget: bool = False,
     remaining_budget_channel: bool = False,
     action_horizon: int | None = None,
+    input_bank: Path | None = None,
+    input_anchor_bank: Path | None = None,
     bank_seed: int = 0,
     seed: int = 0,
     device: str = "cpu",
@@ -1172,6 +1191,8 @@ def run_collaborative_scientists(
         raise ValueError("attempt_workers must be positive")
     if train_steps < 0:
         raise ValueError("train_steps must be non-negative")
+    if (input_bank is None) != (input_anchor_bank is None):
+        raise ValueError("input_bank and input_anchor_bank must be supplied together")
     # A hard objective cap necessarily needs the remaining-L observation.  The
     # converse is intentionally false: new experiments expose the feature while
     # treating the action horizon, rather than a predicted L, as the only cap.
@@ -1230,6 +1251,8 @@ def run_collaborative_scientists(
             objective_budget=objective_budget,
             remaining_budget_channel=remaining_budget_channel,
             native_action_horizon=native_action_horizon,
+            input_bank=input_bank,
+            input_anchor_bank=input_anchor_bank,
             bank_seed=bank_seed,
             seed=seed,
         )
@@ -1238,7 +1261,17 @@ def run_collaborative_scientists(
     else:
         if resume:
             raise FileNotFoundError(f"cannot resume without {manifest_path}")
-        bank, anchors = stratified_banks(pool_size, anchor_size, bank_seed)
+        if input_bank is not None and input_anchor_bank is not None:
+            bank = _bank_from_payload(json.loads(input_bank.read_text()))
+            anchors = _bank_from_payload(json.loads(input_anchor_bank.read_text()))
+            bank_ids = [item.id for item in bank]
+            anchor_ids = [item.id for item in anchors]
+            if len(bank_ids) != len(set(bank_ids)) or len(anchor_ids) != len(set(anchor_ids)):
+                raise ValueError("input banks contain duplicate representation identities")
+            if set(bank_ids) & set(anchor_ids):
+                raise ValueError("input base and anchor banks must be identity-disjoint")
+        else:
+            bank, anchors = stratified_banks(pool_size, anchor_size, bank_seed)
         manifest = _manifest(
             checkpoints,
             arm=arm,
@@ -1254,6 +1287,8 @@ def run_collaborative_scientists(
             objective_budget=objective_budget,
             remaining_budget_channel=remaining_budget_channel,
             native_action_horizon=native_action_horizon,
+            input_bank=input_bank,
+            input_anchor_bank=input_anchor_bank,
             bank_seed=bank_seed,
             seed=seed,
         )

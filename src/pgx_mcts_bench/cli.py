@@ -191,6 +191,32 @@ def braid_roster_readiness(
     typer.echo(json.dumps(report["decision"], indent=2))
 
 
+@app.command("braid-frontier-banks")
+def braid_frontier_banks(
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    exclude_bank: Annotated[
+        list[Path] | None,
+        typer.Option(exists=True, dir_okay=False, help="Repeat for protected banks"),
+    ] = None,
+    training_size: Annotated[int, typer.Option(min=4)] = 40,
+    evaluation_size: Annotated[int, typer.Option(min=4)] = 40,
+    frontier_pool_size: Annotated[int, typer.Option(min=8)] = 160,
+    seed: int = 20261860,
+) -> None:
+    """Freeze disjoint training/evaluation banks for the paired arm gate."""
+    from pgx_mcts_bench.roster_readiness import build_frontier_banks
+
+    report = build_frontier_banks(
+        output,
+        exclude_banks=tuple(exclude_bank or ()),
+        training_size=training_size,
+        evaluation_size=evaluation_size,
+        frontier_pool_size=frontier_pool_size,
+        seed=seed,
+    )
+    typer.echo(json.dumps(report, indent=2))
+
+
 @app.command("braid-budget-heldout-gate")
 def braid_budget_heldout_gate(
     baseline_checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
@@ -1229,6 +1255,10 @@ def braid_collaborative_scientists(
     objective_budget: bool = False,
     remaining_budget_channel: bool = False,
     action_horizon: Annotated[int | None, typer.Option(min=1)] = None,
+    input_bank: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
+    input_anchor_bank: Annotated[
+        Path | None, typer.Option(exists=True, dir_okay=False)
+    ] = None,
     bank_seed: int = 0,
     seed: int = 0,
     device: str = "cpu",
@@ -1267,6 +1297,8 @@ def braid_collaborative_scientists(
         objective_budget=objective_budget,
         remaining_budget_channel=remaining_budget_channel,
         action_horizon=action_horizon,
+        input_bank=input_bank,
+        input_anchor_bank=input_anchor_bank,
         bank_seed=bank_seed,
         seed=seed,
         device=device,
@@ -1360,6 +1392,7 @@ def braid_collaboration_evaluate(
     split: str = "new70",
     simulations: Annotated[int, typer.Option(min=1)] = 128,
     attempts_per_representation: Annotated[int, typer.Option(min=1)] = 4,
+    root_noise: bool = True,
     limit: Annotated[int, typer.Option(min=0)] = 0,
     seed: int = 0,
     device: str = "cpu",
@@ -1376,6 +1409,7 @@ def braid_collaboration_evaluate(
         split=split,  # type: ignore[arg-type]
         simulations=simulations,
         attempts_per_representation=attempts_per_representation,
+        root_noise=root_noise,
         limit=limit,
         seed=seed,
         device=device,

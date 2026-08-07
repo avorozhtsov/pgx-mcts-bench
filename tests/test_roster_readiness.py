@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import torch
@@ -8,6 +9,7 @@ from pgx_mcts_bench.collaborative_scientists import _cheap_score, _compatible_ta
 from pgx_mcts_bench.roster_readiness import (
     _calibrate_checkpoint,
     _critic_checks,
+    build_frontier_banks,
     select_frontier_panels,
 )
 
@@ -76,3 +78,19 @@ def test_critic_checks_require_rank_and_calibration_quality() -> None:
     }
     assert all(_critic_checks(good).values())
     assert not _critic_checks({**good, "auc": 0.7})["auc_at_least_0_75"]
+
+
+def test_frontier_bank_builder_freezes_disjoint_hashes(tmp_path: Path) -> None:
+    report = build_frontier_banks(
+        tmp_path / "banks",
+        training_size=8,
+        evaluation_size=8,
+        frontier_pool_size=24,
+        seed=29,
+    )
+
+    training = json.loads((tmp_path / "banks/base.json").read_text())
+    evaluation = json.loads((tmp_path / "banks/evaluation.json").read_text())
+    assert {row["id"] for row in training}.isdisjoint(row["id"] for row in evaluation)
+    assert report["training_sha256"]
+    assert report["evaluation_sha256"]

@@ -70,6 +70,7 @@ def panel_evaluation(
     seed: int,
     namespace: str,
     objective_cap: float | None = None,
+    root_noise: bool = False,
 ) -> dict[str, Any]:
     """Evaluate a representation panel at one fixed, paired search dose."""
     configured = _evaluation_scientist(scientist, action_horizon)
@@ -86,6 +87,7 @@ def panel_evaluation(
                 simulations,
                 attempt_seed,
                 objective_cap=objective_cap,
+                add_root_noise=root_noise,
             )
             scheduled += int(compute["scheduled_network_evaluations"])
             row = {"seed": attempt_seed, "solved": verified is not None}
@@ -146,6 +148,11 @@ def panel_evaluation(
         "attempts_per_representation": attempts,
         "action_horizon": action_horizon,
         "objective_cap": objective_cap,
+        "attempt_protocol": (
+            "paired-seed-dirichlet-root-noise-temperature-zero"
+            if root_noise
+            else "deterministic-temperature-zero"
+        ),
         "scheduled_network_evaluations": scheduled,
         "allocated_network_evaluations": (
             len(items) * attempts * action_horizon * (simulations + 1)

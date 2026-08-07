@@ -78,6 +78,7 @@ def _evaluation_record(
     seed: int,
     *,
     objective_cap: float | None = None,
+    add_root_noise: bool = False,
 ):
     fixed = FixedWordGame(
         scientist.game,
@@ -101,7 +102,7 @@ def _evaluation_record(
             transition.legal_actions,
             rng,
             temperature=0.0,
-            add_root_noise=False,
+            add_root_noise=add_root_noise,
         )
         record.append(
             Position(
@@ -137,6 +138,7 @@ def evaluate_collaboration(
     split: Literal["new70", "base"] = "new70",
     simulations: int = 128,
     attempts_per_representation: int = 4,
+    root_noise: bool = True,
     limit: int = 0,
     seed: int = 0,
     device: str = "cpu",
@@ -152,7 +154,7 @@ def evaluate_collaboration(
         items = items[:limit]
     ratios = tuple(float(value) for value in run_manifest["ratios"])
     protocol = {
-        "schema": "collaboration-evaluation-v2-paired-attempts",
+        "schema": "collaboration-evaluation-v3-stochastic-paired-attempts",
         "run": str(run.resolve()),
         "run_protocol_sha256": run_manifest["protocol_sha256"],
         "state": state,
@@ -161,6 +163,11 @@ def evaluate_collaboration(
         "split_sha256": _json_hash(json.loads(source.read_text())),
         "simulations": simulations,
         "attempts_per_representation": attempts_per_representation,
+        "attempt_protocol": (
+            "paired-seed-dirichlet-root-noise-temperature-zero"
+            if root_noise
+            else "deterministic-temperature-zero"
+        ),
         "limit": limit,
         "seed": seed,
     }
@@ -232,7 +239,12 @@ def evaluate_collaboration(
                         + attempt_index
                     )
                     verified, compute = _evaluation_record(
-                        scientist, item.knot, ratio, simulations, attempt_seed
+                        scientist,
+                        item.knot,
+                        ratio,
+                        simulations,
+                        attempt_seed,
+                        add_root_noise=root_noise,
                     )
                     row = {
                         "scientist": scientist.name,

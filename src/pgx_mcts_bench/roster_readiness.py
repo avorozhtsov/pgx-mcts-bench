@@ -132,6 +132,7 @@ def _evaluate_worker(payload: dict[str, Any]) -> dict[str, Any]:
         seed=int(payload["seed"]),
         namespace=str(payload["namespace"]),
         objective_cap=None,
+        root_noise=True,
     )
     scores = []
     labels = []
@@ -233,6 +234,49 @@ def _scientist_only(solved_sets: dict[str, set[str]], name: str) -> list[str]:
     return sorted(solved_sets[name] - other_union)
 
 
+def build_frontier_banks(
+    output: Path,
+    *,
+    exclude_banks: tuple[Path, ...] = (),
+    training_size: int = 40,
+    evaluation_size: int = 40,
+    frontier_pool_size: int = 160,
+    seed: int = 20261860,
+) -> dict[str, Any]:
+    """Freeze paired arm banks from an outcome-blind structural frontier."""
+    excluded = _excluded_ids(exclude_banks)
+    training, evaluation = select_frontier_panels(
+        training_size,
+        evaluation_size,
+        seed=seed,
+        excluded=excluded,
+        frontier_pool_size=frontier_pool_size,
+    )
+    protocol = {
+        "schema": "frontier-arm-banks-v1",
+        "git_revision": _git_revision(),
+        "training_size": training_size,
+        "evaluation_size": evaluation_size,
+        "frontier_pool_size": frontier_pool_size,
+        "seed": seed,
+        "excluded_banks": [
+            {"path": str(path.resolve()), "sha256": _sha256(path)}
+            for path in exclude_banks
+        ],
+        "excluded_identities": len(excluded),
+        "training_sha256": _json_hash(_bank_payload(training)),
+        "evaluation_sha256": _json_hash(_bank_payload(evaluation)),
+    }
+    protocol["protocol_sha256"] = _json_hash(protocol)
+    if output.exists() and any(output.iterdir()):
+        raise FileExistsError(f"frontier-bank output is not empty: {output}")
+    output.mkdir(parents=True, exist_ok=True)
+    _atomic_json(output / "base.json", _bank_payload(training))
+    _atomic_json(output / "evaluation.json", _bank_payload(evaluation))
+    _atomic_json(output / "manifest.json", protocol)
+    return protocol
+
+
 def run_roster_readiness(
     checkpoints: dict[str, Path],
     output: Path,
@@ -265,7 +309,7 @@ def run_roster_readiness(
         frontier_pool_size=frontier_pool_size,
     )
     protocol = {
-        "schema": "frontier-roster-readiness-v1",
+        "schema": "frontier-roster-readiness-v2-stochastic-attempts",
         "git_revision": _git_revision(),
         "checkpoints": {
             name: {"path": str(path.resolve()), "sha256": _sha256(path)}
@@ -289,6 +333,7 @@ def run_roster_readiness(
         "minimum_coverage": minimum_coverage,
         "objective_cap": None,
         "remaining_L_feature": "soft global remainder; never terminates search",
+        "attempt_protocol": "paired-seed-dirichlet-root-noise-temperature-zero",
         "seed": seed,
         "device": device,
     }

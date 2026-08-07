@@ -17,6 +17,7 @@ from pgx_mcts_bench.collaboration_eval import (
     export_collaboration_scientist,
 )
 from pgx_mcts_bench.collaborative_scientists import (
+    _bank_payload,
     _commit_round,
     _refresh_schedule,
     _strict_shared_improvement,
@@ -221,6 +222,35 @@ def test_remaining_budget_channel_is_independent_of_hard_objective_cap(
     assert report["remaining_budget_channel"] is True
     assert report["objective_budget"] is False
     assert report["solution_definition"]["native_action_horizon"] == 128
+
+
+def test_runner_freezes_external_identity_disjoint_banks(tmp_path: Path) -> None:
+    candidate = _window_candidate()
+    config = _config(candidate, ("R(3,12)#0", 0), 0, "cpu", selfplay_games=1)
+    checkpoint = tmp_path / "initial.pt"
+    torch.save(
+        {"network": make_braid_network(config.game, config.model).state_dict()},
+        checkpoint,
+    )
+    bank, anchor = stratified_banks(4, 2, seed=19)
+    bank_path = tmp_path / "bank.json"
+    anchor_path = tmp_path / "anchor.json"
+    bank_path.write_text(json.dumps(_bank_payload(bank)))
+    anchor_path.write_text(json.dumps(_bank_payload(anchor)))
+
+    report = run_collaborative_scientists(
+        {candidate.name: checkpoint},
+        tmp_path / "run",
+        arm="static-no-sharing",
+        rounds=0,
+        input_bank=bank_path,
+        input_anchor_bank=anchor_path,
+    )
+
+    assert report["bank_sha256"]
+    assert report["anchor_sha256"]
+    assert report["input_banks"]["base"]["path"] == str(bank_path.resolve())
+    assert json.loads((tmp_path / "run/base.json").read_text()) == _bank_payload(bank)
 
 
 def test_objective_budget_accepts_exact_cap_and_marks_censoring() -> None:

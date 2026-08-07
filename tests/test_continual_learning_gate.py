@@ -1,12 +1,46 @@
+from types import SimpleNamespace
+
 from pgx_mcts_bench.continual_learning_gate import (
     analyze_paired_smoke,
     analyze_portfolio_progress_smoke,
     cycle_certificate,
     empirical_objective_cap,
     frontier_splits,
+    panel_evaluation,
     portfolio_progress_decision,
     select_rehearsal_identity,
 )
+
+
+def test_panel_evaluation_can_make_attempts_seed_dependent(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        "pgx_mcts_bench.continual_learning_gate._evaluation_scientist",
+        lambda scientist, _horizon: scientist,
+    )
+
+    def fake_record(_scientist, _knot, _ratio, _simulations, seed, **kwargs):
+        calls.append((seed, kwargs["add_root_noise"]))
+        return None, {"scheduled_network_evaluations": 1}
+
+    monkeypatch.setattr(
+        "pgx_mcts_bench.continual_learning_gate._evaluation_record", fake_record
+    )
+    report = panel_evaluation(
+        object(),
+        [SimpleNamespace(id="knot", knot=object())],
+        ratio=10.0,
+        simulations=8,
+        attempts=4,
+        action_horizon=64,
+        seed=7,
+        namespace="paired",
+        root_noise=True,
+    )
+
+    assert len({seed for seed, _ in calls}) == 4
+    assert all(root_noise for _, root_noise in calls)
+    assert report["attempt_protocol"].startswith("paired-seed-dirichlet")
 
 
 def test_frontier_splits_are_disjoint_and_keep_u_diversity() -> None:
