@@ -132,7 +132,13 @@ class FixedWordGame:
     def _budgeted(self, transition: Transition, cap: float) -> Transition:
         solved = self._solved(transition.state)
         remaining = cap - self._spent(transition.state)
-        exhausted = remaining <= 0.0 and not solved
+        # A checkpoint may consume the remaining-L feature even when the
+        # experiment deliberately disables objective-capped termination.  In
+        # that case ``objective_cap`` is None: expose the soft global remainder
+        # but let the ordinary native-action clock decide failure.
+        exhausted = (
+            self.objective_cap is not None and remaining <= 0.0 and not solved
+        )
         terminated = transition.terminated or exhausted
         observation = transition.observation.copy()
         # Encode absolute remaining objective against one fixed scale. Dividing

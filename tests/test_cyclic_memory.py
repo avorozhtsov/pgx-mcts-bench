@@ -75,6 +75,16 @@ def test_builder_loads_window_checkpoint_and_records_provenance(tmp_path: Path) 
     )
     assert loaded.prediction_source == "factorized"
 
+    migrated = load_scientist(
+        "s-cyclic-tape8-192",
+        output,
+        seed=0,
+        device="cpu",
+        require_factorized=True,
+        objective_budget_channel=True,
+    )
+    assert migrated.config.game.objective_budget_channel
+
 
 def test_invariant_pretraining_uses_identity_disjoint_equivalent_views(
     tmp_path: Path,

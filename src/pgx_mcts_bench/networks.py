@@ -1477,6 +1477,8 @@ def load_policy_value_state_dict(
     target_state = network.state_dict()
     expandable_inputs = {
         "representation.net.0.weight",
+        "window.representation.net.0.weight",
+        "input_project.weight",
         "gru.weight_ih_l0",
         "body.0.weight",
     }
@@ -1530,9 +1532,14 @@ def load_policy_value_state_dict(
         expanded = True
 
     incompatible = network.load_state_dict(migrated_state, strict=False)
-    bad_missing = [key for key in incompatible.missing_keys if not key.startswith("auxiliary.")]
+    auxiliary_prefixes = ("auxiliary.", "window.auxiliary.")
+    bad_missing = [
+        key for key in incompatible.missing_keys if not key.startswith(auxiliary_prefixes)
+    ]
     bad_unexpected = [
-        key for key in incompatible.unexpected_keys if not key.startswith("auxiliary.")
+        key
+        for key in incompatible.unexpected_keys
+        if not key.startswith(auxiliary_prefixes)
     ]
     if bad_missing or bad_unexpected:
         raise RuntimeError(

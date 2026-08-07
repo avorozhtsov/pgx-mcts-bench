@@ -222,6 +222,29 @@ def test_objective_budget_accepts_exact_cap_and_marks_censoring() -> None:
     assert float(large.observation[0, 0, -1]) < 1.0
 
 
+def test_budget_channel_without_explicit_cap_is_soft() -> None:
+    candidate = _window_candidate()
+    config = _config(candidate, ("R(3,12)#0", 0), 0, "cpu", selfplay_games=1)
+    config = replace(config, game=replace(config.game, objective_budget_channel=True))
+    game = make_game(config.game)
+    knot = KnotItem("over-budget-unsolved", 1, (1,), 2)
+    fixed = FixedWordGame(game, knot, 10.0)
+    transition = fixed.reset(0)
+
+    # A negative soft remainder is an input feature, not a terminal event.
+    serial_state = transition.state.base_state
+    raw = game.unwrap(serial_state)
+    raw = raw.replace(_crossing_changes=np.int32(2 * config.game.simplify_budget))
+    updated_state = (raw, *serial_state[1:])
+    soft = fixed._budgeted(
+        replace(transition, state=updated_state), fixed._global_cap()
+    )
+
+    assert float(soft.observation[0, 0, -1]) < 0.0
+    assert not soft.terminated
+    assert soft.termination_reason != "objective_budget_exhausted"
+
+
 def test_old_checkpoint_ignores_new_objective_budget_channel(tmp_path: Path) -> None:
     by_name = {candidate.name: candidate for candidate in candidates()}
     knot = KnotItem("stabilized-unknot", 1, (1,), 2)

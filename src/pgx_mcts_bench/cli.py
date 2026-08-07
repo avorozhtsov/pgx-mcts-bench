@@ -129,6 +129,66 @@ def braid_structural_budget_audit(
     )
 
 
+@app.command("braid-roster-readiness")
+def braid_roster_readiness(
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    scientist: Annotated[
+        list[str],
+        typer.Option(help="Repeat NAME=CHECKPOINT for the proposed roster"),
+    ],
+    exclude_bank: Annotated[
+        list[Path] | None,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Repeat for protected identity banks",
+        ),
+    ] = None,
+    calibration_size: Annotated[int, typer.Option(min=4)] = 12,
+    confirmation_size: Annotated[int, typer.Option(min=4)] = 24,
+    attempts: Annotated[int, typer.Option(min=1)] = 4,
+    ratio: Annotated[float, typer.Option(min=0.01)] = 1000.0,
+    simulation_doses: str = "64,128,256",
+    action_horizon: Annotated[int, typer.Option(min=1)] = 128,
+    minimum_coverage: Annotated[float, typer.Option(min=0.7, max=1.0)] = 0.70,
+    seed: int = 20261840,
+    workers: Annotated[int, typer.Option(min=1)] = 4,
+    device: str = "cpu",
+    resume: bool = False,
+) -> None:
+    """Select a frontier dose and qualify every scientist's solve critic."""
+    from pgx_mcts_bench.roster_readiness import run_roster_readiness
+
+    checkpoints: dict[str, Path] = {}
+    for value in scientist:
+        if "=" not in value:
+            raise typer.BadParameter("--scientist must be NAME=CHECKPOINT")
+        name, raw_path = value.split("=", 1)
+        path = Path(raw_path)
+        if not path.is_file():
+            raise typer.BadParameter(f"checkpoint does not exist: {path}")
+        checkpoints[name] = path
+    report = run_roster_readiness(
+        checkpoints,
+        output,
+        exclude_banks=tuple(exclude_bank or ()),
+        calibration_size=calibration_size,
+        confirmation_size=confirmation_size,
+        attempts=attempts,
+        ratio=ratio,
+        simulation_doses=tuple(
+            int(value) for value in simulation_doses.split(",") if value.strip()
+        ),
+        action_horizon=action_horizon,
+        minimum_coverage=minimum_coverage,
+        seed=seed,
+        workers=workers,
+        device=device,
+        resume=resume,
+    )
+    typer.echo(json.dumps(report["decision"], indent=2))
+
+
 @app.command("braid-budget-heldout-gate")
 def braid_budget_heldout_gate(
     baseline_checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
