@@ -195,6 +195,34 @@ def test_solo_compute_matched_requires_one_scientist(tmp_path: Path) -> None:
         )
 
 
+def test_remaining_budget_channel_is_independent_of_hard_objective_cap(
+    tmp_path: Path,
+) -> None:
+    candidate = _window_candidate()
+    config = _config(candidate, ("R(3,12)#0", 0), 0, "cpu", selfplay_games=1)
+    checkpoint = tmp_path / "initial.pt"
+    torch.save(
+        {"network": make_braid_network(config.game, config.model).state_dict()},
+        checkpoint,
+    )
+
+    report = run_collaborative_scientists(
+        {candidate.name: checkpoint},
+        tmp_path / "run",
+        arm="static-no-sharing",
+        rounds=0,
+        pool_size=2,
+        anchor_size=1,
+        remaining_budget_channel=True,
+        objective_budget=False,
+        action_horizon=128,
+    )
+
+    assert report["remaining_budget_channel"] is True
+    assert report["objective_budget"] is False
+    assert report["solution_definition"]["native_action_horizon"] == 128
+
+
 def test_objective_budget_accepts_exact_cap_and_marks_censoring() -> None:
     candidate = _window_candidate()
     config = _config(candidate, ("R(3,12)#0", 0), 0, "cpu", selfplay_games=1)
@@ -505,7 +533,7 @@ def test_minimal_run_resumes_from_committed_round(tmp_path: Path) -> None:
     resumed = run_collaborative_scientists(rounds=2, resume=True, **kwargs)
     assert first["completed_rounds"] == 1
     assert resumed["completed_rounds"] == 2
-    assert first["schema"] == "collaborative-scientists-v5-common-structural-budget"
+    assert first["schema"] == "collaborative-scientists-v6-soft-budget-horizon"
     assert first["objective_budget_attempt_protocol"]["scientist_prediction_used"] is False
     assert first["solution_definition"]["native_action_horizon"] == 64
     assert first["solution_definition"]["moves"].startswith("verified portable semantic")
@@ -524,6 +552,8 @@ def test_minimal_run_resumes_from_committed_round(tmp_path: Path) -> None:
     )
     assert exported["checkpoint_sha256"]
     assert evaluated["completed_items"] == 1
+    assert evaluated["attempts_per_representation"] == 4
+    assert len(json.loads((tmp_path / "evaluation/items/0000.json").read_text())["attempts"]) == 4
 
 
 def test_primary_sharing_gate_uses_aggregate_objective_not_exact_retention() -> None:

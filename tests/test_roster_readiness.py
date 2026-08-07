@@ -4,6 +4,7 @@ from pathlib import Path
 
 import torch
 
+from pgx_mcts_bench.collaborative_scientists import _cheap_score, _compatible_table
 from pgx_mcts_bench.roster_readiness import (
     _calibrate_checkpoint,
     _critic_checks,
@@ -18,6 +19,7 @@ def test_frontier_panels_are_stratified_disjoint_and_respect_exclusions() -> Non
         20,
         seed=7,
         excluded=excluded,
+        frontier_pool_size=64,
     )
 
     calibration_ids = {item.id for item in calibration}
@@ -28,6 +30,11 @@ def test_frontier_panels_are_stratified_disjoint_and_respect_exclusions() -> Non
     assert not (calibration_ids | confirmation_ids) & excluded
     assert {item.difficulty_quartile for item in calibration} == {0, 1, 2, 3}
     assert {item.difficulty_quartile for item in confirmation} == {0, 1, 2, 3}
+    eligible = sorted(
+        (knot for knot in _compatible_table() if knot.name not in excluded),
+        key=lambda knot: (_cheap_score(knot), knot.crossings, len(knot.word), knot.name),
+    )
+    assert calibration_ids | confirmation_ids <= {knot.name for knot in eligible[:64]}
 
 
 def test_calibration_composes_with_existing_checkpoint_transform(

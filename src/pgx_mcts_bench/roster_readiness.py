@@ -19,6 +19,7 @@ from pgx_mcts_bench.collaborative_scientists import (
     _bank_from_payload,
     _bank_item,
     _bank_payload,
+    _cheap_score,
     _compatible_table,
     _json_hash,
     _sha256,
@@ -57,18 +58,33 @@ def select_frontier_panels(
     *,
     seed: int,
     excluded: set[str] | None = None,
+    frontier_pool_size: int | None = None,
 ) -> tuple[list[Any], list[Any]]:
-    """Select difficulty-stratified, identity-disjoint table-knot panels."""
+    """Select difficulty-stratified, identity-disjoint table-knot panels.
+
+    When ``frontier_pool_size`` is set, the four strata are formed only after
+    taking that many structurally easiest eligible representations.  This is an
+    outcome-blind capability frontier; it avoids calling a uniform sample of the
+    complete 3--12-crossing table a readiness panel.
+    """
     if calibration_size < 4 or confirmation_size < 4:
         raise ValueError("frontier panels need at least four identities each")
-    compatible = sorted(_compatible_table(), key=lambda knot: (knot.crossings, knot.name))
-    quartiles = np.array_split(np.asarray(compatible, dtype=object), 4)
     excluded = set(excluded or set())
+    compatible = sorted(
+        (knot for knot in _compatible_table() if knot.name not in excluded),
+        key=lambda knot: (_cheap_score(knot), knot.crossings, len(knot.word), knot.name),
+    )
+    required = calibration_size + confirmation_size
+    if frontier_pool_size is not None:
+        if frontier_pool_size < required:
+            raise ValueError("frontier_pool_size must cover both readiness panels")
+        compatible = compatible[:frontier_pool_size]
+    quartiles = np.array_split(np.asarray(compatible, dtype=object), 4)
     calibration_items = []
     confirmation_items = []
     for quartile, items in enumerate(quartiles):
         ranked = sorted(
-            (item for item in items if item.name not in excluded),
+            items,
             key=lambda item: hashlib.sha256(
                 f"frontier-readiness:{seed}:{quartile}:{item.name}".encode()
             ).digest(),
@@ -224,6 +240,7 @@ def run_roster_readiness(
     exclude_banks: tuple[Path, ...] = (),
     calibration_size: int = 12,
     confirmation_size: int = 24,
+    frontier_pool_size: int = 96,
     attempts: int = 4,
     ratio: float = 1000.0,
     simulation_doses: tuple[int, ...] = (64, 128, 256),
@@ -245,6 +262,7 @@ def run_roster_readiness(
         confirmation_size,
         seed=seed,
         excluded=excluded,
+        frontier_pool_size=frontier_pool_size,
     )
     protocol = {
         "schema": "frontier-roster-readiness-v1",
@@ -259,6 +277,11 @@ def run_roster_readiness(
         "excluded_identities": len(excluded),
         "calibration_size": calibration_size,
         "confirmation_size": confirmation_size,
+        "frontier_pool_size": frontier_pool_size,
+        "frontier_definition": (
+            "structurally easiest eligible table representations by cheap score, "
+            "then four within-frontier strata"
+        ),
         "attempts_per_representation": attempts,
         "ratio": ratio,
         "simulation_doses": list(simulation_doses),

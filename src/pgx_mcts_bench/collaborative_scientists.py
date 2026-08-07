@@ -36,6 +36,7 @@ from pgx_mcts_bench.adaptive_scientists import (
 from pgx_mcts_bench.data import GameRecord, Position
 from pgx_mcts_bench.distill import _best_destination, train_bounded_option_step
 from pgx_mcts_bench.networks import load_policy_value_state_dict
+from pgx_mcts_bench.game import make_game
 from pgx_mcts_bench.search import NeuralMCTS
 from pgx_mcts_bench.serial_braid import SerialBraidGame
 from pgx_mcts_bench.training import (
@@ -53,7 +54,7 @@ Arm = Literal[
     "solo-compute-matched",
 ]
 
-_WORKER_SCIENTISTS: dict[tuple[str, str, str, bool], Scientist] = {}
+_WORKER_SCIENTISTS: dict[tuple[str, str, str, bool, int], Scientist] = {}
 
 
 @dataclass(frozen=True)
@@ -562,10 +563,12 @@ def _worker_play_bundle(
     seeds: tuple[int, ...],
     device: str,
     objective_budget: bool,
+    remaining_budget_channel: bool,
+    action_horizon: int,
 ) -> list[AttemptRun]:
     """Process-pool entrypoint; one network transfer serves every ratio."""
     torch.set_num_threads(1)
-    key = (name, checkpoint, device, objective_budget)
+    key = (name, checkpoint, device, remaining_budget_channel, action_horizon)
     scientist = _WORKER_SCIENTISTS.get(key)
     if scientist is None:
         scientist = load_scientist(
@@ -575,8 +578,13 @@ def _worker_play_bundle(
             device=device,
             simulations=simulations,
             require_factorized=True,
-            objective_budget_channel=objective_budget,
+            objective_budget_channel=remaining_budget_channel,
         )
+        scientist.config = replace(
+            scientist.config,
+            game=replace(scientist.config.game, simplify_budget=action_horizon),
+        )
+        scientist.game = make_game(scientist.config.game)
         _WORKER_SCIENTISTS[key] = scientist
     load_policy_value_state_dict(scientist.network, network_state)
     return [
@@ -602,6 +610,8 @@ def _play_bundles(
             int,
             tuple[int, ...],
             bool,
+            bool,
+            int,
         ]
     ],
 ) -> list[list[AttemptRun]]:
@@ -625,6 +635,8 @@ def _play_bundles(
                 simulations,
                 seeds,
                 objective_budget,
+                _remaining_budget_channel,
+                _action_horizon,
             ) in jobs
         ]
     futures = [
@@ -639,6 +651,8 @@ def _play_bundles(
             seeds,
             scientist.config.train.device,
             objective_budget,
+            remaining_budget_channel,
+            action_horizon,
         )
         for (
             scientist,
@@ -647,6 +661,8 @@ def _play_bundles(
             simulations,
             seeds,
             objective_budget,
+            remaining_budget_channel,
+            action_horizon,
         ) in jobs
     ]
     return [future.result() for future in futures]
@@ -989,13 +1005,19 @@ def _manifest(
     train_steps: int,
     attempt_workers: int,
     objective_budget: bool,
+    remaining_budget_channel: bool,
     native_action_horizon: int,
     bank_seed: int,
     seed: int,
 ) -> dict[str, Any]:
     protocol = {
-        "schema": "collaborative-scientists-v5-common-structural-budget",
+        "schema": "collaborative-scientists-v6-soft-budget-horizon",
         "arm": arm,
+        "schedule": (
+            "adaptive-neural-priority"
+            if arm.startswith("adaptive") or arm == "solo-compute-matched"
+            else "static-cheap-score"
+        ),
         "ratios": list(ratios),
         "frontier": frontier,
         "qualification_simulations": qualification_simulations,
@@ -1004,6 +1026,7 @@ def _manifest(
         "train_steps": train_steps,
         "attempt_workers": attempt_workers,
         "objective_budget": objective_budget,
+        "remaining_budget_channel": remaining_budget_channel,
         "objective_budget_encoding": "remaining-semantic-L-absolute-global-v3",
         "objective_budget_attempt_protocol": {
             "first_cap": (
@@ -1125,6 +1148,8 @@ def run_collaborative_scientists(
     batch_size: int = 32,
     attempt_workers: int = 1,
     objective_budget: bool = False,
+    remaining_budget_channel: bool = False,
+    action_horizon: int | None = None,
     bank_seed: int = 0,
     seed: int = 0,
     device: str = "cpu",
@@ -1147,6 +1172,10 @@ def run_collaborative_scientists(
         raise ValueError("attempt_workers must be positive")
     if train_steps < 0:
         raise ValueError("train_steps must be non-negative")
+    # A hard objective cap necessarily needs the remaining-L observation.  The
+    # converse is intentionally false: new experiments expose the feature while
+    # treating the action horizon, rather than a predicted L, as the only cap.
+    remaining_budget_channel = remaining_budget_channel or objective_budget
     scientists = [
         load_scientist(
             name,
@@ -1155,10 +1184,19 @@ def run_collaborative_scientists(
             device=device,
             simulations=simulations,
             require_factorized=True,
-            objective_budget_channel=objective_budget,
+            objective_budget_channel=remaining_budget_channel,
         )
         for index, (name, path) in enumerate(checkpoints.items())
     ]
+    if action_horizon is not None:
+        if action_horizon < 1:
+            raise ValueError("action_horizon must be positive")
+        for scientist in scientists:
+            scientist.config = replace(
+                scientist.config,
+                game=replace(scientist.config.game, simplify_budget=action_horizon),
+            )
+            scientist.game = make_game(scientist.config.game)
     action_horizons = {int(scientist.config.game.simplify_budget) for scientist in scientists}
     if len(action_horizons) != 1:
         raise ValueError(
@@ -1190,6 +1228,7 @@ def run_collaborative_scientists(
             train_steps=train_steps,
             attempt_workers=attempt_workers,
             objective_budget=objective_budget,
+            remaining_budget_channel=remaining_budget_channel,
             native_action_horizon=native_action_horizon,
             bank_seed=bank_seed,
             seed=seed,
@@ -1213,6 +1252,7 @@ def run_collaborative_scientists(
             train_steps=train_steps,
             attempt_workers=attempt_workers,
             objective_budget=objective_budget,
+            remaining_budget_channel=remaining_budget_channel,
             native_action_horizon=native_action_horizon,
             bank_seed=bank_seed,
             seed=seed,
@@ -1261,7 +1301,8 @@ def run_collaborative_scientists(
     for round_index in range(len(processed), target_rounds):
         active = [by_id[item_id] for item_id in active_ids]
         score_rows = [expected_capped_scores(scientist, active, ratios) for scientist in scientists]
-        if arm.startswith("adaptive"):
+        adaptive_schedule = arm.startswith("adaptive") or arm == "solo-compute-matched"
+        if adaptive_schedule:
             proposals = [int(np.argmin(scores)) for scores in score_rows]
         else:
             static_index = min(
@@ -1285,6 +1326,8 @@ def run_collaborative_scientists(
                     qualification_simulations,
                     seeds,
                     objective_budget,
+                    remaining_budget_channel,
+                    native_action_horizon,
                 )
             )
         qualification_records = _play_bundles(executor, qualification_jobs)
@@ -1312,7 +1355,7 @@ def run_collaborative_scientists(
                 (total, float(score_rows[scientist_index][proposal_index]), scientist_index)
             )
 
-        if arm.startswith("adaptive"):
+        if adaptive_schedule:
             _, _, selecting_scientist = min(proposal_totals)
             selected_index = proposals[selecting_scientist]
         else:
@@ -1345,6 +1388,8 @@ def run_collaborative_scientists(
                     simulations,
                     seeds,
                     objective_budget,
+                    remaining_budget_channel,
+                    native_action_horizon,
                 )
             )
         full_records = _play_bundles(executor, full_jobs)

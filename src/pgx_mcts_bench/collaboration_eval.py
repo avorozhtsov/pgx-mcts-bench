@@ -28,6 +28,7 @@ from pgx_mcts_bench.collaborative_scientists import (
     verified_record_cost,
 )
 from pgx_mcts_bench.data import GameRecord, Position
+from pgx_mcts_bench.game import make_game
 from pgx_mcts_bench.search import NeuralMCTS
 
 
@@ -46,6 +47,7 @@ def export_collaboration_scientist(run: Path, name: str, output: Path) -> dict[s
         "network": scientist["network"],
         "optimizer": scientist["optimizer"],
         "candidate_spec": source_payload.get("candidate_spec"),
+        "solve_calibration": source_payload.get("solve_calibration", {}),
         "collaboration": {
             "run": str(run.resolve()),
             "protocol_sha256": manifest["protocol_sha256"],
@@ -134,12 +136,15 @@ def evaluate_collaboration(
     state: Literal["initial", "final"] = "final",
     split: Literal["new70", "base"] = "new70",
     simulations: int = 128,
+    attempts_per_representation: int = 4,
     limit: int = 0,
     seed: int = 0,
     device: str = "cpu",
     resume: bool = False,
     bank: Path | None = None,
 ) -> dict[str, Any]:
+    if attempts_per_representation < 1:
+        raise ValueError("attempts_per_representation must be positive")
     run_manifest = json.loads((run / "manifest.json").read_text())
     source = bank or run / ("new-70.json" if split == "new70" else "base.json")
     items = _bank_from_payload(json.loads(source.read_text()))
@@ -147,7 +152,7 @@ def evaluate_collaboration(
         items = items[:limit]
     ratios = tuple(float(value) for value in run_manifest["ratios"])
     protocol = {
-        "schema": "collaboration-evaluation-v1",
+        "schema": "collaboration-evaluation-v2-paired-attempts",
         "run": str(run.resolve()),
         "run_protocol_sha256": run_manifest["protocol_sha256"],
         "state": state,
@@ -155,6 +160,7 @@ def evaluate_collaboration(
         "external_bank": str(bank.resolve()) if bank is not None else None,
         "split_sha256": _json_hash(json.loads(source.read_text())),
         "simulations": simulations,
+        "attempts_per_representation": attempts_per_representation,
         "limit": limit,
         "seed": seed,
     }
@@ -180,7 +186,12 @@ def evaluate_collaboration(
             device=device,
             simulations=simulations,
             require_factorized=True,
-            objective_budget_channel=bool(run_manifest.get("objective_budget", False)),
+            objective_budget_channel=bool(
+                run_manifest.get(
+                    "remaining_budget_channel",
+                    run_manifest.get("objective_budget", False),
+                )
+            ),
         )
         for index, item in enumerate(run_manifest["checkpoints"])
     ]
@@ -191,6 +202,17 @@ def evaluate_collaboration(
         saved = load_round_state(rounds[-1], map_location=device)
         for scientist in scientists:
             _restore_scientist(scientist, saved["scientists"][scientist.name])
+    action_horizon = int(
+        run_manifest.get("solution_definition", {}).get(
+            "native_action_horizon", scientists[0].config.game.simplify_budget
+        )
+    )
+    for scientist in scientists:
+        scientist.config = replace(
+            scientist.config,
+            game=replace(scientist.config.game, simplify_budget=action_horizon),
+        )
+        scientist.game = make_game(scientist.config.game)
 
     item_dir = output / "items"
     item_dir.mkdir(parents=True, exist_ok=True)
@@ -201,26 +223,31 @@ def evaluate_collaboration(
         attempts = []
         for scientist_index, scientist in enumerate(scientists):
             for ratio_index, ratio in enumerate(ratios):
-                attempt_seed = (
-                    seed + item_index * 1_000_000
-                    + scientist_index * 10_000 + ratio_index
-                )
-                verified, compute = _evaluation_record(
-                    scientist, item.knot, ratio, simulations, attempt_seed
-                )
-                row = {
-                    "scientist": scientist.name,
-                    "ratio": ratio,
-                    "solved": verified is not None,
-                    "compute": compute,
-                }
-                if verified is not None:
-                    row.update(
-                        crossing_changes=verified[0],
-                        moves=verified[1],
-                        objective=ratio * verified[0] + verified[1],
+                for attempt_index in range(attempts_per_representation):
+                    attempt_seed = (
+                        seed
+                        + item_index * 1_000_000
+                        + scientist_index * 10_000
+                        + ratio_index * 1_000
+                        + attempt_index
                     )
-                attempts.append(row)
+                    verified, compute = _evaluation_record(
+                        scientist, item.knot, ratio, simulations, attempt_seed
+                    )
+                    row = {
+                        "scientist": scientist.name,
+                        "ratio": ratio,
+                        "attempt": attempt_index,
+                        "solved": verified is not None,
+                        "compute": compute,
+                    }
+                    if verified is not None:
+                        row.update(
+                            crossing_changes=verified[0],
+                            moves=verified[1],
+                            objective=ratio * verified[0] + verified[1],
+                        )
+                    attempts.append(row)
         _atomic_json(
             path,
             {
