@@ -5,10 +5,9 @@ mode=${1:-local}
 artifact_root=${2:-artifacts/collaboration-pilot-200}
 bank_seed=${BANK_SEED:-20260802}
 ratios=${RATIOS:-10}
-# Predicted caps stay opt-in until every scientist used by the arm passes its
-# own source-disjoint calibration and paired-retention gate.
+# The common structural first cap stays opt-in until the paired compute gate.
+# It is representation-derived and never uses one scientist's predicted cost.
 objective_budget=${OBJECTIVE_BUDGET:-0}
-objective_budget_audit_every=${OBJECTIVE_BUDGET_AUDIT_EVERY:-10}
 
 window_checkpoint=${WINDOW_CHECKPOINT:-artifacts/nebius-rung18-20260801-current/runs/s-window-128/checkpoints/s-window-128/stage21-after.pt}
 tape_checkpoint=${TAPE_CHECKPOINT:-artifacts/local-rung18-backfill-20260802/runs/s-tape4/checkpoints/s-tape4/stage18-after.pt}
@@ -171,10 +170,7 @@ launch_one() {
   fi
   local budget_args=()
   if [[ "$objective_budget" == 1 ]]; then
-    budget_args=(
-      --objective-budget
-      --objective-budget-audit-every "$objective_budget_audit_every"
-    )
+    budget_args=(--objective-budget)
   fi
   OMP_NUM_THREADS=$threads \
   MKL_NUM_THREADS=$threads \

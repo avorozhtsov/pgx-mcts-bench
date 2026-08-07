@@ -128,8 +128,10 @@ def braid_budget_critic_curriculum(
     seed: int = 20261040,
     device: str = "cpu",
     bank: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
+    curriculum_source: str = "early-rungs",
+    monotonic_weight: Annotated[float | None, typer.Option(min=0.0)] = None,
 ) -> None:
-    """Train one budget-conditioned roster critic on the simplest knots."""
+    """Train one budget-conditioned roster critic on the early ladder by default."""
     from pgx_mcts_bench.budget_curriculum import train_budget_curriculum
 
     report = train_budget_curriculum(
@@ -149,6 +151,44 @@ def braid_budget_critic_curriculum(
         seed=seed,
         device=device,
         bank=bank,
+        curriculum_source=curriculum_source,
+        monotonic_weight=monotonic_weight,
+    )
+    typer.echo(json.dumps(report["decision"], indent=2))
+
+
+@app.command("braid-semantic-budget-migration-gate")
+def braid_semantic_budget_migration_gate(
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    checkpoint: Annotated[list[str] | None, typer.Option()] = None,
+    items: Annotated[int, typer.Option(min=1)] = 3,
+    behavior_items: Annotated[int, typer.Option(min=1)] = 2,
+    simulations: Annotated[int, typer.Option(min=1)] = 8,
+    seed: int = 20261130,
+    device: str = "cpu",
+) -> None:
+    """Verify real roster checkpoints are unchanged by the new budget input."""
+    from pgx_mcts_bench.semantic_migration import run_semantic_budget_migration_gate
+
+    checkpoints: dict[str, Path] = {}
+    for assignment in checkpoint or []:
+        if "=" not in assignment:
+            raise typer.BadParameter("checkpoint must be NAME=PATH")
+        name, raw_path = assignment.split("=", 1)
+        path = Path(raw_path)
+        if not path.is_file():
+            raise typer.BadParameter(f"missing checkpoint: {path}")
+        checkpoints[name] = path
+    if not checkpoints:
+        raise typer.BadParameter("at least one --checkpoint NAME=PATH is required")
+    report = run_semantic_budget_migration_gate(
+        checkpoints,
+        output,
+        items=items,
+        behavior_items=behavior_items,
+        simulations=simulations,
+        seed=seed,
+        device=device,
     )
     typer.echo(json.dumps(report["decision"], indent=2))
 
@@ -555,15 +595,19 @@ def braid_interleaved_sharing_gate(
     donor_name: str = "s-window-128",
     ratio: float = 10.0,
     simulations: Annotated[int, typer.Option(min=1)] = 64,
+    evaluation_simulations: Annotated[int | None, typer.Option(min=1)] = None,
     evaluation_games: Annotated[int, typer.Option(min=1)] = 4,
     update_cycles: Annotated[int, typer.Option(min=1)] = 8,
     batch_size: Annotated[int, typer.Option(min=1)] = 16,
     option_learning_rate_scale: Annotated[float, typer.Option(min=0.001)] = 1.0,
-    option_target_reduction: Annotated[float, typer.Option(min=0.001, max=0.999)] = 0.1,
-    max_option_steps: Annotated[int, typer.Option(min=1)] = 16,
+    sharing_block_size: Annotated[int, typer.Option(min=1)] = 10,
+    sharing_interval_cycles: Annotated[int, typer.Option(min=1)] = 10,
+    adapter_steps_per_block: Annotated[int, typer.Option(min=1)] = 16,
+    option_positions_per_witness: Annotated[int, typer.Option(min=1)] = 4,
     witness_bank: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
     item: Annotated[list[str] | None, typer.Option()] = None,
     target_item: Annotated[list[str] | None, typer.Option()] = None,
+    generalization_item: Annotated[list[str] | None, typer.Option()] = None,
     native_refresh_games: Annotated[int, typer.Option(min=0)] = 0,
     evaluation_workers: Annotated[int, typer.Option(min=1)] = 1,
     gated_adapter: bool = False,
@@ -597,15 +641,19 @@ def braid_interleaved_sharing_gate(
         donor_name=donor_name,
         ratio=ratio,
         simulations=simulations,
+        evaluation_simulations=evaluation_simulations,
         evaluation_games=evaluation_games,
         update_cycles=update_cycles,
         batch_size=batch_size,
         option_learning_rate_scale=option_learning_rate_scale,
-        option_target_reduction=option_target_reduction,
-        max_option_steps=max_option_steps,
+        sharing_block_size=sharing_block_size,
+        sharing_interval_cycles=sharing_interval_cycles,
+        adapter_steps_per_block=adapter_steps_per_block,
+        option_positions_per_witness=option_positions_per_witness,
         witness_bank=witness_bank,
         item_ids=tuple(item or ()),
         target_item_ids=tuple(target_item or ()),
+        generalization_item_ids=tuple(generalization_item or ()),
         native_refresh_games=native_refresh_games,
         evaluation_workers=evaluation_workers,
         gated_adapter=gated_adapter,
@@ -617,6 +665,60 @@ def braid_interleaved_sharing_gate(
         device=device,
     )
     typer.echo(json.dumps(report["decision"], indent=2))
+
+
+@app.command("braid-sharing-multiseed-summary")
+def braid_sharing_multiseed_summary(
+    run: Annotated[list[Path], typer.Option(exists=True, file_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+) -> None:
+    """Summarize three or more paired v11 semantic-cost sharing seeds."""
+    from pgx_mcts_bench.sharing_gate import summarize_sharing_multiseed
+
+    report = summarize_sharing_multiseed(tuple(run), output)
+    typer.echo(json.dumps(report["decision"], indent=2))
+
+
+@app.command("braid-sharing-simulation-dose")
+def braid_sharing_simulation_dose(
+    gate_run: Annotated[Path, typer.Option(exists=True, file_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    simulations: str = "32,64,128,256",
+    evaluation_games: Annotated[int, typer.Option(min=1)] = 4,
+    evaluation_workers: Annotated[int, typer.Option(min=1)] = 4,
+    seed: int = 20260970,
+    device: str = "cpu",
+) -> None:
+    """Evaluate a trained sharing/control pair over several MCTS budgets."""
+    from pgx_mcts_bench.sharing_gate import run_sharing_simulation_dose
+
+    levels = tuple(int(value) for value in simulations.split(",") if value.strip())
+    report = run_sharing_simulation_dose(
+        gate_run,
+        output,
+        simulations=levels,
+        evaluation_games=evaluation_games,
+        evaluation_workers=evaluation_workers,
+        seed=seed,
+        device=device,
+    )
+    summary = {
+        name: [
+            {
+                key: row[key]
+                for key in (
+                    "simulations",
+                    "sharing_capped_loss",
+                    "control_capped_loss",
+                    "sharing_only",
+                    "control_only",
+                )
+            }
+            for row in receiver["rows"]
+        ]
+        for name, receiver in report["receivers"].items()
+    }
+    typer.echo(json.dumps(summary, indent=2))
 
 
 @app.command("braid-multi-witness-screen")
@@ -656,6 +758,22 @@ def braid_multi_witness_screen(
         device=device,
     )
     typer.echo(json.dumps(report["decision"], indent=2))
+
+
+@app.command("braid-mine-semantic-witnesses")
+def braid_mine_semantic_witnesses(
+    source_run: Annotated[Path, typer.Option(exists=True, file_okay=False)],
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    ratio: float = 10.0,
+    device: str = "cpu",
+) -> None:
+    """Replay historical native solutions into a semantic-cost v2 witness bank."""
+    from pgx_mcts_bench.multi_witness import write_certified_witness_bank
+
+    report = write_certified_witness_bank(
+        source_run, output, ratio=ratio, device=device
+    )
+    typer.echo(json.dumps(report, indent=2))
 
 
 @app.command("braid-adapter-counterfactual")
@@ -909,7 +1027,6 @@ def braid_collaborative_scientists(
     batch_size: Annotated[int, typer.Option(min=1)] = 32,
     attempt_workers: Annotated[int, typer.Option(min=1)] = 1,
     objective_budget: bool = False,
-    objective_budget_audit_every: Annotated[int, typer.Option(min=0)] = 10,
     bank_seed: int = 0,
     seed: int = 0,
     device: str = "cpu",
@@ -946,7 +1063,6 @@ def braid_collaborative_scientists(
         batch_size=batch_size,
         attempt_workers=attempt_workers,
         objective_budget=objective_budget,
-        objective_budget_audit_every=objective_budget_audit_every,
         bank_seed=bank_seed,
         seed=seed,
         device=device,
@@ -1952,7 +2068,7 @@ def braid_multi(
                 solved += won
                 if won:
                     crossings += int(np.asarray(final._crossing_changes))
-                    moves += int(game_cfg.simplify_budget - int(np.asarray(final._budget)))
+                    moves += game.semantic_move_count(t.state)
             row = {
                 "source": source.name,
                 "u": source.unknotting_number,

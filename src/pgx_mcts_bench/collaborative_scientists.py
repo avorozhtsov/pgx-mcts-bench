@@ -88,20 +88,6 @@ def _json_hash(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
-def _objective_audit_selected(
-    scientist: str,
-    knot: KnotItem,
-    ratio: float,
-    seed: int,
-    every: int,
-) -> bool:
-    if every <= 0:
-        return False
-    key = f"{scientist}:{knot.name}:{ratio}:{seed}".encode()
-    bucket = int.from_bytes(hashlib.sha256(key).digest()[:8], "big")
-    return bucket % every == 0
-
-
 def _compatible_table() -> list[KnotItem]:
     from rf_knots.knot_table import load_table
 
@@ -375,7 +361,12 @@ def play_with_objective_restarts(
     max_restarts: int | None = None,
     retained_records: list[GameRecord] | None = None,
 ) -> tuple[GameRecord, dict[str, Any]]:
-    """Use a learned attempt cap without turning underestimation into failure."""
+    """Run the historical, rejected learned-cap budget-savings ablation.
+
+    The collaboration runner does not call this helper.  It remains available
+    only so old budget-savings artifacts can be reproduced and compared with
+    the prediction-independent structural-cap protocol.
+    """
     if not scientist.config.game.objective_budget_channel:
         raise ValueError("objective restart search requires its observation channel")
     global_cap = (ratio + 1.0) * scientist.config.game.simplify_budget
@@ -399,18 +390,25 @@ def play_with_objective_restarts(
             retained_records.append(record)
         solved = bool(record and record[0].solved > 0.5)
         final_moves = float(record[0].final_moves) if record else 0.0
+        final_native_plies = (
+            float(record[0].final_native_plies) if record else 0.0
+        )
         # If the ordinary move clock fired, raising an objective cap cannot add
         # search depth. Otherwise an unsolved attempt below the global cap is a
         # censored result and must be retried geometrically.
-        objective_exhausted = (
-            not solved and cap < global_cap and final_moves < scientist.config.game.simplify_budget
+        objective_exhausted = bool(
+            record
+            and record[0].objective_censored
+            and not solved
+            and cap < global_cap
         )
         attempts.append(
             {
                 "cap": cap,
                 "solved": solved,
                 "objective_budget_exhausted": objective_exhausted,
-                "moves": final_moves,
+                "semantic_moves": final_moves,
+                "native_plies": final_native_plies,
             }
         )
         if (
@@ -438,6 +436,99 @@ def play_with_objective_restarts(
         attempt_index += 1
 
 
+def common_structural_objective_cap(
+    knot: KnotItem,
+    ratio: float,
+    action_horizon: int,
+) -> float:
+    """Return a scientist-independent first budget for one representation.
+
+    A local serial critic cannot see the unseen part of the braid at its initial
+    head position, so its predicted cost is not admissible as an attempt cap.
+    The common first tier instead uses the complete observed braid-word length.
+    It permits one crossing change for every two observed intersections plus the
+    full semantic-move allowance.  This is an economical probe, not a claim that
+    the environment can solve the representation within that tier; every
+    budget-censored failure is retried at the declared global cap.
+    """
+    if ratio <= 0.0 or not math.isfinite(ratio):
+        raise ValueError("objective ratio must be finite and positive")
+    if action_horizon < 1:
+        raise ValueError("action horizon must be positive")
+    observed_intersections = len(knot.word)
+    crossing_allowance = math.ceil(observed_intersections / 2)
+    global_cap = (ratio + 1.0) * action_horizon
+    structural_cap = ratio * crossing_allowance + action_horizon
+    return float(min(global_cap, max(1.0, structural_cap)))
+
+
+def play_with_common_objective_restarts(
+    scientist: Scientist,
+    knot: KnotItem,
+    ratio: float,
+    *,
+    simulations: int,
+    seed: int,
+    retained_records: list[GameRecord] | None = None,
+) -> tuple[GameRecord, dict[str, Any]]:
+    """Run a common structural probe, then recover every censored failure.
+
+    The first cap depends only on the complete representation and the declared
+    action horizon, never on one scientist's local value prediction.  A capped
+    failure restarts once, with the same seed, at the common global cap.  An
+    ordinary action-horizon failure is not rerun because it was not censored by
+    the objective budget.
+    """
+    if not scientist.config.game.objective_budget_channel:
+        raise ValueError("objective restart search requires its observation channel")
+    action_horizon = int(scientist.config.game.simplify_budget)
+    global_cap = (ratio + 1.0) * action_horizon
+    initial_cap = common_structural_objective_cap(knot, ratio, action_horizon)
+    caps = [initial_cap] if initial_cap >= global_cap else [initial_cap, global_cap]
+    attempts: list[dict[str, Any]] = []
+    final_record: GameRecord | None = None
+    for attempt_index, cap in enumerate(caps):
+        record = _play(
+            scientist,
+            knot,
+            ratio,
+            simulations=simulations,
+            seed=seed,
+            objective_cap=cap,
+            cap_type="structural" if attempt_index == 0 else "common-global-restart",
+        )
+        final_record = record
+        if retained_records is not None:
+            retained_records.append(record)
+        solved = bool(record and record[0].solved > 0.5)
+        objective_exhausted = bool(
+            record and record[0].objective_censored and not solved and cap < global_cap
+        )
+        attempts.append(
+            {
+                "cap": cap,
+                "cap_type": "structural" if attempt_index == 0 else "common-global-restart",
+                "solved": solved,
+                "objective_budget_exhausted": objective_exhausted,
+                "semantic_moves": float(record[0].final_moves) if record else 0.0,
+                "native_plies": float(record[0].final_native_plies) if record else 0.0,
+            }
+        )
+        if solved or not objective_exhausted:
+            break
+    assert final_record is not None
+    return final_record, {
+        "initial_cap": initial_cap,
+        "final_cap": attempts[-1]["cap"],
+        "global_cap": global_cap,
+        "restart_count": len(attempts) - 1,
+        "cap_source": "full-representation-structural-v1",
+        "scientist_prediction_used": False,
+        "restart_policy": "every-censored-failure-to-common-global-cap",
+        "attempts": attempts,
+    }
+
+
 def _run_attempt(
     scientist: Scientist,
     knot: KnotItem,
@@ -445,23 +536,19 @@ def _run_attempt(
     *,
     simulations: int,
     seed: int,
-    predicted_objective: float | None,
-    audit_restarts: bool = False,
+    objective_budget: bool,
 ) -> AttemptRun:
-    if predicted_objective is None:
+    if not objective_budget:
         return AttemptRun(_play(scientist, knot, ratio, simulations=simulations, seed=seed))
     replay_records: list[GameRecord] = []
-    record, budget = play_with_objective_restarts(
+    record, budget = play_with_common_objective_restarts(
         scientist,
         knot,
         ratio,
-        predicted_objective=predicted_objective,
         simulations=simulations,
         seed=seed,
-        max_restarts=None if audit_restarts else 0,
         retained_records=replay_records,
     )
-    budget["audit_restarts"] = audit_restarts
     return AttemptRun(record, budget, tuple(replay_records))
 
 
@@ -474,12 +561,10 @@ def _worker_play_bundle(
     simulations: int,
     seeds: tuple[int, ...],
     device: str,
-    predicted_objectives: tuple[float, ...] | None,
-    objective_budget_audit_every: int,
+    objective_budget: bool,
 ) -> list[AttemptRun]:
     """Process-pool entrypoint; one network transfer serves every ratio."""
     torch.set_num_threads(1)
-    objective_budget = predicted_objectives is not None
     key = (name, checkpoint, device, objective_budget)
     scientist = _WORKER_SCIENTISTS.get(key)
     if scientist is None:
@@ -501,21 +586,9 @@ def _worker_play_bundle(
             ratio,
             simulations=simulations,
             seed=attempt_seed,
-            predicted_objective=(
-                predicted_objectives[index] if predicted_objectives is not None else None
-            ),
-            audit_restarts=(
-                objective_budget
-                and _objective_audit_selected(
-                    scientist.name,
-                    knot,
-                    ratio,
-                    attempt_seed,
-                    objective_budget_audit_every,
-                )
-            ),
+            objective_budget=objective_budget,
         )
-        for index, (ratio, attempt_seed) in enumerate(zip(ratios, seeds, strict=True))
+        for ratio, attempt_seed in zip(ratios, seeds, strict=True)
     ]
 
 
@@ -528,8 +601,7 @@ def _play_bundles(
             tuple[float, ...],
             int,
             tuple[int, ...],
-            tuple[float, ...] | None,
-            int,
+            bool,
         ]
     ],
 ) -> list[list[AttemptRun]]:
@@ -542,21 +614,9 @@ def _play_bundles(
                     ratio,
                     simulations=simulations,
                     seed=seed,
-                    predicted_objective=(
-                        predicted_objectives[index] if predicted_objectives is not None else None
-                    ),
-                    audit_restarts=(
-                        predicted_objectives is not None
-                        and _objective_audit_selected(
-                            scientist.name,
-                            knot,
-                            ratio,
-                            seed,
-                            objective_budget_audit_every,
-                        )
-                    ),
+                    objective_budget=objective_budget,
                 )
-                for index, (ratio, seed) in enumerate(zip(ratios, seeds, strict=True))
+                for ratio, seed in zip(ratios, seeds, strict=True)
             ]
             for (
                 scientist,
@@ -564,8 +624,7 @@ def _play_bundles(
                 ratios,
                 simulations,
                 seeds,
-                predicted_objectives,
-                objective_budget_audit_every,
+                objective_budget,
             ) in jobs
         ]
     futures = [
@@ -579,8 +638,7 @@ def _play_bundles(
             simulations,
             seeds,
             scientist.config.train.device,
-            predicted_objectives,
-            objective_budget_audit_every,
+            objective_budget,
         )
         for (
             scientist,
@@ -588,8 +646,7 @@ def _play_bundles(
             ratios,
             simulations,
             seeds,
-            predicted_objectives,
-            objective_budget_audit_every,
+            objective_budget,
         ) in jobs
     ]
     return [future.result() for future in futures]
@@ -634,6 +691,14 @@ def _record_semantic_actions(
 def verified_record_cost(
     game: Any, knot: KnotItem, ratio: float, record: GameRecord
 ) -> tuple[int, int, list[int]] | None:
+    """Verify a native solution and return its portable semantic objective cost.
+
+    ``UnknotWitness`` deliberately removes controller-only states so the proof
+    can be replayed by another architecture. Head, tape, and memory operations
+    consume native search clocks but do not enter ``L_A:B``. The returned action
+    list is reconstructed from the verified compact witness so its length is
+    exactly the semantic move count.
+    """
     replayed = _record_semantic_actions(game, knot, ratio, record)
     if replayed is None:
         return None
@@ -649,6 +714,9 @@ def verified_record_cost(
     ]
     witness = UnknotWitness.from_states(states, game.config._spec)
     witness.verify()
+    semantic = [
+        int(step.action.to_flat(game.config._spec)) for step in witness.steps
+    ]
     return witness.crossing_changes, witness.moves, semantic
 
 
@@ -683,6 +751,7 @@ def translate_semantic_record(
             value_potential=game.value_potential(transition.state, transition.player),
             shared_witness=True,
             representation_id=knot.name,
+            objective_ratio=float(ratio),
             action_horizon=int(game.config.simplify_budget),
             residual_word_length=int(
                 np.count_nonzero(np.asarray(_raw_state(game, transition.state)._word))
@@ -718,23 +787,26 @@ def translate_semantic_record(
     if not transition.terminated or not _is_solved(game, transition.state):
         return None
     raw = _raw_state(game, transition.state)
-    crossing_changes = float(np.asarray(raw._crossing_changes))
-    moves = float(game.config.simplify_budget - int(np.asarray(raw._budget)))
     best_residual = min(
         [position.residual_word_length for position in record]
         + [int(np.count_nonzero(np.asarray(raw._word)))]
     )
     rewards = game.final_rewards(transition.state)
-    for position in record:
-        position.outcome = float(rewards[position.player])
-        position.solved = 1.0
-        position.final_crossing_changes = crossing_changes
-        position.final_moves = moves
-        position.termination_reason = "solved"
-        position.best_residual_word_length = best_residual
     verified = verified_record_cost(game, knot, ratio, record)
     if verified is None:
         return None
+    crossing_changes, semantic_moves, _ = verified
+    native_plies = game.native_ply_count(transition.state)
+    internal_plies = game.internal_ply_count(transition.state)
+    for position in record:
+        position.outcome = float(rewards[position.player])
+        position.solved = 1.0
+        position.final_crossing_changes = float(crossing_changes)
+        position.final_moves = float(semantic_moves)
+        position.final_native_plies = float(native_plies)
+        position.final_internal_plies = float(internal_plies)
+        position.termination_reason = "solved"
+        position.best_residual_word_length = best_residual
     return record
 
 
@@ -754,6 +826,16 @@ def _attempt_payload(
         "solved": True,
         "crossing_changes": cc,
         "moves": moves,
+        "native_plies": (
+            int(record[0].final_native_plies)
+            if record and np.isfinite(record[0].final_native_plies)
+            else len(record)
+        ),
+        "internal_plies": (
+            int(record[0].final_internal_plies)
+            if record and np.isfinite(record[0].final_internal_plies)
+            else max(len(record) - moves, 0)
+        ),
         "objective": ratio * cc + moves,
         "semantic_actions": len(semantic),
     }, verified
@@ -769,8 +851,10 @@ def _strict_shared_improvement(
     ratio: float,
     own_record: GameRecord,
     translated: GameRecord | None,
+    *,
+    best_native_objective: float | None = None,
 ) -> tuple[bool, float | None, float | None]:
-    """Admit only a receiver-native witness that improves the receiver's attempt."""
+    """Admit only a donation that beats the receiver's archived native best."""
     own = verified_record_cost(receiver.game, knot, ratio, own_record)
     shared = (
         verified_record_cost(receiver.game, knot, ratio, translated)
@@ -778,6 +862,12 @@ def _strict_shared_improvement(
         else None
     )
     own_objective = ratio * own[0] + own[1] if own is not None else None
+    if best_native_objective is not None:
+        own_objective = (
+            min(own_objective, best_native_objective)
+            if own_objective is not None
+            else best_native_objective
+        )
     shared_objective = ratio * shared[0] + shared[1] if shared is not None else None
     admitted = shared_objective is not None and (
         own_objective is None or shared_objective < own_objective
@@ -869,6 +959,22 @@ def _restore_scientist(
     scientist.prediction_source = state["prediction_source"]
 
 
+def _native_preservation_positions(scientist: Scientist, count: int) -> list[Position]:
+    """Select deterministic native states on which sharing should stay inactive."""
+    positions = [
+        position
+        for record in scientist.replay.games
+        if record and not bool(getattr(record[0], "shared_witness", False))
+        for position in record
+    ]
+    if count <= 0 or not positions:
+        return []
+    if len(positions) <= count:
+        return positions
+    indices = np.linspace(0, len(positions) - 1, count, dtype=int)
+    return [positions[int(index)] for index in indices]
+
+
 def _manifest(
     checkpoints: dict[str, Path],
     *,
@@ -883,12 +989,12 @@ def _manifest(
     train_steps: int,
     attempt_workers: int,
     objective_budget: bool,
-    objective_budget_audit_every: int,
+    native_action_horizon: int,
     bank_seed: int,
     seed: int,
 ) -> dict[str, Any]:
     protocol = {
-        "schema": "collaborative-scientists-v1",
+        "schema": "collaborative-scientists-v5-common-structural-budget",
         "arm": arm,
         "ratios": list(ratios),
         "frontier": frontier,
@@ -898,7 +1004,19 @@ def _manifest(
         "train_steps": train_steps,
         "attempt_workers": attempt_workers,
         "objective_budget": objective_budget,
-        "objective_budget_encoding": "absolute-global-v2",
+        "objective_budget_encoding": "remaining-semantic-L-absolute-global-v3",
+        "objective_budget_attempt_protocol": {
+            "first_cap": (
+                "min(global_cap, A_over_B * ceil(observed_word_intersections / 2) "
+                "+ native_action_horizon)"
+            ),
+            "scientist_prediction_used": False,
+            "restart": (
+                "every objective-censored failure restarts with the same seed at "
+                "the common global cap"
+            ),
+            "ordinary_horizon_failure_restarted": False,
+        },
         "objective_censored_replay": "solve-negative-v2",
         "collaboration_replay_sampling": "exposure-and-representation-balanced-v3",
         "collaboration_replay_history_representations": 100,
@@ -910,28 +1028,51 @@ def _manifest(
         "collaboration_replay_similarity": "cheap-braid-structure-cosine-v1",
         "collaboration_replay_positions_per_episode": 4,
         "collaboration_replay_outcome_mix": "native-success-failure-50-50-when-available",
-        "policy_value_update": "success-only-native-plus-option-policy-adapter-v2",
+        "policy_value_update": "success-only-native-plus-gated-option-policy-adapter-v4",
         "sharing_policy_adapter": {
-            "initialization": "zero-logit residual",
+            "initialization": "zero-logit residual with 0.1-probability state gate",
             "width": 32,
             "residual_blocks": 2,
-            "optimizer_scope": "adapter-only",
-            "conditioning": "full observation including remaining internal budget",
+            "optimizer_scope": "adapter-and-gate-only",
+            "native_optimizer_isolation": (
+                "adapter-bypassed, all-gradients-cleared, owned-only-clipping"
+            ),
+            "conditioning": (
+                "full observation plus explicit head-cell summary and remaining internal budget"
+            ),
+            "updates_per_training_event": "ceil(train_steps / 4)",
+            "route_gate_weight": 0.1,
+            "off_route_kl_weight": 1.0,
+            "off_route_gate_weight": 0.1,
+            "control_matching": "equal extra optimizer-step count",
         },
         "policy_value_preservation": "frozen-starting-scientist-when-weight-positive-v1",
         "shared_witness_internal_action_cap_per_edit": 5,
-        "shared_policy_target": "any legal <=5-internal-action path then certified edit",
+        "shared_policy_eligibility": (
+            "strictly lower semantic objective than best archived native solution, "
+            "rechecked before every distillation event and ratio-specific"
+        ),
+        "stale_shared_witness_use": "critic-upper-bound-only",
+        "shared_policy_target": (
+            "deterministic shortest neutral receiver route then certified edit, "
+            "within 5 internal actions"
+        ),
         "solution_definition": {
             "terminal": "exact replay reaches empty braid word and one strand",
-            "learned_objective_cap": "disabled unless objective_budget is true",
+            "moves": "verified portable semantic witness steps only",
+            "native_plies": "all receiver actions, reported outside L_A:B",
+            "internal_plies": (
+                "head, tape, register, paint, and memory actions; controller-budgeted "
+                "but excluded from L_A:B"
+            ),
+            "learned_objective_cap": "never used as an attempt cap",
             "crossing_change_cap": None,
-            "native_action_horizon": 64,
+            "native_action_horizon": native_action_horizon,
             "completeness_claim": False,
             "timeout_interpretation": "censored beyond the declared action horizon",
         },
         "solve_encoder_gradients": "solve-only-v1",
         "budget_monotonic_training": "paired-margin-v1",
-        "objective_budget_audit_every": objective_budget_audit_every,
         "bank_seed": bank_seed,
         "seed": seed,
         "checkpoints": [
@@ -984,7 +1125,6 @@ def run_collaborative_scientists(
     batch_size: int = 32,
     attempt_workers: int = 1,
     objective_budget: bool = False,
-    objective_budget_audit_every: int = 10,
     bank_seed: int = 0,
     seed: int = 0,
     device: str = "cpu",
@@ -1005,6 +1145,27 @@ def run_collaborative_scientists(
         raise ValueError("solo-compute-matched requires exactly one scientist")
     if attempt_workers < 1:
         raise ValueError("attempt_workers must be positive")
+    if train_steps < 0:
+        raise ValueError("train_steps must be non-negative")
+    scientists = [
+        load_scientist(
+            name,
+            path,
+            seed=seed + index * 10_000,
+            device=device,
+            simulations=simulations,
+            require_factorized=True,
+            objective_budget_channel=objective_budget,
+        )
+        for index, (name, path) in enumerate(checkpoints.items())
+    ]
+    action_horizons = {int(scientist.config.game.simplify_budget) for scientist in scientists}
+    if len(action_horizons) != 1:
+        raise ValueError(
+            "collaboration scientists must use one common native action horizon; "
+            f"got {sorted(action_horizons)}"
+        )
+    native_action_horizon = action_horizons.pop()
     output.mkdir(parents=True, exist_ok=True)
     manifest_path = output / "manifest.json"
     bank_path = output / "base.json"
@@ -1029,7 +1190,7 @@ def run_collaborative_scientists(
             train_steps=train_steps,
             attempt_workers=attempt_workers,
             objective_budget=objective_budget,
-            objective_budget_audit_every=objective_budget_audit_every,
+            native_action_horizon=native_action_horizon,
             bank_seed=bank_seed,
             seed=seed,
         )
@@ -1052,7 +1213,7 @@ def run_collaborative_scientists(
             train_steps=train_steps,
             attempt_workers=attempt_workers,
             objective_budget=objective_budget,
-            objective_budget_audit_every=objective_budget_audit_every,
+            native_action_horizon=native_action_horizon,
             bank_seed=bank_seed,
             seed=seed,
         )
@@ -1060,18 +1221,6 @@ def run_collaborative_scientists(
         _atomic_json(anchor_path, _bank_payload(anchors))
         _atomic_json(manifest_path, manifest)
 
-    scientists = [
-        load_scientist(
-            name,
-            path,
-            seed=seed + index * 10_000,
-            device=device,
-            simulations=simulations,
-            require_factorized=True,
-            objective_budget_channel=objective_budget,
-        )
-        for index, (name, path) in enumerate(checkpoints.items())
-    ]
     for scientist in scientists:
         scientist.network.shared_auxiliary_only = arm in {
             "adaptive-sharing",
@@ -1083,8 +1232,9 @@ def run_collaborative_scientists(
     if arm in {"adaptive-sharing", "static-sharing"}:
         for scientist in scientists:
             adapter = scientist.network.attach_option_policy_adapter()
+            gate = scientist.network.attach_option_policy_gate(initial_probability=0.1)
             option_optimizers[scientist.name] = torch.optim.AdamW(
-                adapter.parameters(),
+                [*adapter.parameters(), *gate.parameters()],
                 lr=scientist.config.train.learning_rate,
                 weight_decay=scientist.config.train.weight_decay,
             )
@@ -1127,15 +1277,6 @@ def run_collaborative_scientists(
                 seed + round_index * 1_000_000 + scientist_index * 10_000 + ratio_index
                 for ratio_index in range(len(ratios))
             )
-            prediction = prediction_details(scientist, active[proposal_index], ratios)
-            predicted_objectives = (
-                tuple(
-                    row["ratio"] * row["predicted_crossing_changes"] + row["predicted_moves"]
-                    for row in prediction
-                )
-                if objective_budget
-                else None
-            )
             qualification_jobs.append(
                 (
                     scientist,
@@ -1143,8 +1284,7 @@ def run_collaborative_scientists(
                     ratios,
                     qualification_simulations,
                     seeds,
-                    predicted_objectives,
-                    objective_budget_audit_every,
+                    objective_budget,
                 )
             )
         qualification_records = _play_bundles(executor, qualification_jobs)
@@ -1197,15 +1337,6 @@ def run_collaborative_scientists(
                 + ratio_index
                 for ratio_index in range(len(ratios))
             )
-            predictions = selected_predictions[scientist.name]
-            predicted_objectives = (
-                tuple(
-                    row["ratio"] * row["predicted_crossing_changes"] + row["predicted_moves"]
-                    for row in predictions
-                )
-                if objective_budget
-                else None
-            )
             full_jobs.append(
                 (
                     scientist,
@@ -1213,8 +1344,7 @@ def run_collaborative_scientists(
                     ratios,
                     simulations,
                     seeds,
-                    predicted_objectives,
-                    objective_budget_audit_every,
+                    objective_budget,
                 )
             )
         full_records = _play_bundles(executor, full_jobs)
@@ -1226,7 +1356,9 @@ def run_collaborative_scientists(
                 records_for_replay = run.replay_records or (record,)
                 for replay_record in records_for_replay:
                     scientist.replay.add(
-                        replay_record, representation_id=selected.id
+                        replay_record,
+                        representation_id=selected.id,
+                        objective_ratio=ratio,
                     )
                 payload, verified = _attempt_payload(scientist, selected.knot, ratio, record)
                 if run.budget is not None:
@@ -1276,10 +1408,15 @@ def run_collaborative_scientists(
                         ratio,
                         full_records[receiver_index][ratio_index].record,
                         translated,
+                        best_native_objective=receiver.replay.best_native_objective(
+                            selected.id, ratio
+                        ),
                     )
                     if admitted:
                         receiver.replay.add(
-                            translated, representation_id=selected.id
+                            translated,
+                            representation_id=selected.id,
+                            objective_ratio=ratio,
                         )
                     translations.append(
                         {
@@ -1290,8 +1427,18 @@ def run_collaborative_scientists(
                             "admitted": admitted,
                             "receiver_previous_objective": own_objective,
                             "receiver_shared_objective": shared_objective,
-                            "receiver_moves": (
+                            "receiver_semantic_moves": (
                                 int(translated[0].final_moves) if translated else None
+                            ),
+                            "receiver_native_plies": (
+                                int(translated[0].final_native_plies)
+                                if translated
+                                else None
+                            ),
+                            "receiver_internal_plies": (
+                                int(translated[0].final_internal_plies)
+                                if translated
+                                else None
                             ),
                         }
                     )
@@ -1300,6 +1447,7 @@ def run_collaborative_scientists(
         if (round_index + 1) % train_every == 0:
             for scientist in scientists:
                 last = None
+                matched_update_steps = math.ceil(train_steps / 4)
                 if scientist.replay.has_trainable_collaboration_positions():
                     for _ in range(train_steps):
                         last = train_alphazero_step(
@@ -1325,9 +1473,10 @@ def run_collaborative_scientists(
                             replay_similar_fraction=0.25,
                             replay_positions_per_episode=4,
                         )
+                active_option_records = scientist.replay.active_distillation_records()
                 option_positions = [
                     position
-                    for game_record in scientist.replay.games
+                    for game_record in active_option_records
                     for position in game_record
                     if position.option_state is not None
                     and position.target_external_action >= 0
@@ -1336,43 +1485,62 @@ def run_collaborative_scientists(
                     arm in {"adaptive-sharing", "static-sharing"}
                     and isinstance(scientist.game, SerialBraidGame)
                     and option_positions
+                    and matched_update_steps
                 ):
-                    option_diagnostics: dict[str, float | str] = {}
-                    option_loss = train_bounded_option_step(
-                        scientist.network,
-                        option_optimizers[scientist.name],
-                        scientist.game,
-                        scientist.replay,
-                        scientist.replay.rng,
-                        batch_size=min(batch_size, len(option_positions)),
-                        horizon=5,
-                        beam_width=8,
-                        device=torch.device(device),
-                        adapter_only=True,
-                        stable_routes=True,
-                        diagnostics=option_diagnostics,
+                    preservation_positions = _native_preservation_positions(
+                        scientist, batch_size
                     )
+                    option_updates: list[dict[str, float | str]] = []
+                    option_losses: list[float] = []
+                    for _ in range(matched_update_steps):
+                        option_diagnostics: dict[str, float | str] = {}
+                        option_losses.append(
+                            train_bounded_option_step(
+                                scientist.network,
+                                option_optimizers[scientist.name],
+                                scientist.game,
+                                scientist.replay,
+                                scientist.replay.rng,
+                                batch_size=min(batch_size, len(option_positions)),
+                                horizon=5,
+                                beam_width=8,
+                                device=torch.device(device),
+                                adapter_only=True,
+                                stable_routes=True,
+                                positions=option_positions,
+                                preservation_positions=preservation_positions,
+                                route_gate_weight=0.1,
+                                off_route_kl_weight=1.0,
+                                off_route_gate_weight=0.1,
+                                diagnostics=option_diagnostics,
+                            )
+                        )
+                        option_updates.append(option_diagnostics)
                     if last is None:
                         last = {}
-                    last["bounded_option"] = option_loss
-                    last["bounded_option_diagnostics"] = option_diagnostics
-                    last["matched_extra_update"] = "bounded-option"
-                elif scientist.replay.games:
-                    last = train_alphazero_step(
-                        scientist.network,
-                        scientist.optimizer,
-                        scientist.replay,
-                        batch_size,
-                        torch.device(device),
-                        collaboration_replay=True,
-                        shared_fraction=0.0,
-                        policy_value_success_only=True,
-                        replay_current_representation=selected.id,
-                        replay_current_fraction=0.25,
-                        replay_similar_fraction=0.25,
-                        replay_positions_per_episode=4,
-                    )
+                    last["bounded_option"] = option_losses[-1]
+                    last["bounded_option_updates"] = option_updates
+                    last["matched_extra_updates"] = matched_update_steps
+                    last["matched_extra_update"] = "bounded-option-with-gate"
+                elif scientist.replay.games and matched_update_steps:
+                    for _ in range(matched_update_steps):
+                        last = train_alphazero_step(
+                            scientist.network,
+                            scientist.optimizer,
+                            scientist.replay,
+                            batch_size,
+                            torch.device(device),
+                            collaboration_replay=True,
+                            shared_fraction=0.0,
+                            policy_value_success_only=True,
+                            replay_current_representation=selected.id,
+                            replay_current_fraction=0.25,
+                            replay_similar_fraction=0.25,
+                            replay_positions_per_episode=4,
+                        )
+                    assert last is not None
                     last["bounded_option"] = 0.0
+                    last["matched_extra_updates"] = matched_update_steps
                     last["matched_extra_update"] = "native-control"
                 losses[scientist.name] = last
                 if last is not None and scientist.prediction_source == "legacy_proxy":

@@ -69,6 +69,18 @@ class GameAdapter(Protocol):
         """The underlying Pgx state. Wrappers that carry extra state override it."""
         return state
 
+    def semantic_move_count(self, state: Any) -> int:
+        """Portable solution moves accrued in the shared environment."""
+        ...
+
+    def native_ply_count(self, state: Any) -> int:
+        """All controller/environment plies consumed by this scientist."""
+        ...
+
+    def internal_ply_count(self, state: Any) -> int:
+        """Scientist-specific plies that do not enter the semantic witness."""
+        ...
+
 
 class Go6x6:
     """Thin non-jitted Pgx adapter with observations in the side-to-move frame."""
@@ -144,6 +156,16 @@ class Go6x6:
         # current_player at reset is Black, so use the preserved mapping rather
         # than assuming player 0 is Black.
         return int(np.asarray(state._player_order[0]))
+
+    def semantic_move_count(self, state: Any) -> int:
+        return int(np.asarray(state._x.step_count))
+
+    def native_ply_count(self, state: Any) -> int:
+        return int(np.asarray(state._x.step_count))
+
+    def internal_ply_count(self, state: Any) -> int:
+        del state
+        return 0
 
     def _legal_actions(self, state: Any) -> np.ndarray:
         legal = np.asarray(state.legal_action_mask, dtype=bool).copy()
@@ -234,10 +256,10 @@ class BraidUnknotGame:
         observation = np.asarray(state.observation, dtype=np.float32)
         if self.config.objective_budget_channel:
             ratio = float(np.exp(float(np.asarray(state._log_ratio))))
-            moves = max(
+            semantic_moves = max(
                 self.config.simplify_budget - int(np.asarray(state._budget)), 0
             )
-            spent = ratio * int(np.asarray(state._crossing_changes)) + moves
+            spent = ratio * int(np.asarray(state._crossing_changes)) + semantic_moves
             cap = (ratio + 1.0) * self.config.simplify_budget
             remaining = np.clip((cap - spent) / max(cap, 1.0), -1.0, 1.0)
             observation = np.concatenate(
@@ -278,14 +300,14 @@ class BraidUnknotGame:
     def value_potential(self, state: Any, player: int) -> float:
         """Exact accrued-cost potential, zeroed at terminal states.
 
-        For the Simplifier this is ``-2 * (lambda * crossings + moves) / W``;
+        For the Simplifier this is ``-2 * (lambda * crossings + semantic_moves) / W``;
         the Scrambler receives its negative so shaping remains zero-sum.
         """
         if not self.config.multi_objective or bool(np.asarray(state.terminated)):
             return 0.0
         ratio = float(np.exp(float(np.asarray(state._log_ratio))))
         crossings = int(np.asarray(state._crossing_changes))
-        moves = max(self.config.simplify_budget - int(np.asarray(state._budget)), 0)
+        moves = self.semantic_move_count(state)
         worst = (ratio + 1.0) * self.config.simplify_budget
         simplifier_potential = -2.0 * (ratio * crossings + moves) / worst
         simplifier = 1 - int(np.asarray(state._scrambler))
@@ -304,6 +326,18 @@ class BraidUnknotGame:
 
     def unwrap(self, state: Any) -> Any:
         return state
+
+    def semantic_move_count(self, state: Any) -> int:
+        # The parallel formulation has no controller-only actions: every
+        # simplifier ply is already one action in the shared braid environment.
+        return max(self.config.simplify_budget - int(np.asarray(state._budget)), 0)
+
+    def native_ply_count(self, state: Any) -> int:
+        return max(self.config.simplify_budget - int(np.asarray(state._budget)), 0)
+
+    def internal_ply_count(self, state: Any) -> int:
+        del state
+        return 0
 
 
 def make_game(config: AnyGameConfig) -> GameAdapter:

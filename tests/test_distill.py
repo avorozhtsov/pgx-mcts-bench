@@ -15,7 +15,11 @@ from pgx_mcts_bench.distill import (
 )
 from pgx_mcts_bench.game import make_game
 from pgx_mcts_bench.ladder import STAGES, _config, candidates
-from pgx_mcts_bench.networks import load_policy_value_state_dict, make_braid_network
+from pgx_mcts_bench.networks import (
+    OptionPolicyAdapter,
+    load_policy_value_state_dict,
+    make_braid_network,
+)
 from pgx_mcts_bench.serial_braid import SerialBraidGame
 from pgx_mcts_bench.training import attach_policy_value_preservation_teacher
 
@@ -35,6 +39,60 @@ def test_distilled_candidates_exist_and_use_factorized_value() -> None:
     assert by_name["d-fsa32-u1"].serial_encoder == "fsa"
     assert by_name["d-tape4-u1"].serial_tape_symbols == 4
     assert all(by_name[name].serial_internal_horizon == 5 for name in STUDENT_NAMES)
+
+
+def test_option_adapter_can_condition_on_the_head_cell_not_only_global_pools() -> None:
+    adapter = OptionPolicyAdapter(
+        observation_channels=1,
+        action_size=1,
+        internal_budget_channel=None,
+        width=16,
+        residual_blocks=0,
+    )
+    with torch.no_grad():
+        for parameter in adapter.parameters():
+            parameter.zero_()
+        adapter.input.weight[0, 0, 1] = 1.0
+        adapter.readout[0].weight[0, 32] = 1.0
+        adapter.readout[2].weight[0, 0] = 1.0
+        adapter.readout[4].weight[0, 0] = 1.0
+    at_head = torch.zeros(1, 1, 1, 7)
+    away_from_head = torch.zeros_like(at_head)
+    at_head[0, 0, 0, 3] = 1.0
+    away_from_head[0, 0, 0, 2] = 1.0
+
+    assert adapter(at_head).item() > adapter(away_from_head).item()
+
+
+def test_old_global_pool_option_checkpoint_migrates_without_changing_outputs() -> None:
+    torch.manual_seed(41)
+    candidate = next(candidate for candidate in candidates() if candidate.name == "s-tape4")
+    config = _config(candidate, STAGES[0], 0, "cpu")
+    source = make_braid_network(config.game, config.model).eval()
+    adapter = source.attach_option_policy_adapter()
+    gate = source.attach_option_policy_gate(initial_probability=0.1)
+    with torch.no_grad():
+        for module in (adapter, gate):
+            module.readout[0].weight[:, 64:96].zero_()
+            module.readout[-1].weight.normal_(std=0.05)
+    observation = torch.randn(3, config.game.observation_channels, 1, config.game.width)
+    with torch.inference_mode():
+        expected = source(observation)
+    historical = dict(source.state_dict())
+    for key in (
+        "option_policy_adapter.readout.0.weight",
+        "option_policy_gate.readout.0.weight",
+    ):
+        weight = historical[key]
+        historical[key] = torch.cat([weight[:, :64], weight[:, -1:]], dim=1)
+
+    restored = make_braid_network(config.game, config.model).eval()
+    assert load_policy_value_state_dict(restored, historical)
+    with torch.inference_mode():
+        actual = restored(observation)
+
+    for actual_output, expected_output in zip(actual, expected, strict=True):
+        torch.testing.assert_close(actual_output, expected_output)
 
 
 def test_sixth_action_must_be_an_external_braid_move() -> None:
@@ -186,6 +244,12 @@ def test_zero_initialized_option_adapter_is_exact_and_updates_in_isolation() -> 
         transition.player,
         option_state=transition.state,
         target_external_action=target,
+        solved=1.0,
+        final_crossing_changes=0.0,
+        final_moves=10.0,
+        shared_witness=True,
+        representation_id="route",
+        objective_ratio=10.0,
     )
     replay = ReplayBuffer(10, np.random.default_rng(17))
     replay.add([position])
@@ -249,6 +313,25 @@ def test_zero_initialized_option_adapter_is_exact_and_updates_in_isolation() -> 
         not torch.equal(value, adapter_before[name])
         for name, value in adapter.state_dict().items()
     )
+    replay.record_native_objective("route", 10.0, 10.0)
+    stale_adapter = {name: value.clone() for name, value in adapter.state_dict().items()}
+    assert (
+        train_bounded_option_step(
+            network,
+            option_optimizer,
+            game,
+            replay,
+            replay.rng,
+            batch_size=1,
+            horizon=5,
+            beam_width=2,
+            device=torch.device("cpu"),
+            adapter_only=True,
+        )
+        == 0.0
+    )
+    for name, value in adapter.state_dict().items():
+        torch.testing.assert_close(value, stale_adapter[name], rtol=0, atol=0)
     with torch.inference_mode():
         logits_after, value_after = network(observation)
     torch.testing.assert_close(value_after, value_before, rtol=0, atol=0)

@@ -13,6 +13,7 @@ import torch
 from pgx_mcts_bench.adaptive_scientists import (
     COLLABORATION_K3,
     FixedWordGame,
+    KnotItem,
     calibrated_solve_probability,
     load_scientist,
     smallest_crossing_pool,
@@ -24,7 +25,7 @@ from pgx_mcts_bench.collaborative_scientists import (
     _sha256,
 )
 from pgx_mcts_bench.game import make_game
-from pgx_mcts_bench.ladder import _config, candidates, evaluate_stage
+from pgx_mcts_bench.ladder import STAGES, _config, candidates, evaluate_stage
 from pgx_mcts_bench.rapid_adaptation import promoted_checkpoint_metadata
 from pgx_mcts_bench.search import NeuralMCTS
 from pgx_mcts_bench.training import (
@@ -130,6 +131,50 @@ def _promoted_rung_rehearsal(
     )
 
 
+def _early_rung_pool(scientist, items: int, seed: int) -> tuple[list[KnotItem], list[dict]]:
+    """Freeze deterministic instances from the ladder's proven easy prefix.
+
+    The rung-18 checkpoints learned by climbing this distribution.  Starting a
+    budget critic on unrelated table knots confounds budget learning with a
+    distribution jump and can yield no positive episodes at all.  Replaying the
+    prefix tests the new channel without changing the old curriculum premise.
+    """
+    if scientist.game.generator is None:
+        raise ValueError("early-rung curriculum requires the graded generator")
+    selected: list[KnotItem] = []
+    provenance: list[dict] = []
+    for index in range(items):
+        stage_index = index % len(STAGES)
+        repeat = index // len(STAGES)
+        source_name, scramble = STAGES[stage_index]
+        source = next(
+            source
+            for source in scientist.game.generator.sources
+            if source.name == source_name
+        )
+        instance_seed = seed + 90_000_000 + index * 100_003
+        instance = scientist.game.generator.generate(
+            source,
+            scramble,
+            np.random.default_rng(instance_seed),
+        )
+        name = f"rung-{stage_index}:{source_name}+{scramble}:sample-{repeat}"
+        word = tuple(int(letter) for letter in instance.word)
+        selected.append(KnotItem(name, len(word), word, int(instance.strands)))
+        provenance.append(
+            {
+                "item": name,
+                "stage": stage_index,
+                "source": source_name,
+                "scramble": scramble,
+                "instance_seed": instance_seed,
+                "word": list(word),
+                "strands": int(instance.strands),
+            }
+        )
+    return selected, provenance
+
+
 def train_budget_curriculum(
     checkpoint: Path,
     output: Path,
@@ -146,6 +191,8 @@ def train_budget_curriculum(
     seed: int = 20261040,
     device: str = "cpu",
     bank: Path | None = None,
+    curriculum_source: str = "early-rungs",
+    monotonic_weight: float | None = None,
 ) -> dict[str, Any]:
     if scientist_name not in COLLABORATION_K3:
         raise ValueError(
@@ -162,15 +209,45 @@ def train_budget_curriculum(
         require_factorized=True,
         objective_budget_channel=True,
     )
+    if monotonic_weight is not None:
+        if monotonic_weight < 0.0:
+            raise ValueError("monotonic_weight must be non-negative")
+        scientist.network.auxiliary_budget_monotonic_weight = monotonic_weight
     attach_policy_value_preservation_teacher(scientist.network)
-    if bank is None:
+    if bank is not None and curriculum_source != "bank":
+        raise ValueError("--bank requires curriculum_source='bank'")
+    if curriculum_source == "early-rungs":
+        simple, item_provenance = _early_rung_pool(scientist, items, seed)
+    elif curriculum_source == "table":
         simple = smallest_crossing_pool(items)
-    else:
+        item_provenance = [
+            {
+                "item": item.name,
+                "source": "knot-table",
+                "word": list(item.word),
+                "strands": item.strands,
+            }
+            for item in simple
+        ]
+    elif curriculum_source == "bank" and bank is not None:
         import json
 
         simple = [item.knot for item in _bank_from_payload(json.loads(bank.read_text()))]
         if len(simple) != items:
             raise ValueError(f"{bank} contains {len(simple)} identities, expected {items}")
+        item_provenance = [
+            {
+                "item": item.name,
+                "source": "certified-bank",
+                "word": list(item.word),
+                "strands": item.strands,
+            }
+            for item in simple
+        ]
+    else:
+        raise ValueError(
+            "curriculum_source must be one of 'early-rungs', 'table', or 'bank'"
+        )
     global_cap = (ratio + 1.0) * scientist.config.game.simplify_budget
     caps = tuple(max(1.0, round(global_cap * fraction)) for fraction in cap_fractions)
     before_state = copy.deepcopy(scientist.network.state_dict())
@@ -274,14 +351,15 @@ def train_budget_curriculum(
         output / "rollback-guarded.pt",
     )
     report = {
-        "schema": "collaboration-budget-curriculum-v2",
+        "schema": "semantic-cost-collaboration-budget-curriculum-v3",
         "checkpoint": str(checkpoint.resolve()),
         "checkpoint_sha256": _sha256(checkpoint),
         "scientist": scientist_name,
         "architecture": {
             "solve_encoder_gradients": True,
             "cost_first": True,
-            "manual_objective": "L=A*cc+B*moves",
+            "manual_objective": "L=A*cc+B*portable_semantic_moves",
+            "native_plies_excluded_from_objective": True,
             "budget_skips": ["shared_body", "scalar_value", "cc_moves", "p_solve"],
         },
         "protocol": {
@@ -297,6 +375,11 @@ def train_budget_curriculum(
             "seed": seed,
             "device": device,
             "bank": str(bank.resolve()) if bank is not None else None,
+            "curriculum_source": curriculum_source,
+            "item_provenance": item_provenance,
+            "monotonic_weight": float(
+                scientist.network.auxiliary_budget_monotonic_weight
+            ),
         },
         "training": rows,
         "last_metrics": last_metrics,

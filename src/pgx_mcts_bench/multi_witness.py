@@ -130,13 +130,16 @@ def mine_certified_witnesses(
                 "crossing_changes": crossings,
                 "moves": moves,
                 "objective": objective,
+                "source_native_plies": len(record),
+                "source_internal_plies": max(len(record) - moves, 0),
                 "semantic_actions": actions,
                 "author": checkpoint["name"],
                 "episode_seed": int(record[0].episode_seed),
                 "source_round": round_index,
             }
     provenance = {
-        "schema": "certified-collaboration-witness-bank-v1",
+        "schema": "certified-semantic-collaboration-witness-bank-v2",
+        "move_metric": "verified portable semantic witness steps",
         "source_run": str(source_run.resolve()),
         "source_manifest_sha256": _json_hash(manifest),
         "source_final_state": str(round_dirs[-1].resolve()),
@@ -146,6 +149,31 @@ def mine_certified_witnesses(
         "witnesses": dict(sorted(witnesses.items())),
     }
     return provenance, by_id
+
+
+def write_certified_witness_bank(
+    source_run: Path,
+    output: Path,
+    *,
+    ratio: float = 10.0,
+    device: str = "cpu",
+) -> dict[str, Any]:
+    """Materialize a v2 bank after replaying native records semantically."""
+    provenance, _ = mine_certified_witnesses(
+        source_run, ratio=ratio, device=device
+    )
+    output.mkdir(parents=True, exist_ok=True)
+    _atomic_json(output / "witness-bank.json", provenance)
+    report = {
+        "schema": "certified-semantic-collaboration-witness-bank-report-v1",
+        "source_run": str(source_run.resolve()),
+        "ratio": ratio,
+        "witness_count": len(provenance["witnesses"]),
+        "witness_bank": str((output / "witness-bank.json").resolve()),
+        "witness_bank_sha256": _json_hash(provenance),
+    }
+    _atomic_json(output / "report.json", report)
+    return report
 
 
 def _stratified(items: list[Any], size: int) -> list[Any]:

@@ -37,6 +37,25 @@ def _episode(
     return result
 
 
+def _solution(
+    representation: str,
+    ratio: float,
+    crossing_changes: float,
+    moves: float,
+    *,
+    shared: bool,
+) -> list[Position]:
+    record = _episode(representation, 1.0, length=2)
+    for position in record:
+        position.objective_ratio = ratio
+        position.final_crossing_changes = crossing_changes
+        position.final_moves = moves
+        position.shared_witness = shared
+        position.option_state = object() if shared else None
+        position.target_external_action = 1 if shared else -1
+    return record
+
+
 def test_sequence_sampling_includes_terminal_transitions() -> None:
     replay = ReplayBuffer(100, np.random.default_rng(0))
     replay.add([_position(False) for _ in range(9)] + [_position(True)])
@@ -180,3 +199,47 @@ def test_collaboration_replay_prefers_less_exposed_attempts() -> None:
     ]
 
     assert seeds.count(2) > seeds.count(1)
+
+
+def test_distillation_uses_only_best_donation_strictly_better_than_native_archive() -> None:
+    replay = ReplayBuffer(1_000, np.random.default_rng(19))
+    replay.add(_solution("knot", 10.0, 5.0, 50.0, shared=False))  # L10 = 100
+    replay.add(_solution("knot", 10.0, 5.0, 50.0, shared=True))  # equal
+    replay.add(_solution("knot", 10.0, 6.0, 50.0, shared=True))  # worse
+    assert replay.active_distillation_records() == []
+
+    better = _solution("knot", 10.0, 4.0, 50.0, shared=True)  # L10 = 90
+    best = _solution("knot", 10.0, 3.0, 50.0, shared=True)  # L10 = 80
+    replay.add(better)
+    replay.add(best)
+    assert replay.active_distillation_records() == [best]
+
+    # A new equal native incumbent makes the donated policy target stale. The
+    # shared record stays in replay for one-sided critic upper-bound training.
+    native_best = _solution("knot", 10.0, 3.0, 50.0, shared=False)
+    replay.add(native_best)
+    assert replay.best_native_objective("knot", 10.0) == 80.0
+    assert replay.active_distillation_records() == []
+    assert any(record is best for record in replay.games)
+
+    # Objective ratios have independent incumbents.
+    ratio_1000 = _solution("knot", 1000.0, 0.0, 70.0, shared=True)
+    replay.add(ratio_1000)
+    assert replay.active_distillation_records() == [ratio_1000]
+
+    resumed = pickle.loads(pickle.dumps(replay))
+    assert resumed.best_native_objective("knot", 10.0) == 80.0
+    assert resumed.active_distillation_records()[0][0].objective_ratio == 1000.0
+
+
+def test_evaluation_objective_can_make_existing_donation_stale() -> None:
+    replay = ReplayBuffer(100, np.random.default_rng(23))
+    donation = _solution("knot", 10.0, 4.0, 50.0, shared=True)
+    replay.add(donation)
+    assert replay.active_distillation_records() == [donation]
+
+    replay.record_native_objective("knot", 10.0, 90.0)
+    assert replay.active_distillation_records() == []
+
+    with pytest.raises(ValueError, match="must be finite"):
+        replay.record_native_objective("knot", 10.0, float("nan"))

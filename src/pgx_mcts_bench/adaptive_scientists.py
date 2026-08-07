@@ -120,8 +120,10 @@ class FixedWordGame:
 
     def _spent(self, state: Any) -> float:
         raw = self._raw(state)
-        moves = max(self.config.simplify_budget - int(np.asarray(raw._budget)), 0)
-        return self.ratio * int(np.asarray(raw._crossing_changes)) + moves
+        return (
+            self.ratio * int(np.asarray(raw._crossing_changes))
+            + self.semantic_move_count(state)
+        )
 
     def _solved(self, state: Any) -> bool:
         raw = self._raw(state)
@@ -211,6 +213,21 @@ class FixedWordGame:
         if isinstance(state, ObjectiveBudgetState):
             state = state.base_state
         return self.base.unwrap(state)
+
+    def semantic_move_count(self, state: Any) -> int:
+        if isinstance(state, ObjectiveBudgetState):
+            state = state.base_state
+        return self.base.semantic_move_count(state)
+
+    def native_ply_count(self, state: Any) -> int:
+        if isinstance(state, ObjectiveBudgetState):
+            state = state.base_state
+        return self.base.native_ply_count(state)
+
+    def internal_ply_count(self, state: Any) -> int:
+        if isinstance(state, ObjectiveBudgetState):
+            state = state.base_state
+        return self.base.internal_ply_count(state)
 
 
 def smallest_crossing_pool(size: int = 200) -> list[KnotItem]:

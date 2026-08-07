@@ -27,7 +27,11 @@ class Position:
     # from an old checkpoint or a game without braid cost labels.
     solved: float = -1.0
     final_crossing_changes: float = float("nan")
+    # v11 cost contract: ``final_moves`` means portable semantic witness steps.
+    # Controller/search effort is recorded separately and never enters L_A:B.
     final_moves: float = float("nan")
+    final_native_plies: float = float("nan")
+    final_internal_plies: float = float("nan")
     # All positions from one episode share this seed, giving the four auxiliary
     # members a deterministic per-episode bootstrap mask.
     episode_seed: int = 0
@@ -44,6 +48,9 @@ class Position:
     # Replay provenance. These defaults keep old checkpoints loadable; new
     # collaboration records fill them at generation or admission time.
     representation_id: str = ""
+    # Objective coefficient used for this attempt. Keeping it explicit prevents
+    # a witness that is best for L10 from being treated as best for L1000.
+    objective_ratio: float = float("nan")
     termination_reason: str = ""
     objective_cap: float = float("nan")
     action_horizon: int = 0
@@ -77,6 +84,11 @@ class ReplayBuffer:
         self.representation_order: list[str] = []
         self.representation_embeddings: dict[str, np.ndarray] = {}
         self.last_collaboration_sample_trace: list[dict[str, Any]] = []
+        # Persistent incumbents survive replay eviction. Shared witnesses never
+        # update the native archive used to decide whether policy imitation is
+        # still beneficial.
+        self.best_native_solution_objectives: dict[tuple[str, float], float] = {}
+        self.best_shared_solution_objectives: dict[tuple[str, float], float] = {}
 
     def _ensure_replay_state(self) -> None:
         """Populate fields missing from pre-replay-v2 pickles."""
@@ -88,6 +100,10 @@ class ReplayBuffer:
             self.representation_embeddings = {}
         if not hasattr(self, "last_collaboration_sample_trace"):
             self.last_collaboration_sample_trace = []
+        if not hasattr(self, "best_native_solution_objectives"):
+            self.best_native_solution_objectives = {}
+        if not hasattr(self, "best_shared_solution_objectives"):
+            self.best_shared_solution_objectives = {}
 
     @staticmethod
     def _representation(game: GameRecord) -> str:
@@ -103,7 +119,83 @@ class ReplayBuffer:
             raise ValueError("representation embedding must be finite and non-empty")
         self.representation_embeddings[representation_id] = vector / max(norm, 1e-12)
 
-    def add(self, game: GameRecord, *, representation_id: str | None = None) -> None:
+    @staticmethod
+    def _solution_objective(
+        game: GameRecord,
+    ) -> tuple[tuple[str, float], float, bool] | None:
+        if not game or float(getattr(game[0], "solved", -1.0)) <= 0.5:
+            return None
+        identity = str(getattr(game[0], "representation_id", ""))
+        ratio = float(getattr(game[0], "objective_ratio", float("nan")))
+        crossings = float(getattr(game[0], "final_crossing_changes", float("nan")))
+        moves = float(getattr(game[0], "final_moves", float("nan")))
+        if not identity or not np.isfinite([ratio, crossings, moves]).all():
+            return None
+        return (
+            (identity, ratio),
+            ratio * crossings + moves,
+            bool(getattr(game[0], "shared_witness", False)),
+        )
+
+    def _update_solution_archive(self, game: GameRecord) -> None:
+        solution = self._solution_objective(game)
+        if solution is None:
+            return
+        key, objective, shared = solution
+        archive = (
+            self.best_shared_solution_objectives
+            if shared
+            else self.best_native_solution_objectives
+        )
+        archive[key] = min(objective, archive.get(key, float("inf")))
+
+    def best_native_objective(
+        self, representation_id: str, ratio: float
+    ) -> float | None:
+        self._ensure_replay_state()
+        return self.best_native_solution_objectives.get(
+            (str(representation_id), float(ratio))
+        )
+
+    def record_native_objective(
+        self, representation_id: str, ratio: float, objective: float
+    ) -> None:
+        """Remember a verified native incumbent even when its replay was not retained."""
+        self._ensure_replay_state()
+        key = (str(representation_id), float(ratio))
+        value = float(objective)
+        if not key[0] or not np.isfinite([key[1], value]).all():
+            raise ValueError("native solution identity, ratio, and objective must be finite")
+        self.best_native_solution_objectives[key] = min(
+            value, self.best_native_solution_objectives.get(key, float("inf"))
+        )
+
+    def active_distillation_records(self) -> list[GameRecord]:
+        """Return only the best donations that still beat native incumbents."""
+        self._ensure_replay_state()
+        active: dict[tuple[str, float], tuple[float, GameRecord]] = {}
+        for game in self.games:
+            solution = self._solution_objective(game)
+            if solution is None:
+                continue
+            key, shared_objective, shared = solution
+            if not shared:
+                continue
+            native_objective = self.best_native_solution_objectives.get(key)
+            if native_objective is not None and shared_objective >= native_objective:
+                continue
+            incumbent = active.get(key)
+            if incumbent is None or shared_objective < incumbent[0]:
+                active[key] = (shared_objective, game)
+        return [value[1] for _, value in sorted(active.items())]
+
+    def add(
+        self,
+        game: GameRecord,
+        *,
+        representation_id: str | None = None,
+        objective_ratio: float | None = None,
+    ) -> None:
         if not game:
             return
         self._ensure_replay_state()
@@ -111,8 +203,11 @@ class ReplayBuffer:
         for index, position in enumerate(game):
             if identity:
                 position.representation_id = identity
+            if objective_ratio is not None:
+                position.objective_ratio = float(objective_ratio)
             if int(getattr(position, "episode_position_index", -1)) < 0:
                 position.episode_position_index = index
+        self._update_solution_archive(game)
         self.games.append(game)
         self.position_count += len(game)
         if identity:

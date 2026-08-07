@@ -789,7 +789,7 @@ def evaluate_stage(
             if bool((np.asarray(final._word) == 0).all()) and int(final._n) == 1:
                 solved += 1
                 used = int(np.asarray(final._crossing_changes))
-                spent = config.game.simplify_budget - int(np.asarray(final._budget))
+                spent = game.semantic_move_count(episode["transition"].state)
                 crossings += used
                 moves += spent
                 # Every solve is a witness for u(K) <= used, whatever rung or

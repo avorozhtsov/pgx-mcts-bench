@@ -302,6 +302,72 @@ def test_shared_auxiliary_only_masks_policy_and_scalar_value_targets() -> None:
     assert metrics["solve"] > 0.0
 
 
+def test_native_update_bypasses_and_clears_separately_optimized_option_controller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    game = BraidGameConfig(
+        max_len=16,
+        max_strands=3,
+        simplify_budget=12,
+        serial_window=7,
+        serial_act_width=1,
+        serial_tape_symbols=4,
+    )
+    network = make_braid_network(
+        game, ModelConfig(channels=8, latent_channels=8, residual_blocks=1)
+    )
+    native_optimizer = torch.optim.AdamW(network.parameters(), lr=1e-3)
+    adapter = network.attach_option_policy_adapter()
+    gate = network.attach_option_policy_gate(initial_probability=0.1)
+    sharing_parameters = [*adapter.parameters(), *gate.parameters()]
+    for parameter in sharing_parameters:
+        parameter.grad = torch.ones_like(parameter)
+    sharing_before = [parameter.detach().clone() for parameter in sharing_parameters]
+
+    replay = ReplayBuffer(100, np.random.default_rng(37))
+    observation = _observation(game, batch=1)[0].permute(1, 2, 0).numpy()
+    replay.add(
+        [
+            Position(
+                observation=observation,
+                legal_actions=np.ones(game.action_size, dtype=bool),
+                policy=np.full(game.action_size, 1.0 / game.action_size, dtype=np.float32),
+                action=0,
+                player=1,
+                role=1,
+                outcome=1.0,
+                solved=1.0,
+                final_crossing_changes=0.0,
+                final_moves=1.0,
+                episode_seed=38,
+            )
+        ]
+    )
+    clipped_ids: set[int] = set()
+    original_clip = torch.nn.utils.clip_grad_norm_
+
+    def capture_clip(parameters, *args, **kwargs):
+        materialized = list(parameters)
+        clipped_ids.update(id(parameter) for parameter in materialized)
+        return original_clip(materialized, *args, **kwargs)
+
+    monkeypatch.setattr(torch.nn.utils, "clip_grad_norm_", capture_clip)
+
+    train_alphazero_step(network, native_optimizer, replay, 4, torch.device("cpu"))
+
+    native_ids = {
+        id(parameter)
+        for group in native_optimizer.param_groups
+        for parameter in group["params"]
+    }
+    sharing_ids = {id(parameter) for parameter in sharing_parameters}
+    assert clipped_ids == native_ids
+    assert clipped_ids.isdisjoint(sharing_ids)
+    assert all(parameter.grad is None for parameter in sharing_parameters)
+    for parameter, before in zip(sharing_parameters, sharing_before, strict=True):
+        torch.testing.assert_close(parameter, before, rtol=0, atol=0)
+
+
 def test_objective_censored_positions_train_only_conditional_solve() -> None:
     game = BraidGameConfig(
         max_len=16,

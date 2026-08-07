@@ -61,6 +61,43 @@ def upper_bound_cost_loss(prediction: Tensor, target: Tensor, shared: Tensor) ->
     return torch.where(shared, upper_bound, equality)
 
 
+def _optimizer_parameters(optimizer: torch.optim.Optimizer) -> list[nn.Parameter]:
+    """Return each parameter owned by an optimizer exactly once."""
+    parameters: list[nn.Parameter] = []
+    seen: set[int] = set()
+    for group in optimizer.param_groups:
+        for parameter in group["params"]:
+            if id(parameter) not in seen:
+                parameters.append(parameter)
+                seen.add(id(parameter))
+    return parameters
+
+
+def _native_forward_with_auxiliary(
+    network: PolicyValueNet,
+    observations: Tensor,
+    optimized_parameter_ids: set[int],
+) -> tuple[Tensor, Tensor, Any]:
+    """Run the base scientist without a separately optimized sharing residual."""
+    sharing_parameters = [
+        parameter
+        for attribute in ("option_policy_adapter", "option_policy_gate")
+        if (module := getattr(network, attribute, None)) is not None
+        for parameter in module.parameters()
+    ]
+    separately_optimized = bool(sharing_parameters) and {
+        id(parameter) for parameter in sharing_parameters
+    }.isdisjoint(optimized_parameter_ids)
+    if not separately_optimized:
+        return network.forward_with_auxiliary(observations)
+    enabled = bool(getattr(network, "option_adapter_enabled", True))
+    network.option_adapter_enabled = False
+    try:
+        return network.forward_with_auxiliary(observations)
+    finally:
+        network.option_adapter_enabled = enabled
+
+
 def attach_policy_value_preservation_teacher(network: PolicyValueNet) -> PolicyValueNet:
     """Attach a frozen pre-update teacher without registering it in checkpoints."""
     teacher = copy.deepcopy(network).eval()
@@ -160,6 +197,7 @@ def play_selfplay_games(
                     episode_seed=int(seeds[index]),
                     value_potential=game.value_potential(transition.state, transition.player),
                     representation_id=representation_id,
+                    objective_ratio=float(getattr(game, "ratio", float("nan"))),
                     objective_cap=(
                         float(objective_cap)
                         if objective_cap is not None
@@ -196,7 +234,9 @@ def play_selfplay_games(
                 bool((np.asarray(final._word) == 0).all()) and int(np.asarray(final._n)) == 1
             )
             crossing_changes = float(np.asarray(final._crossing_changes))
-            final_moves = float(game.config.simplify_budget - int(np.asarray(final._budget)))
+            final_moves = float(game.semantic_move_count(transition.state))
+            final_native_plies = float(game.native_ply_count(transition.state))
+            final_internal_plies = float(game.internal_ply_count(transition.state))
         objective_censored = transition.termination_reason == "objective_budget_exhausted"
         terminal_residual = residual_word_length(transition.state)
         known_residuals = [
@@ -215,6 +255,8 @@ def play_selfplay_games(
                 position.solved = solved
                 position.final_crossing_changes = crossing_changes
                 position.final_moves = final_moves
+                position.final_native_plies = final_native_plies
+                position.final_internal_plies = final_internal_plies
                 position.objective_censored = objective_censored
             position.termination_reason = transition.termination_reason
             position.best_residual_word_length = best_residual
@@ -256,6 +298,8 @@ def train_alphazero_step(
     replay_max_position_uses: int = 0,
 ) -> dict[str, float]:
     network.train()
+    optimized_parameters = _optimizer_parameters(optimizer)
+    optimized_parameter_ids = {id(parameter) for parameter in optimized_parameters}
     if bool(getattr(network, "freeze_batchnorm_stats", False)):
         for module in network.modules():
             if isinstance(module, nn.modules.batchnorm._BatchNorm):
@@ -275,7 +319,9 @@ def train_alphazero_step(
         else replay.sample_positions(batch_size)
     )
     observations = _observations(batch, device)
-    logits, values, auxiliary = network.forward_with_auxiliary(observations)
+    logits, values, auxiliary = _native_forward_with_auxiliary(
+        network, observations, optimized_parameter_ids
+    )
     shared_positions = torch.tensor(
         [bool(getattr(position, "shared_witness", False)) for position in batch],
         dtype=torch.bool,
@@ -403,7 +449,9 @@ def train_alphazero_step(
             lower[:, budget_channel, :, :] = (current - 0.25).clamp(0.0, 1.0)
             higher[:, budget_channel, :, :] = (current + 0.25).clamp(0.0, 1.0)
             paired = torch.cat([lower, higher], dim=0)
-            paired_solve = network.forward_with_auxiliary(paired)[2][0]
+            paired_solve = _native_forward_with_auxiliary(
+                network, paired, optimized_parameter_ids
+            )[2][0]
             lower_logits, higher_logits = paired_solve.chunk(2, dim=0)
             margin = float(getattr(network, "auxiliary_budget_monotonic_margin", 0.0))
             monotonic_loss = F.relu(lower_logits - higher_logits + margin).mean()
@@ -433,9 +481,12 @@ def train_alphazero_step(
         + preservation_weight * (preservation_policy + preservation_value)
         + 0.1 * relation
     )
-    optimizer.zero_grad(set_to_none=True)
+    # The option controller is attached after the native optimizer is created.
+    # Clear the whole network so stale adapter gradients cannot accumulate, then
+    # clip only the parameters this optimizer can actually update.
+    network.zero_grad(set_to_none=True)
     loss.backward()
-    nn.utils.clip_grad_norm_(network.parameters(), 5.0)
+    nn.utils.clip_grad_norm_(optimized_parameters, 5.0)
     optimizer.step()
     return {
         "loss": float(loss.item()),

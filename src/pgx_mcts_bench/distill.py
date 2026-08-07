@@ -76,6 +76,7 @@ def _view_at(
     colours: np.ndarray | None = None,
     colour: int = 0,
     internal_steps: int = 0,
+    semantic_moves: int = 0,
 ):
     return game._view(  # noqa: SLF001 - deliberate adapter between action spaces
         pgx_state,
@@ -86,6 +87,7 @@ def _view_at(
         tape,
         reward=0.0,
         internal_steps=internal_steps,
+        semantic_moves=semantic_moves,
     )
 
 
@@ -152,6 +154,7 @@ def bounded_option_loss(
                         state.tape,
                         reward=0.0,
                         internal_steps=state.internal_steps,
+                        semantic_moves=state.semantic_moves,
                     ).observation
                     for state, _, _ in branches
                 ]
@@ -307,6 +310,7 @@ def _stable_option_route_targets(
                 state.tape,
                 reward=0.0,
                 internal_steps=state.internal_steps,
+                semantic_moves=state.semantic_moves,
             )
             if not transition.legal_actions[action]:
                 valid = False
@@ -345,9 +349,15 @@ def train_bounded_option_step(
     if learning_rate_scale <= 0.0:
         raise ValueError("learning_rate_scale must be positive")
     if positions is None:
+        # Adapter-only training is the collaboration policy path. Make stale
+        # filtering the safe default so a caller cannot accidentally resample
+        # an obsolete donation from the full replay buffer.
+        records = (
+            replay.active_distillation_records() if adapter_only else replay.games
+        )
         eligible = [
             position
-            for record in replay.games
+            for record in records
             for position in record
             if position.option_state is not None and position.target_external_action >= 0
         ]
@@ -457,6 +467,7 @@ def train_bounded_option_step(
                     position.option_state.tape,
                     reward=0.0,
                     internal_steps=position.option_state.internal_steps,
+                    semantic_moves=position.option_state.semantic_moves,
                 ).observation
                 for position in batch
             ]
@@ -483,7 +494,10 @@ def train_bounded_option_step(
         + off_route_kl_weight * off_route_kl
         + off_route_gate_weight * off_route_gate
     )
-    optimizer.zero_grad(set_to_none=True)
+    # Native training may have left gradients on the frozen base while this
+    # optimizer owns only the option modules. Clear the entire network so the
+    # two optimizers never exchange stale gradients.
+    network.zero_grad(set_to_none=True)
     loss.backward()
     clipped_parameters = sharing_parameters if adapter_only else network.parameters()
     nn.utils.clip_grad_norm_(clipped_parameters, 5.0)
@@ -634,6 +648,7 @@ def _episode_samples(
                 registers=None if previous is None else previous.registers,
                 colours=None if previous is None else previous.colours,
                 colour=0 if previous is None else previous.colour,
+                semantic_moves=0 if previous is None else previous.semantic_moves,
             )
             destination = _best_destination(
                 game, result.action, serial.state.head, length
@@ -710,7 +725,9 @@ def _episode_samples(
         for position, _ in rows:
             position.solved = float(solved)
             position.final_crossing_changes = crossings
-            position.final_moves = teacher_moves + navigation
+            position.final_moves = teacher_moves
+            position.final_native_plies = teacher_moves + navigation
+            position.final_internal_plies = float(navigation)
         output[name] = [position for position, _ in rows]
         option_lengths[name] = len(rows)
     return output, {"teacher": teacher_positions, "skipped": skipped, **option_lengths}, solved

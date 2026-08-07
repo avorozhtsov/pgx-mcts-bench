@@ -457,7 +457,7 @@ class _OptionResidualBlock(nn.Module):
 
 
 class OptionPolicyAdapter(nn.Module):
-    """Zero-initialized residual policy for bounded internal options."""
+    """Zero-initialized, head-relative residual policy for bounded options."""
 
     def __init__(
         self,
@@ -477,7 +477,7 @@ class OptionPolicyAdapter(nn.Module):
             _OptionResidualBlock(width) for _ in range(residual_blocks)
         )
         self.readout = nn.Sequential(
-            nn.Linear(2 * width + 1, width),
+            nn.Linear(3 * width + 1, width),
             nn.SiLU(),
             nn.Linear(width, width),
             nn.SiLU(),
@@ -497,7 +497,13 @@ class OptionPolicyAdapter(nn.Module):
             else observation.new_ones((observation.shape[0], 1))
         )
         summary = torch.cat(
-            [hidden.mean(dim=2), hidden.amax(dim=2), internal_budget], dim=1
+            [
+                hidden.mean(dim=2),
+                hidden.amax(dim=2),
+                hidden[:, :, hidden.shape[2] // 2],
+                internal_budget,
+            ],
+            dim=1,
         )
         return self.readout(summary)
 
@@ -525,7 +531,7 @@ class OptionPolicyGate(nn.Module):
             _OptionResidualBlock(width) for _ in range(residual_blocks)
         )
         self.readout = nn.Sequential(
-            nn.Linear(2 * width + 1, width),
+            nn.Linear(3 * width + 1, width),
             nn.SiLU(),
             nn.Linear(width, 1),
         )
@@ -546,7 +552,13 @@ class OptionPolicyGate(nn.Module):
             else observation.new_ones((observation.shape[0], 1))
         )
         summary = torch.cat(
-            [hidden.mean(dim=2), hidden.amax(dim=2), internal_budget], dim=1
+            [
+                hidden.mean(dim=2),
+                hidden.amax(dim=2),
+                hidden[:, :, hidden.shape[2] // 2],
+                internal_budget,
+            ],
+            dim=1,
         )
         return self.readout(summary).sigmoid()
 
@@ -1487,6 +1499,33 @@ def load_policy_value_state_dict(
         index = [slice(None)] * source.ndim
         index[1] = slice(0, source.shape[1])
         padded[tuple(index)] = source
+        migrated_state[key] = padded
+        expanded = True
+
+    # The repaired option controller adds an explicit head-cell summary between
+    # the old mean/max pools and budget scalar. Preserve old adapter behavior by
+    # inserting zero weights for that new summary and moving the budget column.
+    for key in (
+        "option_policy_adapter.readout.0.weight",
+        "option_policy_gate.readout.0.weight",
+    ):
+        source = migrated_state.get(key)
+        target = target_state.get(key)
+        if (
+            source is None
+            or target is None
+            or source.shape == target.shape
+            or source.ndim != 2
+            or source.shape[0] != target.shape[0]
+            or target.shape[1] <= source.shape[1]
+        ):
+            continue
+        old_pooled_width = source.shape[1] - 1
+        if old_pooled_width <= 0 or target.shape[1] != source.shape[1] + old_pooled_width // 2:
+            continue
+        padded = torch.zeros_like(target)
+        padded[:, :old_pooled_width] = source[:, :old_pooled_width]
+        padded[:, -1] = source[:, -1]
         migrated_state[key] = padded
         expanded = True
 

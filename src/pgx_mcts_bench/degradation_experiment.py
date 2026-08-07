@@ -58,7 +58,7 @@ def _objective(game: GameRecord, ratio: float) -> float:
 
 
 def select_shared_games(games: list[GameRecord], dose: int, ratio: float) -> list[GameRecord]:
-    """Select the lowest-cost receiver-native witnesses deterministically."""
+    """Select the lowest-cost portable semantic witnesses deterministically."""
     shared = [
         game
         for game in games

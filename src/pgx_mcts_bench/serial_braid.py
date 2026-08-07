@@ -17,12 +17,12 @@ episodes it failed. The consequences:
   W=1 and five strides that is 22 against 388, and it does not grow when the
   word does;
 * the network never sees the whole word, so nothing in it depends on `L` either;
-* but reaching a distant site costs *actions*, and in MCTS an action is a ply of
-  search depth. That is the price, and measuring it is the point.
+* but reaching a distant site costs *native plies*, and in MCTS a ply is search
+  depth. That controller/search cost is reported separately from semantic `L`.
 
-Shifts consume budget like any other move. The alternative -- free shifts -- makes
-the game non-terminating, and it would also hide exactly the cost we want to
-measure. Serial variants compensate with a larger `simplify_budget`.
+Shifts consume the native episode budget like any other ply. The alternative --
+free shifts -- makes the game non-terminating. They do not consume the semantic
+solution objective. Serial variants compensate with a larger `simplify_budget`.
 
 The word is cyclic, so the head wraps and a window may show the same letter more
 than once when the word is shorter than `w`. That is correct rather than a
@@ -60,6 +60,9 @@ class SerialState(NamedTuple):
     colour: int
     tape: np.ndarray
     internal_steps: int
+    # Portable braid-state changes since the start of the simplifier episode.
+    # Appended with a default so old seven-field pickles remain loadable.
+    semantic_moves: int = 0
 
 # Serial action layout, with G = max_strands - 1 generators and W = act_width.
 # One block of `per_offset = 3 + 2G + 1` actions per actionable offset, then the
@@ -403,7 +406,14 @@ class SerialBraidGame:
         )
 
     def step(self, state: Any, action: int) -> Transition:
-        pgx_state, head, registers, colours, colour, tape, internal_steps = state
+        pgx_state = state.pgx
+        head = state.head
+        registers = state.registers
+        colours = state.colours
+        colour = state.colour
+        tape = state.tape
+        internal_steps = state.internal_steps
+        semantic_moves = int(getattr(state, "semantic_moves", 0))
         mask = self._legal(pgx_state, head, internal_steps)
         if not mask[action]:
             raise ValueError(f"Illegal serial action {self.describe(action)}")
@@ -418,6 +428,7 @@ class SerialBraidGame:
             return self._view(
                 self._charge_budget(pgx_state), head, flipped, colours, colour,
                 tape, reward=0.0, internal_steps=internal_steps + 1,
+                semantic_moves=semantic_moves,
             )
 
         # Painting costs a ply like everything else, and so does cycling: a free
@@ -434,6 +445,7 @@ class SerialBraidGame:
             return self._view(
                 self._charge_budget(pgx_state), head, registers, painted, held,
                 tape, reward=0.0, internal_steps=internal_steps + 1,
+                semantic_moves=semantic_moves,
             )
 
         displacement = self.shift_of(action)
@@ -449,6 +461,7 @@ class SerialBraidGame:
             return self._view(
                 advanced, new_head, registers, carried, colour, written,
                 reward=0.0, internal_steps=internal_steps + 1,
+                semantic_moves=semantic_moves,
             )
 
         actor = int(np.asarray(pgx_state.current_player))
@@ -459,9 +472,18 @@ class SerialBraidGame:
         moved_tape = self._rewrite_tape(pgx_state, action, head, tape)
         rewards = np.asarray(next_state.rewards, dtype=np.float32)
         length = max(int(np.asarray(next_state._word).astype(bool).sum()), 1)
+        before_braid = (
+            tuple(int(value) for value in np.asarray(pgx_state._word) if int(value)),
+            int(np.asarray(pgx_state._n)),
+        )
+        after_braid = (
+            tuple(int(value) for value in np.asarray(next_state._word) if int(value)),
+            int(np.asarray(next_state._n)),
+        )
         return self._view(
             next_state, head % length, registers, colours, colour, moved_tape,
             reward=float(rewards[actor]), internal_steps=0,
+            semantic_moves=semantic_moves + int(after_braid != before_braid),
         )
 
     def _rewrite_tape(
@@ -522,9 +544,8 @@ class SerialBraidGame:
     def _charge_budget(self, pgx_state: Any):
         """Spend one ply without touching the word.
 
-        A shift has to cost something or the game never ends, and it has to cost
-        the *same* thing an edit costs, or the measurement is rigged in the
-        serial agent's favour.
+        A shift has to consume the native episode clock or the game never ends.
+        This clock is deliberately separate from the semantic solution cost.
         """
         import jax.numpy as jnp
 
@@ -554,12 +575,12 @@ class SerialBraidGame:
         return np.asarray(pgx_state.rewards, dtype=np.float32)
 
     def value_potential(self, state: Any, player: int) -> float:
-        pgx_state = state[0]
+        pgx_state = state.pgx
         if not self.config.multi_objective or bool(np.asarray(pgx_state.terminated)):
             return 0.0
         ratio = float(np.exp(float(np.asarray(pgx_state._log_ratio))))
         crossings = int(np.asarray(pgx_state._crossing_changes))
-        moves = max(self.config.simplify_budget - int(np.asarray(pgx_state._budget)), 0)
+        moves = int(getattr(state, "semantic_moves", 0))
         worst = (ratio + 1.0) * self.config.simplify_budget
         simplifier_potential = -2.0 * (ratio * crossings + moves) / worst
         simplifier = 1 - int(np.asarray(pgx_state._scrambler))
@@ -581,6 +602,17 @@ class SerialBraidGame:
         """Drop the head and registers; callers inspecting the word want Pgx."""
         pgx_state = state[0]
         return pgx_state
+
+    def semantic_move_count(self, state: Any) -> int:
+        return int(getattr(state, "semantic_moves", 0))
+
+    def native_ply_count(self, state: Any) -> int:
+        return max(
+            self.config.simplify_budget - int(np.asarray(state.pgx._budget)), 0
+        )
+
+    def internal_ply_count(self, state: Any) -> int:
+        return max(self.native_ply_count(state) - self.semantic_move_count(state), 0)
 
     # -- observation and legality --------------------------------------------
 
@@ -646,15 +678,16 @@ class SerialBraidGame:
         tape: np.ndarray,
         reward: float,
         internal_steps: int = 0,
+        semantic_moves: int = 0,
     ) -> Transition:
         observation = np.asarray(pgx_state.observation, dtype=np.float32)  # (L, C)
         objective_remaining = None
         if self.config.objective_budget_channel:
             ratio = float(np.exp(float(np.asarray(pgx_state._log_ratio))))
-            moves = max(
-                self.config.simplify_budget - int(np.asarray(pgx_state._budget)), 0
+            spent = (
+                ratio * int(np.asarray(pgx_state._crossing_changes))
+                + int(semantic_moves)
             )
-            spent = ratio * int(np.asarray(pgx_state._crossing_changes)) + moves
             cap = (ratio + 1.0) * self.config.simplify_budget
             remaining = np.clip((cap - spent) / max(cap, 1.0), -1.0, 1.0)
             objective_remaining = remaining
@@ -717,7 +750,14 @@ class SerialBraidGame:
             window = np.concatenate([window, plane], axis=1)
         return Transition(
             state=SerialState(
-                pgx_state, head, registers, colours, colour, tape, internal_steps
+                pgx_state,
+                head,
+                registers,
+                colours,
+                colour,
+                tape,
+                internal_steps,
+                semantic_moves,
             ),
             observation=window.reshape(1, observed_width, window.shape[1]),
             legal_actions=self._legal(pgx_state, head, internal_steps),
