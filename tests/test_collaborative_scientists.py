@@ -353,6 +353,36 @@ def test_old_checkpoint_ignores_new_objective_budget_channel(tmp_path: Path) -> 
         assert scientist.config.model.policy_value_preservation_weight == expected_preservation
 
 
+def test_triad_checkpoint_zero_pads_nested_remaining_budget_inputs(tmp_path: Path) -> None:
+    candidate = next(
+        candidate for candidate in candidates() if candidate.name == "s-triad-wst"
+    )
+    config = _config(candidate, ("R(3,12)#0", 0), 0, "cpu", selfplay_games=1)
+    original = make_braid_network(config.game, config.model)
+    checkpoint = tmp_path / "triad.pt"
+    torch.save({"network": original.state_dict()}, checkpoint)
+
+    migrated = load_scientist(
+        candidate.name,
+        checkpoint,
+        seed=0,
+        device="cpu",
+        require_factorized=True,
+        objective_budget_channel=True,
+    ).network.state_dict()
+
+    for key in (
+        "scan.gru.weight_ih_l0",
+        "scan.body.0.weight",
+        "tape.representation.net.0.weight",
+    ):
+        before = original.state_dict()[key]
+        after = migrated[key]
+        assert after.shape[1] > before.shape[1]
+        torch.testing.assert_close(after[:, : before.shape[1]], before)
+        assert torch.count_nonzero(after[:, before.shape[1] :]) == 0
+
+
 def test_tape4_h5_migrates_two_trailing_budget_channels_exactly(tmp_path: Path) -> None:
     by_name = {candidate.name: candidate for candidate in candidates()}
     source = by_name["s-tape4"]

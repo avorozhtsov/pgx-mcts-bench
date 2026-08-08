@@ -1481,6 +1481,9 @@ def load_policy_value_state_dict(
         "input_project.weight",
         "gru.weight_ih_l0",
         "body.0.weight",
+        "scan.gru.weight_ih_l0",
+        "scan.body.0.weight",
+        "tape.representation.net.0.weight",
     }
     expanded = False
     for key in expandable_inputs:
