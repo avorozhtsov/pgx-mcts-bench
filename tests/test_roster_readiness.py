@@ -10,6 +10,7 @@ from pgx_mcts_bench.roster_readiness import (
     _calibrate_checkpoint,
     _critic_checks,
     build_frontier_banks,
+    run_roster_readiness,
     select_frontier_panels,
 )
 
@@ -94,3 +95,39 @@ def test_frontier_bank_builder_freezes_disjoint_hashes(tmp_path: Path) -> None:
     assert {row["id"] for row in training}.isdisjoint(row["id"] for row in evaluation)
     assert report["training_sha256"]
     assert report["evaluation_sha256"]
+
+
+def test_readiness_reuses_attempt_seeds_across_scientists_and_doses(
+    tmp_path: Path, monkeypatch
+) -> None:
+    checkpoints = {"a": tmp_path / "a.pt", "b": tmp_path / "b.pt"}
+    for path in checkpoints.values():
+        path.write_bytes(b"checkpoint")
+    payloads = []
+
+    def fake_workers(jobs, *, workers):
+        del workers
+        payloads.extend(payload for _, payload in jobs)
+        return [
+            {
+                "scientist": payload["scientist"],
+                "evaluation": {"representation_solve_rate": 0.0},
+            }
+            for _, payload in jobs
+        ]
+
+    monkeypatch.setattr("pgx_mcts_bench.roster_readiness._run_workers", fake_workers)
+    run_roster_readiness(
+        checkpoints,
+        tmp_path / "run",
+        calibration_size=4,
+        confirmation_size=4,
+        frontier_pool_size=8,
+        simulation_doses=(8, 16),
+        seed=37,
+    )
+
+    assert {payload["seed"] for payload in payloads} == {37}
+    assert {payload["namespace"] for payload in payloads} == {
+        "dose-calibration-paired"
+    }

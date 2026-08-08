@@ -334,6 +334,9 @@ def run_roster_readiness(
         "objective_cap": None,
         "remaining_L_feature": "soft global remainder; never terminates search",
         "attempt_protocol": "paired-seed-dirichlet-root-noise-temperature-zero",
+        "attempt_pairing": (
+            "same representation-attempt seeds for every scientist and simulation dose"
+        ),
         "seed": seed,
         "device": device,
     }
@@ -357,7 +360,7 @@ def run_roster_readiness(
     selected_rows = None
     for dose in simulation_doses:
         jobs = []
-        for scientist_index, (name, checkpoint) in enumerate(checkpoints.items()):
+        for name, checkpoint in checkpoints.items():
             path = output / "dose-calibration" / f"sim{dose}-{name}.json"
             path.parent.mkdir(parents=True, exist_ok=True)
             jobs.append(
@@ -371,8 +374,8 @@ def run_roster_readiness(
                         "simulations": dose,
                         "attempts": attempts,
                         "action_horizon": action_horizon,
-                        "seed": seed + scientist_index * 100_000_003,
-                        "namespace": f"dose-calibration-{dose}",
+                        "seed": seed,
+                        "namespace": "dose-calibration-paired",
                         "device": device,
                     },
                 )
@@ -416,7 +419,7 @@ def run_roster_readiness(
     _atomic_json(output / "calibration.json", {"scientists": calibration_reports})
 
     confirmation_jobs = []
-    for scientist_index, (name, checkpoint) in enumerate(calibrated_paths.items()):
+    for name, checkpoint in calibrated_paths.items():
         path = output / "confirmation" / f"{name}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         confirmation_jobs.append(
@@ -430,7 +433,7 @@ def run_roster_readiness(
                     "simulations": selected,
                     "attempts": attempts,
                     "action_horizon": action_horizon,
-                    "seed": seed + 500_000_000 + scientist_index * 100_000_003,
+                    "seed": seed + 500_000_000,
                     "namespace": "source-disjoint-confirmation",
                     "device": device,
                 },
