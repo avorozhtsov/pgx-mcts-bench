@@ -360,7 +360,23 @@ def test_triad_checkpoint_zero_pads_nested_remaining_budget_inputs(tmp_path: Pat
     config = _config(candidate, ("R(3,12)#0", 0), 0, "cpu", selfplay_games=1)
     original = make_braid_network(config.game, config.model)
     checkpoint = tmp_path / "triad.pt"
-    torch.save({"network": original.state_dict()}, checkpoint)
+    old_state = {
+        key: value
+        for key, value in original.state_dict().items()
+        if not (
+            key.startswith(("scan.auxiliary.", "tape.auxiliary."))
+            and any(
+                component in key
+                for component in (
+                    ".cost_budget.",
+                    ".solve_conditioning.",
+                    ".body_budget_skip.",
+                    ".legacy_budget_skip.",
+                )
+            )
+        )
+    }
+    torch.save({"network": old_state}, checkpoint)
 
     migrated = load_scientist(
         candidate.name,

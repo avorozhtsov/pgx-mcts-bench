@@ -1535,7 +1535,12 @@ def load_policy_value_state_dict(
         expanded = True
 
     incompatible = network.load_state_dict(migrated_state, strict=False)
-    auxiliary_prefixes = ("auxiliary.", "window.auxiliary.")
+    auxiliary_prefixes = (
+        "auxiliary.",
+        "window.auxiliary.",
+        "scan.auxiliary.",
+        "tape.auxiliary.",
+    )
     bad_missing = [
         key for key in incompatible.missing_keys if not key.startswith(auxiliary_prefixes)
     ]
