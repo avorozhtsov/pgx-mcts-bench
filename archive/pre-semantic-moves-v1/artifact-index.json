@@ -1,0 +1,3246 @@
+{
+  "schema": "pgx-mcts-bench-legacy-artifact-index-v1",
+  "updated_at": "2026-08-09T09:52:43.310730+00:00",
+  "entries": [
+    {
+      "name": ".DS_Store",
+      "original": "artifacts/.DS_Store",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/.DS_Store",
+      "kind": "file",
+      "bytes": 18436,
+      "sha256": "eac94d6608b71345fe811689dd267f1832f4b0ccdfbbdfa006f2b2460da0bc6b"
+    },
+    {
+      "name": "ab-value-3arm",
+      "original": "artifacts/ab-value-3arm",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/ab-value-3arm",
+      "kind": "directory",
+      "bytes": 1752177,
+      "sha256": null
+    },
+    {
+      "name": "adapter-counterfactual-s-tape4-h5-seed20260950-20260805",
+      "original": "artifacts/adapter-counterfactual-s-tape4-h5-seed20260950-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/adapter-counterfactual-s-tape4-h5-seed20260950-20260805",
+      "kind": "directory",
+      "bytes": 51224,
+      "sha256": null
+    },
+    {
+      "name": "adapter-counterfactual-s-tape4-h5-seed20260952-20260805",
+      "original": "artifacts/adapter-counterfactual-s-tape4-h5-seed20260952-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/adapter-counterfactual-s-tape4-h5-seed20260952-20260805",
+      "kind": "directory",
+      "bytes": 51227,
+      "sha256": null
+    },
+    {
+      "name": "adaptive-scientists-regression-20260802",
+      "original": "artifacts/adaptive-scientists-regression-20260802",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/adaptive-scientists-regression-20260802",
+      "kind": "directory",
+      "bytes": 103114866,
+      "sha256": null
+    },
+    {
+      "name": "approved-next-sequence-20260805-summary",
+      "original": "artifacts/approved-next-sequence-20260805-summary",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/approved-next-sequence-20260805-summary",
+      "kind": "directory",
+      "bytes": 2872,
+      "sha256": null
+    },
+    {
+      "name": "archive-positive-braid-rungs",
+      "original": "artifacts/archive-positive-braid-rungs",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/archive-positive-braid-rungs",
+      "kind": "directory",
+      "bytes": 116048,
+      "sha256": null
+    },
+    {
+      "name": "bounded-option-distill-20260801",
+      "original": "artifacts/bounded-option-distill-20260801",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/bounded-option-distill-20260801",
+      "kind": "directory",
+      "bytes": 15973228,
+      "sha256": null
+    },
+    {
+      "name": "bounded-option-distill-controlled-20260802",
+      "original": "artifacts/bounded-option-distill-controlled-20260802",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/bounded-option-distill-controlled-20260802",
+      "kind": "directory",
+      "bytes": 63098483,
+      "sha256": null
+    },
+    {
+      "name": "bounded-option-sharing-admission-20260805",
+      "original": "artifacts/bounded-option-sharing-admission-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/bounded-option-sharing-admission-20260805",
+      "kind": "directory",
+      "bytes": 1267412,
+      "sha256": null
+    },
+    {
+      "name": "bounded-option-sharing-admission-conservative-20260805",
+      "original": "artifacts/bounded-option-sharing-admission-conservative-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/bounded-option-sharing-admission-conservative-20260805",
+      "kind": "directory",
+      "bytes": 1266598,
+      "sha256": null
+    },
+    {
+      "name": "bounds.jsonl",
+      "original": "artifacts/bounds.jsonl",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/bounds.jsonl",
+      "kind": "file",
+      "bytes": 38560,
+      "sha256": "3864c44f2c7b29b68ceab5071a9ccc2b6b0c2bb55194ae61517303cffe068068"
+    },
+    {
+      "name": "bounds.md",
+      "original": "artifacts/bounds.md",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/bounds.md",
+      "kind": "file",
+      "bytes": 1769,
+      "sha256": "bf8cb88f11fd25b82adc89546bdb85a2818213090b1bf954ca2f5d3b4d0bf092"
+    },
+    {
+      "name": "bstar-conv-six-iteration-seed71",
+      "original": "artifacts/bstar-conv-six-iteration-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/bstar-conv-six-iteration-seed71",
+      "kind": "directory",
+      "bytes": 11474770,
+      "sha256": null
+    },
+    {
+      "name": "bstar-family-five-rung-seed71",
+      "original": "artifacts/bstar-family-five-rung-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/bstar-family-five-rung-seed71",
+      "kind": "directory",
+      "bytes": 64146856,
+      "sha256": null
+    },
+    {
+      "name": "bstar-family-smoke-seed71",
+      "original": "artifacts/bstar-family-smoke-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/bstar-family-smoke-seed71",
+      "kind": "directory",
+      "bytes": 12657951,
+      "sha256": null
+    },
+    {
+      "name": "bstar-family-smoke-seed71-invalid-duplicate-k2",
+      "original": "artifacts/bstar-family-smoke-seed71-invalid-duplicate-k2",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/bstar-family-smoke-seed71-invalid-duplicate-k2",
+      "kind": "directory",
+      "bytes": 1612286,
+      "sha256": null
+    },
+    {
+      "name": "budget-critic-d-tape4-u1-diverse65-roster-20260804",
+      "original": "artifacts/budget-critic-d-tape4-u1-diverse65-roster-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-critic-d-tape4-u1-diverse65-roster-20260804",
+      "kind": "directory",
+      "bytes": 1343901,
+      "sha256": null
+    },
+    {
+      "name": "budget-critic-d-tape4-u1-easy20-roster-20260804",
+      "original": "artifacts/budget-critic-d-tape4-u1-easy20-roster-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-critic-d-tape4-u1-easy20-roster-20260804",
+      "kind": "directory",
+      "bytes": 1288912,
+      "sha256": null
+    },
+    {
+      "name": "budget-critic-d-tape4-u1-easy5-roster-20260804",
+      "original": "artifacts/budget-critic-d-tape4-u1-easy5-roster-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-critic-d-tape4-u1-easy5-roster-20260804",
+      "kind": "directory",
+      "bytes": 1270421,
+      "sha256": null
+    },
+    {
+      "name": "budget-critic-d-tape4-u1-easy5-roster-v2-20260804",
+      "original": "artifacts/budget-critic-d-tape4-u1-easy5-roster-v2-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-critic-d-tape4-u1-easy5-roster-v2-20260804",
+      "kind": "directory",
+      "bytes": 1270511,
+      "sha256": null
+    },
+    {
+      "name": "budget-critic-d-tape4-u1-easy5-roster-v3-20260804",
+      "original": "artifacts/budget-critic-d-tape4-u1-easy5-roster-v3-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-critic-d-tape4-u1-easy5-roster-v3-20260804",
+      "kind": "directory",
+      "bytes": 1270708,
+      "sha256": null
+    },
+    {
+      "name": "budget-critic-d-tape4-u1-easy5-roster-v4-20260804",
+      "original": "artifacts/budget-critic-d-tape4-u1-easy5-roster-v4-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-critic-d-tape4-u1-easy5-roster-v4-20260804",
+      "kind": "directory",
+      "bytes": 1270676,
+      "sha256": null
+    },
+    {
+      "name": "budget-critic-d-tape4-u1-easy5-roster-v5-20260804",
+      "original": "artifacts/budget-critic-d-tape4-u1-easy5-roster-v5-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-critic-d-tape4-u1-easy5-roster-v5-20260804",
+      "kind": "directory",
+      "bytes": 1270663,
+      "sha256": null
+    },
+    {
+      "name": "budget-critic-s-w11-128-diverse65-roster-20260804",
+      "original": "artifacts/budget-critic-s-w11-128-diverse65-roster-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-critic-s-w11-128-diverse65-roster-20260804",
+      "kind": "directory",
+      "bytes": 1316285,
+      "sha256": null
+    },
+    {
+      "name": "budget-critic-s-w11-128-easy20-roster-20260804",
+      "original": "artifacts/budget-critic-s-w11-128-easy20-roster-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-critic-s-w11-128-easy20-roster-20260804",
+      "kind": "directory",
+      "bytes": 1261359,
+      "sha256": null
+    },
+    {
+      "name": "budget-critic-s-w11-128-easy5-roster-20260804",
+      "original": "artifacts/budget-critic-s-w11-128-easy5-roster-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-critic-s-w11-128-easy5-roster-20260804",
+      "kind": "directory",
+      "bytes": 1242913,
+      "sha256": null
+    },
+    {
+      "name": "budget-critic-s-w11-128-easy5-roster-v2-20260804",
+      "original": "artifacts/budget-critic-s-w11-128-easy5-roster-v2-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-critic-s-w11-128-easy5-roster-v2-20260804",
+      "kind": "directory",
+      "bytes": 1243019,
+      "sha256": null
+    },
+    {
+      "name": "budget-critic-s-w11-128-easy5-roster-v3-20260804",
+      "original": "artifacts/budget-critic-s-w11-128-easy5-roster-v3-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-critic-s-w11-128-easy5-roster-v3-20260804",
+      "kind": "directory",
+      "bytes": 1243182,
+      "sha256": null
+    },
+    {
+      "name": "budget-critic-s-window-128-diverse65-roster-20260804",
+      "original": "artifacts/budget-critic-s-window-128-diverse65-roster-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-critic-s-window-128-diverse65-roster-20260804",
+      "kind": "directory",
+      "bytes": 1316754,
+      "sha256": null
+    },
+    {
+      "name": "budget-critic-s-window-128-easy20-roster-20260804",
+      "original": "artifacts/budget-critic-s-window-128-easy20-roster-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-critic-s-window-128-easy20-roster-20260804",
+      "kind": "directory",
+      "bytes": 1261959,
+      "sha256": null
+    },
+    {
+      "name": "budget-critic-s-window-128-easy5-roster-20260804",
+      "original": "artifacts/budget-critic-s-window-128-easy5-roster-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-critic-s-window-128-easy5-roster-20260804",
+      "kind": "directory",
+      "bytes": 1243404,
+      "sha256": null
+    },
+    {
+      "name": "budget-critic-s-window-128-easy5-roster-v3-20260804",
+      "original": "artifacts/budget-critic-s-window-128-easy5-roster-v3-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-critic-s-window-128-easy5-roster-v3-20260804",
+      "kind": "directory",
+      "bytes": 1243665,
+      "sha256": null
+    },
+    {
+      "name": "budget-critic-swindow-easy5-20260804",
+      "original": "artifacts/budget-critic-swindow-easy5-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-critic-swindow-easy5-20260804",
+      "kind": "directory",
+      "bytes": 1243422,
+      "sha256": null
+    },
+    {
+      "name": "budget-critic-swindow-easy5-bnfreeze-20260804",
+      "original": "artifacts/budget-critic-swindow-easy5-bnfreeze-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-critic-swindow-easy5-bnfreeze-20260804",
+      "kind": "directory",
+      "bytes": 1243443,
+      "sha256": null
+    },
+    {
+      "name": "budget-critic-swindow-pretrain-20260804.json",
+      "original": "artifacts/budget-critic-swindow-pretrain-20260804.json",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-critic-swindow-pretrain-20260804.json",
+      "kind": "file",
+      "bytes": 15313,
+      "sha256": "a43cc6585f479ad170d65eca754b551d8a75ec59c7f555dc7c30f8923e870982"
+    },
+    {
+      "name": "budget-critic-swindow-smoke-20260804",
+      "original": "artifacts/budget-critic-swindow-smoke-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-critic-swindow-smoke-20260804",
+      "kind": "directory",
+      "bytes": 1239054,
+      "sha256": null
+    },
+    {
+      "name": "budget-head-audit-stage21-20260803.json",
+      "original": "artifacts/budget-head-audit-stage21-20260803.json",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-head-audit-stage21-20260803.json",
+      "kind": "file",
+      "bytes": 15622,
+      "sha256": "64a1b97be0701b05da4e68bb62e28fbd79dce3f1b030ddb709cd0c7565103e40"
+    },
+    {
+      "name": "budget-heldout-gate-d-tape4-u1-diverse65-fresh75-84-20260804.json",
+      "original": "artifacts/budget-heldout-gate-d-tape4-u1-diverse65-fresh75-84-20260804.json",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-heldout-gate-d-tape4-u1-diverse65-fresh75-84-20260804.json",
+      "kind": "file",
+      "bytes": 110615,
+      "sha256": "903eaff92c03f0b45a3694df4c0fb81dc24411010429728a569b308620012eb6"
+    },
+    {
+      "name": "budget-heldout-gate-d-tape4-u1-easy20-untouched65-74-20260804.json",
+      "original": "artifacts/budget-heldout-gate-d-tape4-u1-easy20-untouched65-74-20260804.json",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-heldout-gate-d-tape4-u1-easy20-untouched65-74-20260804.json",
+      "kind": "file",
+      "bytes": 110767,
+      "sha256": "28737237ef4e45ee206d56a177d985ec6d420da707bb5b8f0d2c415c31466f01"
+    },
+    {
+      "name": "budget-heldout-gate-d-tape4-u1-fresh10-20260804.json",
+      "original": "artifacts/budget-heldout-gate-d-tape4-u1-fresh10-20260804.json",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-heldout-gate-d-tape4-u1-fresh10-20260804.json",
+      "kind": "file",
+      "bytes": 107699,
+      "sha256": "13460352f93e250bfbb2ec44e9f67abdd9549743eaca0591c9ee628037c685bc"
+    },
+    {
+      "name": "budget-heldout-gate-d-tape4-u1-untouched65-74-20260804.json",
+      "original": "artifacts/budget-heldout-gate-d-tape4-u1-untouched65-74-20260804.json",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-heldout-gate-d-tape4-u1-untouched65-74-20260804.json",
+      "kind": "file",
+      "bytes": 110584,
+      "sha256": "a2836207022b47ecd0101ea8982e6611b7c379dd4b70009035fa24fa68279420"
+    },
+    {
+      "name": "budget-heldout-gate-easy10-20260804.json",
+      "original": "artifacts/budget-heldout-gate-easy10-20260804.json",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-heldout-gate-easy10-20260804.json",
+      "kind": "file",
+      "bytes": 107470,
+      "sha256": "639c8948496d8c0ab99478c0de06721859247b2a28ecdc8f27a79d1c340f075e"
+    },
+    {
+      "name": "budget-heldout-gate-fresh10-20260804.json",
+      "original": "artifacts/budget-heldout-gate-fresh10-20260804.json",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-heldout-gate-fresh10-20260804.json",
+      "kind": "file",
+      "bytes": 108203,
+      "sha256": "8063a74c937c1dcb6272faad172e78363f1f0c7c0992fa2d6231c1e0951f1f1c"
+    },
+    {
+      "name": "budget-heldout-gate-s-w11-128-diverse65-fresh75-84-20260804.json",
+      "original": "artifacts/budget-heldout-gate-s-w11-128-diverse65-fresh75-84-20260804.json",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-heldout-gate-s-w11-128-diverse65-fresh75-84-20260804.json",
+      "kind": "file",
+      "bytes": 110588,
+      "sha256": "e6cc124fc074d5d3312c46522a25f15700f1e7b4e5178d29f29b2d89b026a592"
+    },
+    {
+      "name": "budget-heldout-gate-s-w11-128-easy20-untouched65-74-20260804.json",
+      "original": "artifacts/budget-heldout-gate-s-w11-128-easy20-untouched65-74-20260804.json",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-heldout-gate-s-w11-128-easy20-untouched65-74-20260804.json",
+      "kind": "file",
+      "bytes": 110803,
+      "sha256": "91dc5094ceb300679e7dd74a45b0e42eb7a8defaa28841f53691d2230677f779"
+    },
+    {
+      "name": "budget-heldout-gate-s-w11-128-fresh10-20260804.json",
+      "original": "artifacts/budget-heldout-gate-s-w11-128-fresh10-20260804.json",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-heldout-gate-s-w11-128-fresh10-20260804.json",
+      "kind": "file",
+      "bytes": 108100,
+      "sha256": "a284fd4688d6050e67577d6d40c4902847173630187b10af67de785e189bb446"
+    },
+    {
+      "name": "budget-heldout-gate-s-w11-128-untouched65-74-20260804.json",
+      "original": "artifacts/budget-heldout-gate-s-w11-128-untouched65-74-20260804.json",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-heldout-gate-s-w11-128-untouched65-74-20260804.json",
+      "kind": "file",
+      "bytes": 110791,
+      "sha256": "5929b22f7363c991dc8570885fe271e590f8a27e122d1b9d91bd91dcf3c05246"
+    },
+    {
+      "name": "budget-heldout-gate-s-window-128-diverse65-fresh75-84-20260804.json",
+      "original": "artifacts/budget-heldout-gate-s-window-128-diverse65-fresh75-84-20260804.json",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-heldout-gate-s-window-128-diverse65-fresh75-84-20260804.json",
+      "kind": "file",
+      "bytes": 110715,
+      "sha256": "011dfeffbee2557b29c1ed5194578c349d72d13b47fa4a52b4a28780d437e964"
+    },
+    {
+      "name": "budget-heldout-gate-s-window-128-easy20-untouched65-74-20260804.json",
+      "original": "artifacts/budget-heldout-gate-s-window-128-easy20-untouched65-74-20260804.json",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-heldout-gate-s-window-128-easy20-untouched65-74-20260804.json",
+      "kind": "file",
+      "bytes": 110569,
+      "sha256": "b4d59686d96005f3986ce69b7e1b914a1f70233f7e3712c3e4ae12a1be650b8b"
+    },
+    {
+      "name": "budget-heldout-gate-s-window-128-fresh10-20260804.json",
+      "original": "artifacts/budget-heldout-gate-s-window-128-fresh10-20260804.json",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-heldout-gate-s-window-128-fresh10-20260804.json",
+      "kind": "file",
+      "bytes": 107931,
+      "sha256": "3ea705f45f602d2959ba80591908dfbb4c75d1b6446ff634c378cc90f246e428"
+    },
+    {
+      "name": "budget-heldout-gate-s-window-128-untouched65-74-20260804.json",
+      "original": "artifacts/budget-heldout-gate-s-window-128-untouched65-74-20260804.json",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-heldout-gate-s-window-128-untouched65-74-20260804.json",
+      "kind": "file",
+      "bytes": 110732,
+      "sha256": "486aece77cb1bf50ce0e16e023afde33954c8efc5eadbc55b20f9b7cc47411f2"
+    },
+    {
+      "name": "budget-heldout-gate-smoke-20260804.json",
+      "original": "artifacts/budget-heldout-gate-smoke-20260804.json",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-heldout-gate-smoke-20260804.json",
+      "kind": "file",
+      "bytes": 9407,
+      "sha256": "68ffc94e3f878952f9c7eba33baa3721cd445104241eaf4736b44efe9cf9145f"
+    },
+    {
+      "name": "budget-search-savings-fresh20-20260804.json",
+      "original": "artifacts/budget-search-savings-fresh20-20260804.json",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-search-savings-fresh20-20260804.json",
+      "kind": "file",
+      "bytes": 132558,
+      "sha256": "9ab0c871a0e8c0045ca8ab6d4a3609386d507d56943d026ea1eb44f254802fba"
+    },
+    {
+      "name": "budget-search-savings-smoke-20260804.json",
+      "original": "artifacts/budget-search-savings-smoke-20260804.json",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-search-savings-smoke-20260804.json",
+      "kind": "file",
+      "bytes": 4577,
+      "sha256": "a1e081bdb84745a0163e1e5c6c271d7c21419376e399865d0e8c8e753a5aab22"
+    },
+    {
+      "name": "budget-search-savings-solve-gated-fresh20-20260804.json",
+      "original": "artifacts/budget-search-savings-solve-gated-fresh20-20260804.json",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-search-savings-solve-gated-fresh20-20260804.json",
+      "kind": "file",
+      "bytes": 93876,
+      "sha256": "d0197cfbe36d5178725c593322ca2aaf226acb2f78937f17a1ecb3580e804d48"
+    },
+    {
+      "name": "budget-search-savings-solve-gated-smoke-20260804.json",
+      "original": "artifacts/budget-search-savings-solve-gated-smoke-20260804.json",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/budget-search-savings-solve-gated-smoke-20260804.json",
+      "kind": "file",
+      "bytes": 3867,
+      "sha256": "0a9ce0306e8c3fdd09653e6dd963266be7f84c9ee217da55af9b183e35634607"
+    },
+    {
+      "name": "central-benchmark",
+      "original": "artifacts/central-benchmark",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/central-benchmark",
+      "kind": "directory",
+      "bytes": 11975222,
+      "sha256": null
+    },
+    {
+      "name": "central-benchmark-smoke",
+      "original": "artifacts/central-benchmark-smoke",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/central-benchmark-smoke",
+      "kind": "directory",
+      "bytes": 2580523,
+      "sha256": null
+    },
+    {
+      "name": "collaboration-corrected-20260803",
+      "original": "artifacts/collaboration-corrected-20260803",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/collaboration-corrected-20260803",
+      "kind": "directory",
+      "bytes": 167889544,
+      "sha256": null
+    },
+    {
+      "name": "collaboration-pilot-200-local-20260802",
+      "original": "artifacts/collaboration-pilot-200-local-20260802",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/collaboration-pilot-200-local-20260802",
+      "kind": "directory",
+      "bytes": 25860265468,
+      "sha256": null
+    },
+    {
+      "name": "collaboration-pilot-200-ratio10-budget-20260803",
+      "original": "artifacts/collaboration-pilot-200-ratio10-budget-20260803",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/collaboration-pilot-200-ratio10-budget-20260803",
+      "kind": "directory",
+      "bytes": 4426192218,
+      "sha256": null
+    },
+    {
+      "name": "collaboration-pilot-75-aux-only-20260802",
+      "original": "artifacts/collaboration-pilot-75-aux-only-20260802",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/collaboration-pilot-75-aux-only-20260802",
+      "kind": "directory",
+      "bytes": 381386877,
+      "sha256": null
+    },
+    {
+      "name": "collaboration-pilot-75-local-high-20260802",
+      "original": "artifacts/collaboration-pilot-75-local-high-20260802",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/collaboration-pilot-75-local-high-20260802",
+      "kind": "directory",
+      "bytes": 1125525871,
+      "sha256": null
+    },
+    {
+      "name": "collaboration-pilot-75-strict-sharing-20260802",
+      "original": "artifacts/collaboration-pilot-75-strict-sharing-20260802",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/collaboration-pilot-75-strict-sharing-20260802",
+      "kind": "directory",
+      "bytes": 381265164,
+      "sha256": null
+    },
+    {
+      "name": "collaboration-v7-engineering-smoke-no-sharing-seed20262010",
+      "original": "artifacts/collaboration-v7-engineering-smoke-no-sharing-seed20262010",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/collaboration-v7-engineering-smoke-no-sharing-seed20262010",
+      "kind": "directory",
+      "bytes": 12331678,
+      "sha256": null
+    },
+    {
+      "name": "collaboration-v7-engineering-smoke-sharing-direct-seed20262010",
+      "original": "artifacts/collaboration-v7-engineering-smoke-sharing-direct-seed20262010",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/collaboration-v7-engineering-smoke-sharing-direct-seed20262010",
+      "kind": "directory",
+      "bytes": 12345197,
+      "sha256": null
+    },
+    {
+      "name": "collaboration-v7-engineering-smoke-solo-matched-seed20262010",
+      "original": "artifacts/collaboration-v7-engineering-smoke-solo-matched-seed20262010",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/collaboration-v7-engineering-smoke-solo-matched-seed20262010",
+      "kind": "directory",
+      "bytes": 2872328,
+      "sha256": null
+    },
+    {
+      "name": "collaboration-v7b-engineering-smoke-no-sharing-seed20262011",
+      "original": "artifacts/collaboration-v7b-engineering-smoke-no-sharing-seed20262011",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/collaboration-v7b-engineering-smoke-no-sharing-seed20262011",
+      "kind": "directory",
+      "bytes": 8092031,
+      "sha256": null
+    },
+    {
+      "name": "collaboration-v7b-engineering-smoke-sharing-direct-seed20262011",
+      "original": "artifacts/collaboration-v7b-engineering-smoke-sharing-direct-seed20262011",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/collaboration-v7b-engineering-smoke-sharing-direct-seed20262011",
+      "kind": "directory",
+      "bytes": 8100401,
+      "sha256": null
+    },
+    {
+      "name": "collaboration-v7b-engineering-smoke-solo-matched-seed20262011",
+      "original": "artifacts/collaboration-v7b-engineering-smoke-solo-matched-seed20262011",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/collaboration-v7b-engineering-smoke-solo-matched-seed20262011",
+      "kind": "directory",
+      "bytes": 2518108,
+      "sha256": null
+    },
+    {
+      "name": "collaborative-k4-smoke-20260802",
+      "original": "artifacts/collaborative-k4-smoke-20260802",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/collaborative-k4-smoke-20260802",
+      "kind": "directory",
+      "bytes": 21384275,
+      "sha256": null
+    },
+    {
+      "name": "collaborative-parallel-smoke-20260802",
+      "original": "artifacts/collaborative-parallel-smoke-20260802",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/collaborative-parallel-smoke-20260802",
+      "kind": "directory",
+      "bytes": 4261095,
+      "sha256": null
+    },
+    {
+      "name": "collaborative-sequential-smoke-20260802",
+      "original": "artifacts/collaborative-sequential-smoke-20260802",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/collaborative-sequential-smoke-20260802",
+      "kind": "directory",
+      "bytes": 4260071,
+      "sha256": null
+    },
+    {
+      "name": "collaborative-smoke-20260802",
+      "original": "artifacts/collaborative-smoke-20260802",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/collaborative-smoke-20260802",
+      "kind": "directory",
+      "bytes": 96146883,
+      "sha256": null
+    },
+    {
+      "name": "collaborative-strict-sharing-smoke-20260802",
+      "original": "artifacts/collaborative-strict-sharing-smoke-20260802",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/collaborative-strict-sharing-smoke-20260802",
+      "kind": "directory",
+      "bytes": 8415423,
+      "sha256": null
+    },
+    {
+      "name": "collapse-fix",
+      "original": "artifacts/collapse-fix",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/collapse-fix",
+      "kind": "directory",
+      "bytes": 2054781,
+      "sha256": null
+    },
+    {
+      "name": "continual-rehearsal-smoke-swindow-seed20261700-20260807",
+      "original": "artifacts/continual-rehearsal-smoke-swindow-seed20261700-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/continual-rehearsal-smoke-swindow-seed20261700-20260807",
+      "kind": "directory",
+      "bytes": 517564649,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-canvas-family-stage0-seed71",
+      "original": "artifacts/conv-cylinder-canvas-family-stage0-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-canvas-family-stage0-seed71",
+      "kind": "directory",
+      "bytes": 50852486,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-clean-pre4-dose-256-seed20262130.log",
+      "original": "artifacts/conv-cylinder-clean-pre4-dose-256-seed20262130.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-clean-pre4-dose-256-seed20262130.log",
+      "kind": "file",
+      "bytes": 1614,
+      "sha256": "cabda48e21d071d51154e92936ff2236fc162024a7ca19c014bfce9c32091232"
+    },
+    {
+      "name": "conv-cylinder-clean-pre4-dose-512-seed20262130.log",
+      "original": "artifacts/conv-cylinder-clean-pre4-dose-512-seed20262130.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-clean-pre4-dose-512-seed20262130.log",
+      "kind": "file",
+      "bytes": 1614,
+      "sha256": "cabda48e21d071d51154e92936ff2236fc162024a7ca19c014bfce9c32091232"
+    },
+    {
+      "name": "conv-cylinder-donor-failed-policy-stage3-seed71",
+      "original": "artifacts/conv-cylinder-donor-failed-policy-stage3-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-donor-failed-policy-stage3-seed71",
+      "kind": "directory",
+      "bytes": 16999620,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-idcols-adaptive24-five-rung-seed71",
+      "original": "artifacts/conv-cylinder-idcols-adaptive24-five-rung-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-adaptive24-five-rung-seed71",
+      "kind": "directory",
+      "bytes": 18829759,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-idcols-factorized-balanced-stage0-seed71",
+      "original": "artifacts/conv-cylinder-idcols-factorized-balanced-stage0-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-factorized-balanced-stage0-seed71",
+      "kind": "directory",
+      "bytes": 483390,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-idcols-factorized-balanced-stage0-seed71.log",
+      "original": "artifacts/conv-cylinder-idcols-factorized-balanced-stage0-seed71.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-factorized-balanced-stage0-seed71.log",
+      "kind": "file",
+      "bytes": 1782,
+      "sha256": "1a2d076a5f0b0d720e22c350af1d8d7f6d8f896e3d1af49d581e7636ccc21e3c"
+    },
+    {
+      "name": "conv-cylinder-idcols-factorized-balanced-stage0-seed72",
+      "original": "artifacts/conv-cylinder-idcols-factorized-balanced-stage0-seed72",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-factorized-balanced-stage0-seed72",
+      "kind": "directory",
+      "bytes": 483389,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-idcols-factorized-balanced-stage0-seed72.log",
+      "original": "artifacts/conv-cylinder-idcols-factorized-balanced-stage0-seed72.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-factorized-balanced-stage0-seed72.log",
+      "kind": "file",
+      "bytes": 1782,
+      "sha256": "1a2d076a5f0b0d720e22c350af1d8d7f6d8f896e3d1af49d581e7636ccc21e3c"
+    },
+    {
+      "name": "conv-cylinder-idcols-factorized-balanced-stage0-seed73",
+      "original": "artifacts/conv-cylinder-idcols-factorized-balanced-stage0-seed73",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-factorized-balanced-stage0-seed73",
+      "kind": "directory",
+      "bytes": 483390,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-idcols-factorized-balanced-stage0-seed73.log",
+      "original": "artifacts/conv-cylinder-idcols-factorized-balanced-stage0-seed73.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-factorized-balanced-stage0-seed73.log",
+      "kind": "file",
+      "bytes": 1782,
+      "sha256": "1a2d076a5f0b0d720e22c350af1d8d7f6d8f896e3d1af49d581e7636ccc21e3c"
+    },
+    {
+      "name": "conv-cylinder-idcols-factorized-balanced-vector-stage0-seed71",
+      "original": "artifacts/conv-cylinder-idcols-factorized-balanced-vector-stage0-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-factorized-balanced-vector-stage0-seed71",
+      "kind": "directory",
+      "bytes": 19144759,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-idcols-factorized-balanced-vector-stage0-seed71.log",
+      "original": "artifacts/conv-cylinder-idcols-factorized-balanced-vector-stage0-seed71.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-factorized-balanced-vector-stage0-seed71.log",
+      "kind": "file",
+      "bytes": 4407,
+      "sha256": "763478abadd3d04825fd896623de18d8e40e5f2b6202019fe25d5f4ec484e2fe"
+    },
+    {
+      "name": "conv-cylinder-idcols-factorized-balanced-vector-stage0-seed72",
+      "original": "artifacts/conv-cylinder-idcols-factorized-balanced-vector-stage0-seed72",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-factorized-balanced-vector-stage0-seed72",
+      "kind": "directory",
+      "bytes": 19874902,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-idcols-factorized-balanced-vector-stage0-seed72.log",
+      "original": "artifacts/conv-cylinder-idcols-factorized-balanced-vector-stage0-seed72.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-factorized-balanced-vector-stage0-seed72.log",
+      "kind": "file",
+      "bytes": 4406,
+      "sha256": "8abe14942a91190894a9551354f506643b15a1e183dc973488d1231bb09fdd84"
+    },
+    {
+      "name": "conv-cylinder-idcols-factorized-balanced-vector-stage0-seed73",
+      "original": "artifacts/conv-cylinder-idcols-factorized-balanced-vector-stage0-seed73",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-factorized-balanced-vector-stage0-seed73",
+      "kind": "directory",
+      "bytes": 16798678,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-idcols-factorized-balanced-vector-stage0-seed73.log",
+      "original": "artifacts/conv-cylinder-idcols-factorized-balanced-vector-stage0-seed73.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-factorized-balanced-vector-stage0-seed73.log",
+      "kind": "file",
+      "bytes": 4407,
+      "sha256": "516f7ef8736ec9c7a1d6aa7b02768b5ce30b0ba9b76ad6f922951cd964ebbe24"
+    },
+    {
+      "name": "conv-cylinder-idcols-factorized-stage0-seed71",
+      "original": "artifacts/conv-cylinder-idcols-factorized-stage0-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-factorized-stage0-seed71",
+      "kind": "directory",
+      "bytes": 483402,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-idcols-factorized-stage0-seed71.log",
+      "original": "artifacts/conv-cylinder-idcols-factorized-stage0-seed71.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-factorized-stage0-seed71.log",
+      "kind": "file",
+      "bytes": 1909,
+      "sha256": "3729cf3156a2ce8955c2b0bd741b5f23d1fcb80e837652e3d3b134db9c1cbde8"
+    },
+    {
+      "name": "conv-cylinder-idcols-factorized-stage0-seed72",
+      "original": "artifacts/conv-cylinder-idcols-factorized-stage0-seed72",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-factorized-stage0-seed72",
+      "kind": "directory",
+      "bytes": 483403,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-idcols-factorized-stage0-seed72.log",
+      "original": "artifacts/conv-cylinder-idcols-factorized-stage0-seed72.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-factorized-stage0-seed72.log",
+      "kind": "file",
+      "bytes": 1909,
+      "sha256": "c1791ef4e5454a59941979169b42d47b8756d2897697fd9f846439ea7a698d20"
+    },
+    {
+      "name": "conv-cylinder-idcols-factorized-stage0-seed73",
+      "original": "artifacts/conv-cylinder-idcols-factorized-stage0-seed73",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-factorized-stage0-seed73",
+      "kind": "directory",
+      "bytes": 4610161,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-idcols-factorized-stage0-seed73.log",
+      "original": "artifacts/conv-cylinder-idcols-factorized-stage0-seed73.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-factorized-stage0-seed73.log",
+      "kind": "file",
+      "bytes": 2349,
+      "sha256": "16728d0b5851d0eb9a85ca29bb3d0827877d02b0b5d94d6125b035df9ebaa642"
+    },
+    {
+      "name": "conv-cylinder-idcols-mixed6-adaptive24-seed71",
+      "original": "artifacts/conv-cylinder-idcols-mixed6-adaptive24-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-mixed6-adaptive24-seed71",
+      "kind": "directory",
+      "bytes": 28680097,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-idcols-mixed6-adaptive24-sim256-seed71",
+      "original": "artifacts/conv-cylinder-idcols-mixed6-adaptive24-sim256-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-mixed6-adaptive24-sim256-seed71",
+      "kind": "directory",
+      "bytes": 20028758,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-idcols-protected-warmup-balanced-stage0-seed71",
+      "original": "artifacts/conv-cylinder-idcols-protected-warmup-balanced-stage0-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-protected-warmup-balanced-stage0-seed71",
+      "kind": "directory",
+      "bytes": 9132416,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-idcols-protected-warmup-balanced-stage0-seed71.log",
+      "original": "artifacts/conv-cylinder-idcols-protected-warmup-balanced-stage0-seed71.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-protected-warmup-balanced-stage0-seed71.log",
+      "kind": "file",
+      "bytes": 3146,
+      "sha256": "b65f16594d182bfc860a93ba66b8ee7f86c5de22949d4196e50b17d82f4be304"
+    },
+    {
+      "name": "conv-cylinder-idcols-protected-warmup-balanced-stage0-seed72",
+      "original": "artifacts/conv-cylinder-idcols-protected-warmup-balanced-stage0-seed72",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-protected-warmup-balanced-stage0-seed72",
+      "kind": "directory",
+      "bytes": 10309041,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-idcols-protected-warmup-balanced-stage0-seed72.log",
+      "original": "artifacts/conv-cylinder-idcols-protected-warmup-balanced-stage0-seed72.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-protected-warmup-balanced-stage0-seed72.log",
+      "kind": "file",
+      "bytes": 3019,
+      "sha256": "6de31abda4e055ae77e2be47567c6efa0fff22522a656dbe8d3d33b17d211c13"
+    },
+    {
+      "name": "conv-cylinder-idcols-protected-warmup-balanced-stage0-seed73",
+      "original": "artifacts/conv-cylinder-idcols-protected-warmup-balanced-stage0-seed73",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-protected-warmup-balanced-stage0-seed73",
+      "kind": "directory",
+      "bytes": 13015076,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-idcols-protected-warmup-balanced-stage0-seed73.log",
+      "original": "artifacts/conv-cylinder-idcols-protected-warmup-balanced-stage0-seed73.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-protected-warmup-balanced-stage0-seed73.log",
+      "kind": "file",
+      "bytes": 3583,
+      "sha256": "aa80ea70ec63ebfd0c7bdb00a03e0362d211610806e67b0e2a47203bead7f75a"
+    },
+    {
+      "name": "conv-cylinder-idcols-protected-warmup-balanced4-stage0-seed71",
+      "original": "artifacts/conv-cylinder-idcols-protected-warmup-balanced4-stage0-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-protected-warmup-balanced4-stage0-seed71",
+      "kind": "directory",
+      "bytes": 8572869,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-idcols-protected-warmup-balanced4-stage0-seed71.log",
+      "original": "artifacts/conv-cylinder-idcols-protected-warmup-balanced4-stage0-seed71.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-protected-warmup-balanced4-stage0-seed71.log",
+      "kind": "file",
+      "bytes": 3152,
+      "sha256": "c288bfa0cea2aadeb91b8222c408dd121693ae7b81116ecfee3354c0e82465ef"
+    },
+    {
+      "name": "conv-cylinder-idcols-protected-warmup-balanced4-stage0-seed72",
+      "original": "artifacts/conv-cylinder-idcols-protected-warmup-balanced4-stage0-seed72",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-protected-warmup-balanced4-stage0-seed72",
+      "kind": "directory",
+      "bytes": 9173962,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-idcols-protected-warmup-balanced4-stage0-seed72.log",
+      "original": "artifacts/conv-cylinder-idcols-protected-warmup-balanced4-stage0-seed72.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-protected-warmup-balanced4-stage0-seed72.log",
+      "kind": "file",
+      "bytes": 3167,
+      "sha256": "92844bba1413e38621ae9ca62df294564b00205befe6188a4b80020fdfdb30de"
+    },
+    {
+      "name": "conv-cylinder-idcols-protected-warmup-balanced4-stage0-seed73",
+      "original": "artifacts/conv-cylinder-idcols-protected-warmup-balanced4-stage0-seed73",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-protected-warmup-balanced4-stage0-seed73",
+      "kind": "directory",
+      "bytes": 8577416,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-idcols-protected-warmup-balanced4-stage0-seed73.log",
+      "original": "artifacts/conv-cylinder-idcols-protected-warmup-balanced4-stage0-seed73.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-protected-warmup-balanced4-stage0-seed73.log",
+      "kind": "file",
+      "bytes": 3161,
+      "sha256": "0dcc5b33c869579c24506d20dbbb67e503348ea895752de0c0cf65ebc4cf3ed6"
+    },
+    {
+      "name": "conv-cylinder-idcols-shadow-warmup-balanced-stage0-seed71",
+      "original": "artifacts/conv-cylinder-idcols-shadow-warmup-balanced-stage0-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-shadow-warmup-balanced-stage0-seed71",
+      "kind": "directory",
+      "bytes": 12951205,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-idcols-shadow-warmup-balanced-stage0-seed71.log",
+      "original": "artifacts/conv-cylinder-idcols-shadow-warmup-balanced-stage0-seed71.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-shadow-warmup-balanced-stage0-seed71.log",
+      "kind": "file",
+      "bytes": 3801,
+      "sha256": "a6cd29d83cab43f7eb396a7bb8fe2df67aa2b84bb99cfc5b2c1f2135571654fe"
+    },
+    {
+      "name": "conv-cylinder-idcols-stage0-seed72",
+      "original": "artifacts/conv-cylinder-idcols-stage0-seed72",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-stage0-seed72",
+      "kind": "directory",
+      "bytes": 10783663,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-idcols-stage0-seed73",
+      "original": "artifacts/conv-cylinder-idcols-stage0-seed73",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-idcols-stage0-seed73",
+      "kind": "directory",
+      "bytes": 4082052,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-mixed3-success-gated-seeds72-73",
+      "original": "artifacts/conv-cylinder-mixed3-success-gated-seeds72-73",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-mixed3-success-gated-seeds72-73",
+      "kind": "directory",
+      "bytes": 14311078,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-mixed4-success-gated-positive-seed71",
+      "original": "artifacts/conv-cylinder-mixed4-success-gated-positive-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-mixed4-success-gated-positive-seed71",
+      "kind": "directory",
+      "bytes": 8409967,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-mixed6-success-gated-positive-seeds72-73",
+      "original": "artifacts/conv-cylinder-mixed6-success-gated-positive-seeds72-73",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-mixed6-success-gated-positive-seeds72-73",
+      "kind": "directory",
+      "bytes": 16342486,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-positive-acquisition-p4-seed503062",
+      "original": "artifacts/conv-cylinder-positive-acquisition-p4-seed503062",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-positive-acquisition-p4-seed503062",
+      "kind": "directory",
+      "bytes": 1484006,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-positive-acquisition-p4-seed72",
+      "original": "artifacts/conv-cylinder-positive-acquisition-p4-seed72",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-positive-acquisition-p4-seed72",
+      "kind": "directory",
+      "bytes": 1484062,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-positive-acquisition-p4-seed73",
+      "original": "artifacts/conv-cylinder-positive-acquisition-p4-seed73",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-positive-acquisition-p4-seed73",
+      "kind": "directory",
+      "bytes": 1484012,
+      "sha256": null
+    },
+    {
+      "name": "conv-cylinder-scalable-repaired-smoke-seed71",
+      "original": "artifacts/conv-cylinder-scalable-repaired-smoke-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-cylinder-scalable-repaired-smoke-seed71",
+      "kind": "directory",
+      "bytes": 3323502,
+      "sha256": null
+    },
+    {
+      "name": "conv-torus-idcols-dynamic-stage0-seed71",
+      "original": "artifacts/conv-torus-idcols-dynamic-stage0-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-dynamic-stage0-seed71",
+      "kind": "directory",
+      "bytes": 483259,
+      "sha256": null
+    },
+    {
+      "name": "conv-torus-idcols-dynamic-stage0-seed71.log",
+      "original": "artifacts/conv-torus-idcols-dynamic-stage0-seed71.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-dynamic-stage0-seed71.log",
+      "kind": "file",
+      "bytes": 1779,
+      "sha256": "48dc6bcc9ef6de3752db20c4aae4f73f6e215686a1be8497d154f42dca394abc"
+    },
+    {
+      "name": "conv-torus-idcols-dynamic-stage0-seed72",
+      "original": "artifacts/conv-torus-idcols-dynamic-stage0-seed72",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-dynamic-stage0-seed72",
+      "kind": "directory",
+      "bytes": 483272,
+      "sha256": null
+    },
+    {
+      "name": "conv-torus-idcols-dynamic-stage0-seed72.log",
+      "original": "artifacts/conv-torus-idcols-dynamic-stage0-seed72.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-dynamic-stage0-seed72.log",
+      "kind": "file",
+      "bytes": 1903,
+      "sha256": "471b42837c9871355979a80e4c2ecac3316f3584da2fd9508696a0e8d2ae5dcc"
+    },
+    {
+      "name": "conv-torus-idcols-dynamic-stage0-seed73",
+      "original": "artifacts/conv-torus-idcols-dynamic-stage0-seed73",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-dynamic-stage0-seed73",
+      "kind": "directory",
+      "bytes": 4392526,
+      "sha256": null
+    },
+    {
+      "name": "conv-torus-idcols-dynamic-stage0-seed73.log",
+      "original": "artifacts/conv-torus-idcols-dynamic-stage0-seed73.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-dynamic-stage0-seed73.log",
+      "kind": "file",
+      "bytes": 2331,
+      "sha256": "e30a8e1fd1871cbd4bb1dc09f3e1aaf0f596a4ba22b83f897c646b9469438086"
+    },
+    {
+      "name": "conv-torus-idcols-factorized-balanced-stage0-seed71",
+      "original": "artifacts/conv-torus-idcols-factorized-balanced-stage0-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-factorized-balanced-stage0-seed71",
+      "kind": "directory",
+      "bytes": 483386,
+      "sha256": null
+    },
+    {
+      "name": "conv-torus-idcols-factorized-balanced-stage0-seed71.log",
+      "original": "artifacts/conv-torus-idcols-factorized-balanced-stage0-seed71.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-factorized-balanced-stage0-seed71.log",
+      "kind": "file",
+      "bytes": 1779,
+      "sha256": "48dc6bcc9ef6de3752db20c4aae4f73f6e215686a1be8497d154f42dca394abc"
+    },
+    {
+      "name": "conv-torus-idcols-factorized-balanced-stage0-seed72",
+      "original": "artifacts/conv-torus-idcols-factorized-balanced-stage0-seed72",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-factorized-balanced-stage0-seed72",
+      "kind": "directory",
+      "bytes": 483386,
+      "sha256": null
+    },
+    {
+      "name": "conv-torus-idcols-factorized-balanced-stage0-seed72.log",
+      "original": "artifacts/conv-torus-idcols-factorized-balanced-stage0-seed72.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-factorized-balanced-stage0-seed72.log",
+      "kind": "file",
+      "bytes": 1779,
+      "sha256": "48dc6bcc9ef6de3752db20c4aae4f73f6e215686a1be8497d154f42dca394abc"
+    },
+    {
+      "name": "conv-torus-idcols-factorized-balanced-stage0-seed73",
+      "original": "artifacts/conv-torus-idcols-factorized-balanced-stage0-seed73",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-factorized-balanced-stage0-seed73",
+      "kind": "directory",
+      "bytes": 483386,
+      "sha256": null
+    },
+    {
+      "name": "conv-torus-idcols-factorized-balanced-stage0-seed73.log",
+      "original": "artifacts/conv-torus-idcols-factorized-balanced-stage0-seed73.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-factorized-balanced-stage0-seed73.log",
+      "kind": "file",
+      "bytes": 1779,
+      "sha256": "48dc6bcc9ef6de3752db20c4aae4f73f6e215686a1be8497d154f42dca394abc"
+    },
+    {
+      "name": "conv-torus-idcols-factorized-balanced-vector-stage0-seed71",
+      "original": "artifacts/conv-torus-idcols-factorized-balanced-vector-stage0-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-factorized-balanced-vector-stage0-seed71",
+      "kind": "directory",
+      "bytes": 17361711,
+      "sha256": null
+    },
+    {
+      "name": "conv-torus-idcols-factorized-balanced-vector-stage0-seed71.log",
+      "original": "artifacts/conv-torus-idcols-factorized-balanced-vector-stage0-seed71.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-factorized-balanced-vector-stage0-seed71.log",
+      "kind": "file",
+      "bytes": 4339,
+      "sha256": "74d8bbf6014eed167e18563df05b04d4344670cc4fd55f3b8068bebb7f2af912"
+    },
+    {
+      "name": "conv-torus-idcols-factorized-balanced-vector-stage0-seed72",
+      "original": "artifacts/conv-torus-idcols-factorized-balanced-vector-stage0-seed72",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-factorized-balanced-vector-stage0-seed72",
+      "kind": "directory",
+      "bytes": 17976785,
+      "sha256": null
+    },
+    {
+      "name": "conv-torus-idcols-factorized-balanced-vector-stage0-seed72.log",
+      "original": "artifacts/conv-torus-idcols-factorized-balanced-vector-stage0-seed72.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-factorized-balanced-vector-stage0-seed72.log",
+      "kind": "file",
+      "bytes": 4336,
+      "sha256": "4ca297365817e59a781b19ff8cf6aaff0f411af63914cbfa54ab6989f18e5440"
+    },
+    {
+      "name": "conv-torus-idcols-factorized-balanced-vector-stage0-seed73",
+      "original": "artifacts/conv-torus-idcols-factorized-balanced-vector-stage0-seed73",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-factorized-balanced-vector-stage0-seed73",
+      "kind": "directory",
+      "bytes": 18543380,
+      "sha256": null
+    },
+    {
+      "name": "conv-torus-idcols-factorized-balanced-vector-stage0-seed73.log",
+      "original": "artifacts/conv-torus-idcols-factorized-balanced-vector-stage0-seed73.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-factorized-balanced-vector-stage0-seed73.log",
+      "kind": "file",
+      "bytes": 4337,
+      "sha256": "d3283d81fc5ae06b238dd61be84ed6bed28203bb3701a0c266d449422220ff31"
+    },
+    {
+      "name": "conv-torus-idcols-factorized-stage0-seed71",
+      "original": "artifacts/conv-torus-idcols-factorized-stage0-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-factorized-stage0-seed71",
+      "kind": "directory",
+      "bytes": 483387,
+      "sha256": null
+    },
+    {
+      "name": "conv-torus-idcols-factorized-stage0-seed71.log",
+      "original": "artifacts/conv-torus-idcols-factorized-stage0-seed71.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-factorized-stage0-seed71.log",
+      "kind": "file",
+      "bytes": 1779,
+      "sha256": "48dc6bcc9ef6de3752db20c4aae4f73f6e215686a1be8497d154f42dca394abc"
+    },
+    {
+      "name": "conv-torus-idcols-factorized-stage0-seed72",
+      "original": "artifacts/conv-torus-idcols-factorized-stage0-seed72",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-factorized-stage0-seed72",
+      "kind": "directory",
+      "bytes": 483400,
+      "sha256": null
+    },
+    {
+      "name": "conv-torus-idcols-factorized-stage0-seed72.log",
+      "original": "artifacts/conv-torus-idcols-factorized-stage0-seed72.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-factorized-stage0-seed72.log",
+      "kind": "file",
+      "bytes": 1903,
+      "sha256": "3f19e0211112591059bd9ecbdc51652b3ded8c103aa431dfb7ea4d6b1793576b"
+    },
+    {
+      "name": "conv-torus-idcols-factorized-stage0-seed73",
+      "original": "artifacts/conv-torus-idcols-factorized-stage0-seed73",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-factorized-stage0-seed73",
+      "kind": "directory",
+      "bytes": 483400,
+      "sha256": null
+    },
+    {
+      "name": "conv-torus-idcols-factorized-stage0-seed73.log",
+      "original": "artifacts/conv-torus-idcols-factorized-stage0-seed73.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-factorized-stage0-seed73.log",
+      "kind": "file",
+      "bytes": 1903,
+      "sha256": "dae0f4fe571c1449b7e18717aeddebd83a1a62119e133a6ea3fc0556df3cef3a"
+    },
+    {
+      "name": "conv-torus-idcols-protected-warmup-balanced-stage0-seed71",
+      "original": "artifacts/conv-torus-idcols-protected-warmup-balanced-stage0-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-protected-warmup-balanced-stage0-seed71",
+      "kind": "directory",
+      "bytes": 10347323,
+      "sha256": null
+    },
+    {
+      "name": "conv-torus-idcols-protected-warmup-balanced-stage0-seed71.log",
+      "original": "artifacts/conv-torus-idcols-protected-warmup-balanced-stage0-seed71.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-protected-warmup-balanced-stage0-seed71.log",
+      "kind": "file",
+      "bytes": 3107,
+      "sha256": "ec76ba54c20881e68b536d2234b169b064c110f3c5aa54c6bd8529ad4d2092e4"
+    },
+    {
+      "name": "conv-torus-idcols-protected-warmup-balanced-stage0-seed72",
+      "original": "artifacts/conv-torus-idcols-protected-warmup-balanced-stage0-seed72",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-protected-warmup-balanced-stage0-seed72",
+      "kind": "directory",
+      "bytes": 5824111,
+      "sha256": null
+    },
+    {
+      "name": "conv-torus-idcols-protected-warmup-balanced-stage0-seed72.log",
+      "original": "artifacts/conv-torus-idcols-protected-warmup-balanced-stage0-seed72.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-protected-warmup-balanced-stage0-seed72.log",
+      "kind": "file",
+      "bytes": 2546,
+      "sha256": "ec559f43ccbd196ae1b900e63af0074cbfbfe24f731bcd79b02287f890f030cb"
+    },
+    {
+      "name": "conv-torus-idcols-protected-warmup-balanced-stage0-seed73",
+      "original": "artifacts/conv-torus-idcols-protected-warmup-balanced-stage0-seed73",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-protected-warmup-balanced-stage0-seed73",
+      "kind": "directory",
+      "bytes": 9829360,
+      "sha256": null
+    },
+    {
+      "name": "conv-torus-idcols-protected-warmup-balanced-stage0-seed73.log",
+      "original": "artifacts/conv-torus-idcols-protected-warmup-balanced-stage0-seed73.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-protected-warmup-balanced-stage0-seed73.log",
+      "kind": "file",
+      "bytes": 2983,
+      "sha256": "bcfa86d041f348dcf02171a4fc3e9e46eb74994b032055dbb1fcdb2817e83972"
+    },
+    {
+      "name": "conv-torus-idcols-protected-warmup-balanced4-stage0-seed71",
+      "original": "artifacts/conv-torus-idcols-protected-warmup-balanced4-stage0-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-protected-warmup-balanced4-stage0-seed71",
+      "kind": "directory",
+      "bytes": 8564239,
+      "sha256": null
+    },
+    {
+      "name": "conv-torus-idcols-protected-warmup-balanced4-stage0-seed71.log",
+      "original": "artifacts/conv-torus-idcols-protected-warmup-balanced4-stage0-seed71.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-protected-warmup-balanced4-stage0-seed71.log",
+      "kind": "file",
+      "bytes": 3119,
+      "sha256": "f97093fc5be5157d4307b6e772c93e0773c6da96ebdccadba34b08f06013b90e"
+    },
+    {
+      "name": "conv-torus-idcols-protected-warmup-balanced4-stage0-seed72",
+      "original": "artifacts/conv-torus-idcols-protected-warmup-balanced4-stage0-seed72",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-protected-warmup-balanced4-stage0-seed72",
+      "kind": "directory",
+      "bytes": 9172687,
+      "sha256": null
+    },
+    {
+      "name": "conv-torus-idcols-protected-warmup-balanced4-stage0-seed72.log",
+      "original": "artifacts/conv-torus-idcols-protected-warmup-balanced4-stage0-seed72.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-protected-warmup-balanced4-stage0-seed72.log",
+      "kind": "file",
+      "bytes": 3125,
+      "sha256": "53c72ba0595cbf875be8bad984ef9293156397769f643aafd0623bd911193afa"
+    },
+    {
+      "name": "conv-torus-idcols-protected-warmup-balanced4-stage0-seed73",
+      "original": "artifacts/conv-torus-idcols-protected-warmup-balanced4-stage0-seed73",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-protected-warmup-balanced4-stage0-seed73",
+      "kind": "directory",
+      "bytes": 5829725,
+      "sha256": null
+    },
+    {
+      "name": "conv-torus-idcols-protected-warmup-balanced4-stage0-seed73.log",
+      "original": "artifacts/conv-torus-idcols-protected-warmup-balanced4-stage0-seed73.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-protected-warmup-balanced4-stage0-seed73.log",
+      "kind": "file",
+      "bytes": 4279,
+      "sha256": "815196dc2f0c824b0ed173a37190ee3a7aaa010f3a3778ba4f31fbd1659c89c4"
+    },
+    {
+      "name": "conv-torus-idcols-shadow-warmup-balanced-stage0-seed71",
+      "original": "artifacts/conv-torus-idcols-shadow-warmup-balanced-stage0-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-shadow-warmup-balanced-stage0-seed71",
+      "kind": "directory",
+      "bytes": 12964640,
+      "sha256": null
+    },
+    {
+      "name": "conv-torus-idcols-shadow-warmup-balanced-stage0-seed71.log",
+      "original": "artifacts/conv-torus-idcols-shadow-warmup-balanced-stage0-seed71.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-shadow-warmup-balanced-stage0-seed71.log",
+      "kind": "file",
+      "bytes": 3535,
+      "sha256": "81da60f52696ac696ac4ff1bd82c5af494cb3ff6affe2f051f4f6cf8e1370dad"
+    },
+    {
+      "name": "conv-torus-idcols-stage0-seed71",
+      "original": "artifacts/conv-torus-idcols-stage0-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-stage0-seed71",
+      "kind": "directory",
+      "bytes": 483272,
+      "sha256": null
+    },
+    {
+      "name": "conv-torus-idcols-stage0-seed71.log",
+      "original": "artifacts/conv-torus-idcols-stage0-seed71.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-stage0-seed71.log",
+      "kind": "file",
+      "bytes": 1903,
+      "sha256": "0b8baf15409ddb3efabc0db9bb921021908ffd997a8822cdce253a00f06421a1"
+    },
+    {
+      "name": "conv-torus-idcols-stage0-seed72",
+      "original": "artifacts/conv-torus-idcols-stage0-seed72",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-stage0-seed72",
+      "kind": "directory",
+      "bytes": 4910877,
+      "sha256": null
+    },
+    {
+      "name": "conv-torus-idcols-stage0-seed72.log",
+      "original": "artifacts/conv-torus-idcols-stage0-seed72.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-stage0-seed72.log",
+      "kind": "file",
+      "bytes": 2452,
+      "sha256": "9c3bb0c341247af18cb9b49674ac65fbcb78a5e6854e5eb2e3d0542179e97b37"
+    },
+    {
+      "name": "conv-torus-idcols-stage0-seed73",
+      "original": "artifacts/conv-torus-idcols-stage0-seed73",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-stage0-seed73",
+      "kind": "directory",
+      "bytes": 4013004,
+      "sha256": null
+    },
+    {
+      "name": "conv-torus-idcols-stage0-seed73.log",
+      "original": "artifacts/conv-torus-idcols-stage0-seed73.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-torus-idcols-stage0-seed73.log",
+      "kind": "file",
+      "bytes": 3072,
+      "sha256": "e94f4811047079f843feebef3d42e31bbd96a69aa73deae3455c395f4a984a22"
+    },
+    {
+      "name": "conv-window-128-smoke",
+      "original": "artifacts/conv-window-128-smoke",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-window-128-smoke",
+      "kind": "directory",
+      "bytes": 4284777,
+      "sha256": null
+    },
+    {
+      "name": "conv-window-family-five-rung-seed71",
+      "original": "artifacts/conv-window-family-five-rung-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-window-family-five-rung-seed71",
+      "kind": "directory",
+      "bytes": 53002645,
+      "sha256": null
+    },
+    {
+      "name": "conv-window-family-smoke",
+      "original": "artifacts/conv-window-family-smoke",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/conv-window-family-smoke",
+      "kind": "directory",
+      "bytes": 7736218,
+      "sha256": null
+    },
+    {
+      "name": "critic-banks-independent-k3-20260804",
+      "original": "artifacts/critic-banks-independent-k3-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/critic-banks-independent-k3-20260804",
+      "kind": "directory",
+      "bytes": 36833,
+      "sha256": null
+    },
+    {
+      "name": "critic-pretrain-independent-k3-20260804",
+      "original": "artifacts/critic-pretrain-independent-k3-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/critic-pretrain-independent-k3-20260804",
+      "kind": "directory",
+      "bytes": 8943214,
+      "sha256": null
+    },
+    {
+      "name": "cyclic-memory-20260802",
+      "original": "artifacts/cyclic-memory-20260802",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/cyclic-memory-20260802",
+      "kind": "directory",
+      "bytes": 1403455649,
+      "sha256": null
+    },
+    {
+      "name": "cyclic-memory-modern-v1-20260809",
+      "original": "artifacts/cyclic-memory-modern-v1-20260809",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/cyclic-memory-modern-v1-20260809",
+      "kind": "directory",
+      "bytes": 4518789,
+      "sha256": null
+    },
+    {
+      "name": "deep-ladder",
+      "original": "artifacts/deep-ladder",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/deep-ladder",
+      "kind": "directory",
+      "bytes": 89684919,
+      "sha256": null
+    },
+    {
+      "name": "device-benchmark-smoke",
+      "original": "artifacts/device-benchmark-smoke",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/device-benchmark-smoke",
+      "kind": "directory",
+      "bytes": 2277,
+      "sha256": null
+    },
+    {
+      "name": "device-benchmark-smoke-v2",
+      "original": "artifacts/device-benchmark-smoke-v2",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/device-benchmark-smoke-v2",
+      "kind": "directory",
+      "bytes": 2409,
+      "sha256": null
+    },
+    {
+      "name": "device-benchmark-v2",
+      "original": "artifacts/device-benchmark-v2",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/device-benchmark-v2",
+      "kind": "directory",
+      "bytes": 7056898,
+      "sha256": null
+    },
+    {
+      "name": "distillation-degradation-round48-20260803",
+      "original": "artifacts/distillation-degradation-round48-20260803",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/distillation-degradation-round48-20260803",
+      "kind": "directory",
+      "bytes": 26558221,
+      "sha256": null
+    },
+    {
+      "name": "distillation-degradation-round48-20260803.log",
+      "original": "artifacts/distillation-degradation-round48-20260803.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/distillation-degradation-round48-20260803.log",
+      "kind": "file",
+      "bytes": 43992,
+      "sha256": "deda5c88fb81b058171731d2d8b8d667156866d3fbf79cb34612c1cea893632e"
+    },
+    {
+      "name": "factorized-critic-five-seed-r21-20260802",
+      "original": "artifacts/factorized-critic-five-seed-r21-20260802",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/factorized-critic-five-seed-r21-20260802",
+      "kind": "directory",
+      "bytes": 9952809,
+      "sha256": null
+    },
+    {
+      "name": "final-smoke",
+      "original": "artifacts/final-smoke",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/final-smoke",
+      "kind": "directory",
+      "bytes": 92425,
+      "sha256": null
+    },
+    {
+      "name": "final-u1-study",
+      "original": "artifacts/final-u1-study",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/final-u1-study",
+      "kind": "directory",
+      "bytes": 1803809,
+      "sha256": null
+    },
+    {
+      "name": "first-study",
+      "original": "artifacts/first-study",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/first-study",
+      "kind": "directory",
+      "bytes": 1781680,
+      "sha256": null
+    },
+    {
+      "name": "fixed-smoke",
+      "original": "artifacts/fixed-smoke",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/fixed-smoke",
+      "kind": "directory",
+      "bytes": 92039,
+      "sha256": null
+    },
+    {
+      "name": "fixed-study",
+      "original": "artifacts/fixed-study",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/fixed-study",
+      "kind": "directory",
+      "bytes": 599598,
+      "sha256": null
+    },
+    {
+      "name": "fixed-study-v2",
+      "original": "artifacts/fixed-study-v2",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/fixed-study-v2",
+      "kind": "directory",
+      "bytes": 597237,
+      "sha256": null
+    },
+    {
+      "name": "frontier-roster-alternates-band96-L1000-seed20261840-20260807",
+      "original": "artifacts/frontier-roster-alternates-band96-L1000-seed20261840-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/frontier-roster-alternates-band96-L1000-seed20261840-20260807",
+      "kind": "directory",
+      "bytes": 37319,
+      "sha256": null
+    },
+    {
+      "name": "frontier-roster-controls2-band96-L1000-seed20261840-20260807",
+      "original": "artifacts/frontier-roster-controls2-band96-L1000-seed20261840-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/frontier-roster-controls2-band96-L1000-seed20261840-20260807",
+      "kind": "directory",
+      "bytes": 13804,
+      "sha256": null
+    },
+    {
+      "name": "frontier-roster-conv-cylinder-band64-L1000-seed20262200-20260808",
+      "original": "artifacts/frontier-roster-conv-cylinder-band64-L1000-seed20262200-20260808",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/frontier-roster-conv-cylinder-band64-L1000-seed20262200-20260808",
+      "kind": "directory",
+      "bytes": 100305,
+      "sha256": null
+    },
+    {
+      "name": "frontier-roster-independent-alt3-stochastic-band96-L1000-seed20261840-20260807",
+      "original": "artifacts/frontier-roster-independent-alt3-stochastic-band96-L1000-seed20261840-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/frontier-roster-independent-alt3-stochastic-band96-L1000-seed20261840-20260807",
+      "kind": "directory",
+      "bytes": 14245,
+      "sha256": null
+    },
+    {
+      "name": "frontier-roster-independent-alt3-stochastic-migrated-band96-L1000-seed20261840-20260807",
+      "original": "artifacts/frontier-roster-independent-alt3-stochastic-migrated-band96-L1000-seed20261840-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/frontier-roster-independent-alt3-stochastic-migrated-band96-L1000-seed20261840-20260807",
+      "kind": "directory",
+      "bytes": 14245,
+      "sha256": null
+    },
+    {
+      "name": "frontier-roster-independent3-band96-L1000-seed20261840-20260807",
+      "original": "artifacts/frontier-roster-independent3-band96-L1000-seed20261840-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/frontier-roster-independent3-band96-L1000-seed20261840-20260807",
+      "kind": "directory",
+      "bytes": 49594,
+      "sha256": null
+    },
+    {
+      "name": "frontier-roster-k3-paired-max256-source-disjoint-L1000-seed20261880-20260807",
+      "original": "artifacts/frontier-roster-k3-paired-max256-source-disjoint-L1000-seed20261880-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/frontier-roster-k3-paired-max256-source-disjoint-L1000-seed20261880-20260807",
+      "kind": "directory",
+      "bytes": 58402,
+      "sha256": null
+    },
+    {
+      "name": "frontier-roster-k3-stochastic-band96-L1000-seed20261880-20260807",
+      "original": "artifacts/frontier-roster-k3-stochastic-band96-L1000-seed20261880-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/frontier-roster-k3-stochastic-band96-L1000-seed20261880-20260807",
+      "kind": "directory",
+      "bytes": 14233,
+      "sha256": null
+    },
+    {
+      "name": "frontier-roster-k3-stochastic-source-disjoint-L1000-seed20261880-20260807",
+      "original": "artifacts/frontier-roster-k3-stochastic-source-disjoint-L1000-seed20261880-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/frontier-roster-k3-stochastic-source-disjoint-L1000-seed20261880-20260807",
+      "kind": "directory",
+      "bytes": 130379,
+      "sha256": null
+    },
+    {
+      "name": "frontier-roster-k4-L1000-seed20261840-20260807",
+      "original": "artifacts/frontier-roster-k4-L1000-seed20261840-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/frontier-roster-k4-L1000-seed20261840-20260807",
+      "kind": "directory",
+      "bytes": 54450,
+      "sha256": null
+    },
+    {
+      "name": "frontier-roster-k4-band96-L1000-seed20261840-20260807",
+      "original": "artifacts/frontier-roster-k4-band96-L1000-seed20261840-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/frontier-roster-k4-band96-L1000-seed20261840-20260807",
+      "kind": "directory",
+      "bytes": 116475,
+      "sha256": null
+    },
+    {
+      "name": "frontier-roster-triad-stochastic-band96-L1000-seed20261840-20260807",
+      "original": "artifacts/frontier-roster-triad-stochastic-band96-L1000-seed20261840-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/frontier-roster-triad-stochastic-band96-L1000-seed20261840-20260807",
+      "kind": "directory",
+      "bytes": 27462,
+      "sha256": null
+    },
+    {
+      "name": "gated-adapter-integration-smoke-s-tape4-h5-20260805",
+      "original": "artifacts/gated-adapter-integration-smoke-s-tape4-h5-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/gated-adapter-integration-smoke-s-tape4-h5-20260805",
+      "kind": "directory",
+      "bytes": 1472727,
+      "sha256": null
+    },
+    {
+      "name": "harness-smoke-v2",
+      "original": "artifacts/harness-smoke-v2",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/harness-smoke-v2",
+      "kind": "directory",
+      "bytes": 740607,
+      "sha256": null
+    },
+    {
+      "name": "interleaved-minimal-sharing-w11-20260805",
+      "original": "artifacts/interleaved-minimal-sharing-w11-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/interleaved-minimal-sharing-w11-20260805",
+      "kind": "directory",
+      "bytes": 1250832,
+      "sha256": null
+    },
+    {
+      "name": "interleaved-option-adapter-minimal-w11-20260805",
+      "original": "artifacts/interleaved-option-adapter-minimal-w11-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/interleaved-option-adapter-minimal-w11-20260805",
+      "kind": "directory",
+      "bytes": 1699,
+      "sha256": null
+    },
+    {
+      "name": "interleaved-option-adapter-minimal-w11-v2-20260805",
+      "original": "artifacts/interleaved-option-adapter-minimal-w11-v2-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/interleaved-option-adapter-minimal-w11-v2-20260805",
+      "kind": "directory",
+      "bytes": 1347744,
+      "sha256": null
+    },
+    {
+      "name": "interleaved-option-adapter-w11-8cycle-20260805",
+      "original": "artifacts/interleaved-option-adapter-w11-8cycle-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/interleaved-option-adapter-w11-8cycle-20260805",
+      "kind": "directory",
+      "bytes": 1368030,
+      "sha256": null
+    },
+    {
+      "name": "interleaved-sharing-admission-w11-20260805",
+      "original": "artifacts/interleaved-sharing-admission-w11-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/interleaved-sharing-admission-w11-20260805",
+      "kind": "directory",
+      "bytes": 1270945,
+      "sha256": null
+    },
+    {
+      "name": "interleaved-stable-option-adapter-w11-8cycle-20260805",
+      "original": "artifacts/interleaved-stable-option-adapter-w11-8cycle-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/interleaved-stable-option-adapter-w11-8cycle-20260805",
+      "kind": "directory",
+      "bytes": 1370178,
+      "sha256": null
+    },
+    {
+      "name": "interleaved-stable-option-adapter-w11-8cycle-lr1-20260805",
+      "original": "artifacts/interleaved-stable-option-adapter-w11-8cycle-lr1-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/interleaved-stable-option-adapter-w11-8cycle-lr1-20260805",
+      "kind": "directory",
+      "bytes": 1370157,
+      "sha256": null
+    },
+    {
+      "name": "interleaved-threshold-compute-matched-w11-20260805",
+      "original": "artifacts/interleaved-threshold-compute-matched-w11-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/interleaved-threshold-compute-matched-w11-20260805",
+      "kind": "directory",
+      "bytes": 1407982,
+      "sha256": null
+    },
+    {
+      "name": "interleaved-threshold-compute-matched-w11-seed20260855-20260805",
+      "original": "artifacts/interleaved-threshold-compute-matched-w11-seed20260855-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/interleaved-threshold-compute-matched-w11-seed20260855-20260805",
+      "kind": "directory",
+      "bytes": 1423075,
+      "sha256": null
+    },
+    {
+      "name": "interleaved-threshold-compute-matched-w11-seed20260856-20260805",
+      "original": "artifacts/interleaved-threshold-compute-matched-w11-seed20260856-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/interleaved-threshold-compute-matched-w11-seed20260856-20260805",
+      "kind": "directory",
+      "bytes": 1421802,
+      "sha256": null
+    },
+    {
+      "name": "interleaved-threshold-compute-matched-w11-v2-20260805",
+      "original": "artifacts/interleaved-threshold-compute-matched-w11-v2-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/interleaved-threshold-compute-matched-w11-v2-20260805",
+      "kind": "directory",
+      "bytes": 1406780,
+      "sha256": null
+    },
+    {
+      "name": "interleaved-whole-witness-sharing-w11-20260805",
+      "original": "artifacts/interleaved-whole-witness-sharing-w11-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/interleaved-whole-witness-sharing-w11-20260805",
+      "kind": "directory",
+      "bytes": 1253603,
+      "sha256": null
+    },
+    {
+      "name": "joint-pretrain-controls-prefix5-20260807",
+      "original": "artifacts/joint-pretrain-controls-prefix5-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/joint-pretrain-controls-prefix5-20260807",
+      "kind": "directory",
+      "bytes": 39178358,
+      "sha256": null
+    },
+    {
+      "name": "joint-pretrain-engineering-smoke-20260807",
+      "original": "artifacts/joint-pretrain-engineering-smoke-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/joint-pretrain-engineering-smoke-20260807",
+      "kind": "directory",
+      "bytes": 15270425,
+      "sha256": null
+    },
+    {
+      "name": "joint-pretrain-scratch-f-old1-prefix5-20260807",
+      "original": "artifacts/joint-pretrain-scratch-f-old1-prefix5-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/joint-pretrain-scratch-f-old1-prefix5-20260807",
+      "kind": "directory",
+      "bytes": 20331693,
+      "sha256": null
+    },
+    {
+      "name": "joint-pretrain-warm-prefix10-final-20260807",
+      "original": "artifacts/joint-pretrain-warm-prefix10-final-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/joint-pretrain-warm-prefix10-final-20260807",
+      "kind": "directory",
+      "bytes": 1907259,
+      "sha256": null
+    },
+    {
+      "name": "joint-pretrain-warm-prefix5-20260807",
+      "original": "artifacts/joint-pretrain-warm-prefix5-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/joint-pretrain-warm-prefix5-20260807",
+      "kind": "directory",
+      "bytes": 28164933,
+      "sha256": null
+    },
+    {
+      "name": "joint-pretrain-warm-v2-prefix10-20260807",
+      "original": "artifacts/joint-pretrain-warm-v2-prefix10-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/joint-pretrain-warm-v2-prefix10-20260807",
+      "kind": "directory",
+      "bytes": 22325333,
+      "sha256": null
+    },
+    {
+      "name": "ladder-17",
+      "original": "artifacts/ladder-17",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/ladder-17",
+      "kind": "directory",
+      "bytes": 85162980,
+      "sha256": null
+    },
+    {
+      "name": "ladder-run",
+      "original": "artifacts/ladder-run",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/ladder-run",
+      "kind": "directory",
+      "bytes": 9217727,
+      "sha256": null
+    },
+    {
+      "name": "ladder-run.log",
+      "original": "artifacts/ladder-run.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/ladder-run.log",
+      "kind": "file",
+      "bytes": 837,
+      "sha256": "9cdc157a4fa987221a588ca042bb1c6a39e23c3d96645ee65486794b4f10f4fe"
+    },
+    {
+      "name": "local-rung18-backfill-20260802",
+      "original": "artifacts/local-rung18-backfill-20260802",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/local-rung18-backfill-20260802",
+      "kind": "directory",
+      "bytes": 629850853,
+      "sha256": null
+    },
+    {
+      "name": "locuscanvas-migrated-20260801",
+      "original": "artifacts/locuscanvas-migrated-20260801",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/locuscanvas-migrated-20260801",
+      "kind": "directory",
+      "bytes": 929239,
+      "sha256": null
+    },
+    {
+      "name": "locuscanvas-pull-20260801",
+      "original": "artifacts/locuscanvas-pull-20260801",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/locuscanvas-pull-20260801",
+      "kind": "directory",
+      "bytes": 15399833,
+      "sha256": null
+    },
+    {
+      "name": "memory-run",
+      "original": "artifacts/memory-run",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/memory-run",
+      "kind": "directory",
+      "bytes": 6514371,
+      "sha256": null
+    },
+    {
+      "name": "mixed-ladder",
+      "original": "artifacts/mixed-ladder",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/mixed-ladder",
+      "kind": "directory",
+      "bytes": 152889076,
+      "sha256": null
+    },
+    {
+      "name": "multi-0",
+      "original": "artifacts/multi-0",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-0",
+      "kind": "directory",
+      "bytes": 1355,
+      "sha256": null
+    },
+    {
+      "name": "multi-0.log",
+      "original": "artifacts/multi-0.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-0.log",
+      "kind": "file",
+      "bytes": 8896,
+      "sha256": "0a40d02c34235d125acea207cc7b86ac5e10fac8cf583f205d3b350a6cad9fbf"
+    },
+    {
+      "name": "multi-1",
+      "original": "artifacts/multi-1",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-1",
+      "kind": "directory",
+      "bytes": 1327,
+      "sha256": null
+    },
+    {
+      "name": "multi-1.log",
+      "original": "artifacts/multi-1.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-1.log",
+      "kind": "file",
+      "bytes": 8899,
+      "sha256": "1cb1db4095bfedbc9d896f5383e7974bcf343c3607805123b3150da1892d875f"
+    },
+    {
+      "name": "multi-smoke",
+      "original": "artifacts/multi-smoke",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-smoke",
+      "kind": "directory",
+      "bytes": 800,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-s-tape4-h5-seed20260940-20260805",
+      "original": "artifacts/multi-witness-gate-s-tape4-h5-seed20260940-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-s-tape4-h5-seed20260940-20260805",
+      "kind": "directory",
+      "bytes": 1671376,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-s-tape4-h5-seed20260941-20260805",
+      "original": "artifacts/multi-witness-gate-s-tape4-h5-seed20260941-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-s-tape4-h5-seed20260941-20260805",
+      "kind": "directory",
+      "bytes": 1689449,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-s-tape4-h5-seed20260942-20260805",
+      "original": "artifacts/multi-witness-gate-s-tape4-h5-seed20260942-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-s-tape4-h5-seed20260942-20260805",
+      "kind": "directory",
+      "bytes": 2897,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-s-w11-seed20260910-20260805",
+      "original": "artifacts/multi-witness-gate-s-w11-seed20260910-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-s-w11-seed20260910-20260805",
+      "kind": "directory",
+      "bytes": 1498116,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v10-block-smoke-seed20260980-20260806",
+      "original": "artifacts/multi-witness-gate-v10-block-smoke-seed20260980-20260806",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v10-block-smoke-seed20260980-20260806",
+      "kind": "directory",
+      "bytes": 1450748,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v10-block10-dose16-seed20260981-20260806",
+      "original": "artifacts/multi-witness-gate-v10-block10-dose16-seed20260981-20260806",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v10-block10-dose16-seed20260981-20260806",
+      "kind": "directory",
+      "bytes": 1649073,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v10-block10-preflight-seed20260981-20260806",
+      "original": "artifacts/multi-witness-gate-v10-block10-preflight-seed20260981-20260806",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v10-block10-preflight-seed20260981-20260806",
+      "kind": "directory",
+      "bytes": 1557762,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v10-confirm-seed20261000-20260806",
+      "original": "artifacts/multi-witness-gate-v10-confirm-seed20261000-20260806",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v10-confirm-seed20261000-20260806",
+      "kind": "directory",
+      "bytes": 1857529,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v10-confirm-seed20261001-20260806",
+      "original": "artifacts/multi-witness-gate-v10-confirm-seed20261001-20260806",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v10-confirm-seed20261001-20260806",
+      "kind": "directory",
+      "bytes": 1850478,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v10-confirm-seed20261002-20260806",
+      "original": "artifacts/multi-witness-gate-v10-confirm-seed20261002-20260806",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v10-confirm-seed20261002-20260806",
+      "kind": "directory",
+      "bytes": 1853925,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v10-confirm-summary-20260806",
+      "original": "artifacts/multi-witness-gate-v10-confirm-summary-20260806",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v10-confirm-summary-20260806",
+      "kind": "directory",
+      "bytes": 22153,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v4-s-tape4-h5-20260805-summary",
+      "original": "artifacts/multi-witness-gate-v4-s-tape4-h5-20260805-summary",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v4-s-tape4-h5-20260805-summary",
+      "kind": "directory",
+      "bytes": 2452,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v4-s-tape4-h5-seed20260950-20260805",
+      "original": "artifacts/multi-witness-gate-v4-s-tape4-h5-seed20260950-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v4-s-tape4-h5-seed20260950-20260805",
+      "kind": "directory",
+      "bytes": 1689738,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v4-s-tape4-h5-seed20260951-20260805",
+      "original": "artifacts/multi-witness-gate-v4-s-tape4-h5-seed20260951-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v4-s-tape4-h5-seed20260951-20260805",
+      "kind": "directory",
+      "bytes": 1709780,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v4-s-tape4-h5-seed20260952-20260805",
+      "original": "artifacts/multi-witness-gate-v4-s-tape4-h5-seed20260952-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v4-s-tape4-h5-seed20260952-20260805",
+      "kind": "directory",
+      "bytes": 1734603,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v6-counterfactual-s-tape4-h5-seed20260950-20260806",
+      "original": "artifacts/multi-witness-gate-v6-counterfactual-s-tape4-h5-seed20260950-20260806",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v6-counterfactual-s-tape4-h5-seed20260950-20260806",
+      "kind": "directory",
+      "bytes": 7191,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v6-counterfactual-s-tape4-h5-seed20260952-20260806",
+      "original": "artifacts/multi-witness-gate-v6-counterfactual-s-tape4-h5-seed20260952-20260806",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v6-counterfactual-s-tape4-h5-seed20260952-20260806",
+      "kind": "directory",
+      "bytes": 7188,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v6-preflight-s-tape4-h5-seed20260959-20260806",
+      "original": "artifacts/multi-witness-gate-v6-preflight-s-tape4-h5-seed20260959-20260806",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v6-preflight-s-tape4-h5-seed20260959-20260806",
+      "kind": "directory",
+      "bytes": 1481528,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v6-s-tape4-h5-20260806-summary",
+      "original": "artifacts/multi-witness-gate-v6-s-tape4-h5-20260806-summary",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v6-s-tape4-h5-20260806-summary",
+      "kind": "directory",
+      "bytes": 3898,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v6-s-tape4-h5-seed20260950-20260806",
+      "original": "artifacts/multi-witness-gate-v6-s-tape4-h5-seed20260950-20260806",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v6-s-tape4-h5-seed20260950-20260806",
+      "kind": "directory",
+      "bytes": 2005597,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v6-s-tape4-h5-seed20260951-20260806",
+      "original": "artifacts/multi-witness-gate-v6-s-tape4-h5-seed20260951-20260806",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v6-s-tape4-h5-seed20260951-20260806",
+      "kind": "directory",
+      "bytes": 1956831,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v6-s-tape4-h5-seed20260952-20260806",
+      "original": "artifacts/multi-witness-gate-v6-s-tape4-h5-seed20260952-20260806",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v6-s-tape4-h5-seed20260952-20260806",
+      "kind": "directory",
+      "bytes": 1954090,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v7-medium-s-tape4-h5-seed20260961-20260806",
+      "original": "artifacts/multi-witness-gate-v7-medium-s-tape4-h5-seed20260961-20260806",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v7-medium-s-tape4-h5-seed20260961-20260806",
+      "kind": "directory",
+      "bytes": 1650614,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v7-medium-s64-s-tape4-h5-seed20260961-20260806",
+      "original": "artifacts/multi-witness-gate-v7-medium-s64-s-tape4-h5-seed20260961-20260806",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v7-medium-s64-s-tape4-h5-seed20260961-20260806",
+      "kind": "directory",
+      "bytes": 1683616,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v7-preflight-s-tape4-h5-seed20260960-20260806",
+      "original": "artifacts/multi-witness-gate-v7-preflight-s-tape4-h5-seed20260960-20260806",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v7-preflight-s-tape4-h5-seed20260960-20260806",
+      "kind": "directory",
+      "bytes": 1483122,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v8-split-search-smoke-seed20260962-20260806",
+      "original": "artifacts/multi-witness-gate-v8-split-search-smoke-seed20260962-20260806",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v8-split-search-smoke-seed20260962-20260806",
+      "kind": "directory",
+      "bytes": 1445054,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v8-train64-eval128-s-tape4-h5-seed20260950-20260806",
+      "original": "artifacts/multi-witness-gate-v8-train64-eval128-s-tape4-h5-seed20260950-20260806",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v8-train64-eval128-s-tape4-h5-seed20260950-20260806",
+      "kind": "directory",
+      "bytes": 1935756,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gate-v9-train64-eval128-s-tape4-h5-seed20260950-20260806",
+      "original": "artifacts/multi-witness-gate-v9-train64-eval128-s-tape4-h5-seed20260950-20260806",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gate-v9-train64-eval128-s-tape4-h5-seed20260950-20260806",
+      "kind": "directory",
+      "bytes": 1926129,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gated-v5-s-tape4-h5-seed20260950-20260805",
+      "original": "artifacts/multi-witness-gated-v5-s-tape4-h5-seed20260950-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gated-v5-s-tape4-h5-seed20260950-20260805",
+      "kind": "directory",
+      "bytes": 1984397,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gated-v5-s-tape4-h5-seed20260951-20260805",
+      "original": "artifacts/multi-witness-gated-v5-s-tape4-h5-seed20260951-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gated-v5-s-tape4-h5-seed20260951-20260805",
+      "kind": "directory",
+      "bytes": 1977131,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-gated-v5-s-tape4-h5-seed20260952-20260805",
+      "original": "artifacts/multi-witness-gated-v5-s-tape4-h5-seed20260952-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-gated-v5-s-tape4-h5-seed20260952-20260805",
+      "kind": "directory",
+      "bytes": 1966317,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-prefilter-s-tape4-h5-20260805",
+      "original": "artifacts/multi-witness-prefilter-s-tape4-h5-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-prefilter-s-tape4-h5-20260805",
+      "kind": "directory",
+      "bytes": 44166,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-screen-s-tape4-h5-strong-20260805",
+      "original": "artifacts/multi-witness-screen-s-tape4-h5-strong-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-screen-s-tape4-h5-strong-20260805",
+      "kind": "directory",
+      "bytes": 81229,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-screen-s-w11-128-20260805",
+      "original": "artifacts/multi-witness-screen-s-w11-128-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-screen-s-w11-128-20260805",
+      "kind": "directory",
+      "bytes": 17142,
+      "sha256": null
+    },
+    {
+      "name": "multi-witness-screen-s-w11-128-v2-20260805",
+      "original": "artifacts/multi-witness-screen-s-w11-128-v2-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/multi-witness-screen-s-w11-128-v2-20260805",
+      "kind": "directory",
+      "bytes": 58313,
+      "sha256": null
+    },
+    {
+      "name": "native-learning-gate-swindow-20260806",
+      "original": "artifacts/native-learning-gate-swindow-20260806",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/native-learning-gate-swindow-20260806",
+      "kind": "directory",
+      "bytes": 92997,
+      "sha256": null
+    },
+    {
+      "name": "native-learning-gate-swindow-v2-20260806",
+      "original": "artifacts/native-learning-gate-swindow-v2-20260806",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/native-learning-gate-swindow-v2-20260806",
+      "kind": "directory",
+      "bytes": 92997,
+      "sha256": null
+    },
+    {
+      "name": "native-learning-gate-swindow-v3-horizon-L1000-20260807",
+      "original": "artifacts/native-learning-gate-swindow-v3-horizon-L1000-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/native-learning-gate-swindow-v3-horizon-L1000-20260807",
+      "kind": "directory",
+      "bytes": 107387,
+      "sha256": null
+    },
+    {
+      "name": "nebius-cpu-gate-20260801",
+      "original": "artifacts/nebius-cpu-gate-20260801",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/nebius-cpu-gate-20260801",
+      "kind": "directory",
+      "bytes": 37813,
+      "sha256": null
+    },
+    {
+      "name": "nebius-device-gate-20260801",
+      "original": "artifacts/nebius-device-gate-20260801",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/nebius-device-gate-20260801",
+      "kind": "directory",
+      "bytes": 41262,
+      "sha256": null
+    },
+    {
+      "name": "nebius-distill-u1-20260801",
+      "original": "artifacts/nebius-distill-u1-20260801",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/nebius-distill-u1-20260801",
+      "kind": "directory",
+      "bytes": 45121147,
+      "sha256": null
+    },
+    {
+      "name": "nebius-rung18-20260801-current",
+      "original": "artifacts/nebius-rung18-20260801-current",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/nebius-rung18-20260801-current",
+      "kind": "directory",
+      "bytes": 3312851935,
+      "sha256": null
+    },
+    {
+      "name": "nebius-rung18-20260801-current.README.txt",
+      "original": "artifacts/nebius-rung18-20260801-current.README.txt",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/nebius-rung18-20260801-current.README.txt",
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "d9736222aa54dd29a5160d7c169de69ddfebfe7ec9c2fc55bbdf071081912b37"
+    },
+    {
+      "name": "nebius-rung18-20260801-current.parts.sha256",
+      "original": "artifacts/nebius-rung18-20260801-current.parts.sha256",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/nebius-rung18-20260801-current.parts.sha256",
+      "kind": "file",
+      "bytes": 224,
+      "sha256": "b543294961b06cf75855c7e2457dd928e66ab8858d0af36e32fa5e5e874c5b7b"
+    },
+    {
+      "name": "nebius-rung18-20260801-current.tar.gz",
+      "original": "artifacts/nebius-rung18-20260801-current.tar.gz",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/nebius-rung18-20260801-current.tar.gz",
+      "kind": "file",
+      "bytes": 175869144,
+      "sha256": "c79707db850cab68b1bc7273c019df1e5b32c1bae9920bd7ce5fef54be1579cb"
+    },
+    {
+      "name": "nebius-rung18-20260801-current.tar.gz.part-aa",
+      "original": "artifacts/nebius-rung18-20260801-current.tar.gz.part-aa",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/nebius-rung18-20260801-current.tar.gz.part-aa",
+      "kind": "file",
+      "bytes": 94371840,
+      "sha256": "a1e20ca3cf06bc22a14885230522d662ac97dd1a691b431c56064e8fe6db81ee"
+    },
+    {
+      "name": "nebius-rung18-20260801-current.tar.gz.part-ab",
+      "original": "artifacts/nebius-rung18-20260801-current.tar.gz.part-ab",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/nebius-rung18-20260801-current.tar.gz.part-ab",
+      "kind": "file",
+      "bytes": 81497304,
+      "sha256": "b63650c58ad7a1379ba3d58b86f145877559d502a15ac63017721cbf2aaf0993"
+    },
+    {
+      "name": "nebius-rung18-20260801-current.tar.gz.sha256",
+      "original": "artifacts/nebius-rung18-20260801-current.tar.gz.sha256",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/nebius-rung18-20260801-current.tar.gz.sha256",
+      "kind": "file",
+      "bytes": 104,
+      "sha256": "f791175b591677e17d014fdf23d76bbb334f0c09e70922cb933a8bf87711c586"
+    },
+    {
+      "name": "nebius-rung18-20260801-deltas",
+      "original": "artifacts/nebius-rung18-20260801-deltas",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/nebius-rung18-20260801-deltas",
+      "kind": "directory",
+      "bytes": 914841221,
+      "sha256": null
+    },
+    {
+      "name": "nebius-rung18-20260801-sync",
+      "original": "artifacts/nebius-rung18-20260801-sync",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/nebius-rung18-20260801-sync",
+      "kind": "directory",
+      "bytes": 171578,
+      "sha256": null
+    },
+    {
+      "name": "no-sharing-schedule-pilot-50-20260805",
+      "original": "artifacts/no-sharing-schedule-pilot-50-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/no-sharing-schedule-pilot-50-20260805",
+      "kind": "directory",
+      "bytes": 444359465,
+      "sha256": null
+    },
+    {
+      "name": "no-sharing-schedule-smoke-20-20260805",
+      "original": "artifacts/no-sharing-schedule-smoke-20-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/no-sharing-schedule-smoke-20-20260805",
+      "kind": "directory",
+      "bytes": 144531061,
+      "sha256": null
+    },
+    {
+      "name": "objective-budget-regression-20260803",
+      "original": "artifacts/objective-budget-regression-20260803",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/objective-budget-regression-20260803",
+      "kind": "directory",
+      "bytes": 302791,
+      "sha256": null
+    },
+    {
+      "name": "objective-budget-runner-smoke-20260803",
+      "original": "artifacts/objective-budget-runner-smoke-20260803",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/objective-budget-runner-smoke-20260803",
+      "kind": "directory",
+      "bytes": 2464007,
+      "sha256": null
+    },
+    {
+      "name": "oracle",
+      "original": "artifacts/oracle",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/oracle",
+      "kind": "directory",
+      "bytes": 3650,
+      "sha256": null
+    },
+    {
+      "name": "oracle-sync",
+      "original": "artifacts/oracle-sync",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/oracle-sync",
+      "kind": "directory",
+      "bytes": 15401496,
+      "sha256": null
+    },
+    {
+      "name": "paint-run",
+      "original": "artifacts/paint-run",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/paint-run",
+      "kind": "directory",
+      "bytes": 13851786,
+      "sha256": null
+    },
+    {
+      "name": "paired-markov-d-tape4-u1-r20-20260802",
+      "original": "artifacts/paired-markov-d-tape4-u1-r20-20260802",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/paired-markov-d-tape4-u1-r20-20260802",
+      "kind": "directory",
+      "bytes": 732443,
+      "sha256": null
+    },
+    {
+      "name": "paired-markov-other-students-20260802",
+      "original": "artifacts/paired-markov-other-students-20260802",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/paired-markov-other-students-20260802",
+      "kind": "directory",
+      "bytes": 4444387,
+      "sha256": null
+    },
+    {
+      "name": "paired-markov-s-window-128-20260802",
+      "original": "artifacts/paired-markov-s-window-128-20260802",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/paired-markov-s-window-128-20260802",
+      "kind": "directory",
+      "bytes": 1591818,
+      "sha256": null
+    },
+    {
+      "name": "paired-markov-s-window-128-rung21-20260802",
+      "original": "artifacts/paired-markov-s-window-128-rung21-20260802",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/paired-markov-s-window-128-rung21-20260802",
+      "kind": "directory",
+      "bytes": 1692866,
+      "sha256": null
+    },
+    {
+      "name": "paired8-0",
+      "original": "artifacts/paired8-0",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/paired8-0",
+      "kind": "directory",
+      "bytes": 1488,
+      "sha256": null
+    },
+    {
+      "name": "paired8-0.log",
+      "original": "artifacts/paired8-0.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/paired8-0.log",
+      "kind": "file",
+      "bytes": 3549,
+      "sha256": "ea93f5e771b646f01158850e8c270cf02a02e1f4c356d0488e8e242f55fb5102"
+    },
+    {
+      "name": "paired8-1",
+      "original": "artifacts/paired8-1",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/paired8-1",
+      "kind": "directory",
+      "bytes": 1474,
+      "sha256": null
+    },
+    {
+      "name": "paired8-1.log",
+      "original": "artifacts/paired8-1.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/paired8-1.log",
+      "kind": "file",
+      "bytes": 3579,
+      "sha256": "da41585ab70056db0bc4160b3497d67074f94872a3fea46db860781e3eaeb72c"
+    },
+    {
+      "name": "paired8-2",
+      "original": "artifacts/paired8-2",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/paired8-2",
+      "kind": "directory",
+      "bytes": 1489,
+      "sha256": null
+    },
+    {
+      "name": "paired8-2.log",
+      "original": "artifacts/paired8-2.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/paired8-2.log",
+      "kind": "file",
+      "bytes": 3557,
+      "sha256": "38009ec04aee0a5f5b344c99fc0aa0488e7d9c8bde8225af68d20bb33e26a631"
+    },
+    {
+      "name": "paired8-3",
+      "original": "artifacts/paired8-3",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/paired8-3",
+      "kind": "directory",
+      "bytes": 1462,
+      "sha256": null
+    },
+    {
+      "name": "paired8-3.log",
+      "original": "artifacts/paired8-3.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/paired8-3.log",
+      "kind": "file",
+      "bytes": 3559,
+      "sha256": "f952fcb3bf6229858ea2928686d39b79dde29e19425efc23b712ca49652fe500"
+    },
+    {
+      "name": "paired8-4",
+      "original": "artifacts/paired8-4",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/paired8-4",
+      "kind": "directory",
+      "bytes": 1460,
+      "sha256": null
+    },
+    {
+      "name": "paired8-4.log",
+      "original": "artifacts/paired8-4.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/paired8-4.log",
+      "kind": "file",
+      "bytes": 3561,
+      "sha256": "02dfd3353faac3c079bcc85af9a89897d0fb02b169f5d6b821d42554d3ac5094"
+    },
+    {
+      "name": "paired8-5",
+      "original": "artifacts/paired8-5",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/paired8-5",
+      "kind": "directory",
+      "bytes": 1460,
+      "sha256": null
+    },
+    {
+      "name": "paired8-5.log",
+      "original": "artifacts/paired8-5.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/paired8-5.log",
+      "kind": "file",
+      "bytes": 3553,
+      "sha256": "aedc549df05ac8e3e461ec5c81093d6992b7aa28961f1304d3e568f5dc81651f"
+    },
+    {
+      "name": "paired8-6",
+      "original": "artifacts/paired8-6",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/paired8-6",
+      "kind": "directory",
+      "bytes": 1488,
+      "sha256": null
+    },
+    {
+      "name": "paired8-6.log",
+      "original": "artifacts/paired8-6.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/paired8-6.log",
+      "kind": "file",
+      "bytes": 3605,
+      "sha256": "345eb3846d936f4aaf6643a22ce687c5d84a0c79cc430ee3056ee5d9c2201d64"
+    },
+    {
+      "name": "paired8-7",
+      "original": "artifacts/paired8-7",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/paired8-7",
+      "kind": "directory",
+      "bytes": 1472,
+      "sha256": null
+    },
+    {
+      "name": "paired8-7.log",
+      "original": "artifacts/paired8-7.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/paired8-7.log",
+      "kind": "file",
+      "bytes": 3580,
+      "sha256": "389e065eac98fd7fbfa512889d6d77e56c70895f07203dca283b13529c48452d"
+    },
+    {
+      "name": "pass24-study",
+      "original": "artifacts/pass24-study",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/pass24-study",
+      "kind": "directory",
+      "bytes": 597268,
+      "sha256": null
+    },
+    {
+      "name": "policy-update-diagnostic-swindow-20260805",
+      "original": "artifacts/policy-update-diagnostic-swindow-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/policy-update-diagnostic-swindow-20260805",
+      "kind": "directory",
+      "bytes": 162290,
+      "sha256": null
+    },
+    {
+      "name": "policy-update-diagnostic-swindow-lost-solve-20260805",
+      "original": "artifacts/policy-update-diagnostic-swindow-lost-solve-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/policy-update-diagnostic-swindow-lost-solve-20260805",
+      "kind": "directory",
+      "bytes": 165104,
+      "sha256": null
+    },
+    {
+      "name": "portfolio-progress-smoke-swindow-seed20261720-20260807",
+      "original": "artifacts/portfolio-progress-smoke-swindow-seed20261720-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/portfolio-progress-smoke-swindow-seed20261720-20260807",
+      "kind": "directory",
+      "bytes": 523904192,
+      "sha256": null
+    },
+    {
+      "name": "potential-shaping-s-window-r21-20260802",
+      "original": "artifacts/potential-shaping-s-window-r21-20260802",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/potential-shaping-s-window-r21-20260802",
+      "kind": "directory",
+      "bytes": 1563011,
+      "sha256": null
+    },
+    {
+      "name": "potential-shaping-s-window-r21-seed2-20260802",
+      "original": "artifacts/potential-shaping-s-window-r21-seed2-20260802",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/potential-shaping-s-window-r21-seed2-20260802",
+      "kind": "directory",
+      "bytes": 1562046,
+      "sha256": null
+    },
+    {
+      "name": "preflight-demo",
+      "original": "artifacts/preflight-demo",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/preflight-demo",
+      "kind": "directory",
+      "bytes": 105588,
+      "sha256": null
+    },
+    {
+      "name": "prior-diagnostic",
+      "original": "artifacts/prior-diagnostic",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/prior-diagnostic",
+      "kind": "directory",
+      "bytes": 307248,
+      "sha256": null
+    },
+    {
+      "name": "progress-log-smoke",
+      "original": "artifacts/progress-log-smoke",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/progress-log-smoke",
+      "kind": "directory",
+      "bytes": 2165547,
+      "sha256": null
+    },
+    {
+      "name": "progress-log-smoke-v2",
+      "original": "artifacts/progress-log-smoke-v2",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/progress-log-smoke-v2",
+      "kind": "directory",
+      "bytes": 2196706,
+      "sha256": null
+    },
+    {
+      "name": "prune-check",
+      "original": "artifacts/prune-check",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/prune-check",
+      "kind": "directory",
+      "bytes": 37550,
+      "sha256": null
+    },
+    {
+      "name": "quick-u1",
+      "original": "artifacts/quick-u1",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/quick-u1",
+      "kind": "directory",
+      "bytes": 212925,
+      "sha256": null
+    },
+    {
+      "name": "rapid-adaptation-dev20-20260803",
+      "original": "artifacts/rapid-adaptation-dev20-20260803",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/rapid-adaptation-dev20-20260803",
+      "kind": "directory",
+      "bytes": 7095,
+      "sha256": null
+    },
+    {
+      "name": "rapid-adaptation-f5-old1-20260803",
+      "original": "artifacts/rapid-adaptation-f5-old1-20260803",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/rapid-adaptation-f5-old1-20260803",
+      "kind": "directory",
+      "bytes": 1129327,
+      "sha256": null
+    },
+    {
+      "name": "rapid-adaptation-smoke-20260803",
+      "original": "artifacts/rapid-adaptation-smoke-20260803",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/rapid-adaptation-smoke-20260803",
+      "kind": "directory",
+      "bytes": 7007,
+      "sha256": null
+    },
+    {
+      "name": "rapid-paired-gate-stage21-20260803",
+      "original": "artifacts/rapid-paired-gate-stage21-20260803",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/rapid-paired-gate-stage21-20260803",
+      "kind": "directory",
+      "bytes": 639675,
+      "sha256": null
+    },
+    {
+      "name": "ratio-conditioning-diagnosis-s-window-r21-20260802",
+      "original": "artifacts/ratio-conditioning-diagnosis-s-window-r21-20260802",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/ratio-conditioning-diagnosis-s-window-r21-20260802",
+      "kind": "directory",
+      "bytes": 825644,
+      "sha256": null
+    },
+    {
+      "name": "readiness-rung-parity-archived-first10-20260805",
+      "original": "artifacts/readiness-rung-parity-archived-first10-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/readiness-rung-parity-archived-first10-20260805",
+      "kind": "directory",
+      "bytes": 45965070,
+      "sha256": null
+    },
+    {
+      "name": "readiness-rung-parity-first10-exact-20260805",
+      "original": "artifacts/readiness-rung-parity-first10-exact-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/readiness-rung-parity-first10-exact-20260805",
+      "kind": "directory",
+      "bytes": 9159735,
+      "sha256": null
+    },
+    {
+      "name": "readiness-rung-parity-first10-seed0-20260805",
+      "original": "artifacts/readiness-rung-parity-first10-seed0-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/readiness-rung-parity-first10-seed0-20260805",
+      "kind": "directory",
+      "bytes": 6660223,
+      "sha256": null
+    },
+    {
+      "name": "readiness-rung-parity-first10-v2-20260805",
+      "original": "artifacts/readiness-rung-parity-first10-v2-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/readiness-rung-parity-first10-v2-20260805",
+      "kind": "directory",
+      "bytes": 14582920,
+      "sha256": null
+    },
+    {
+      "name": "readiness-rung-parity-gated-rung0-20260805",
+      "original": "artifacts/readiness-rung-parity-gated-rung0-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/readiness-rung-parity-gated-rung0-20260805",
+      "kind": "directory",
+      "bytes": 11582320,
+      "sha256": null
+    },
+    {
+      "name": "readiness-rung-parity-prevalence-rung0-20260805",
+      "original": "artifacts/readiness-rung-parity-prevalence-rung0-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/readiness-rung-parity-prevalence-rung0-20260805",
+      "kind": "directory",
+      "bytes": 11465382,
+      "sha256": null
+    },
+    {
+      "name": "readiness-rung-parity-rung0-20260805",
+      "original": "artifacts/readiness-rung-parity-rung0-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/readiness-rung-parity-rung0-20260805",
+      "kind": "directory",
+      "bytes": 12919018,
+      "sha256": null
+    },
+    {
+      "name": "readiness-rung-parity-smoke-20260805",
+      "original": "artifacts/readiness-rung-parity-smoke-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/readiness-rung-parity-smoke-20260805",
+      "kind": "directory",
+      "bytes": 9546225,
+      "sha256": null
+    },
+    {
+      "name": "replay-v3-integrity-swindow-20260805",
+      "original": "artifacts/replay-v3-integrity-swindow-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/replay-v3-integrity-swindow-20260805",
+      "kind": "directory",
+      "bytes": 2250477,
+      "sha256": null
+    },
+    {
+      "name": "replay-v3-learning-gate-swindow-20260805",
+      "original": "artifacts/replay-v3-learning-gate-swindow-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/replay-v3-learning-gate-swindow-20260805",
+      "kind": "directory",
+      "bytes": 362557,
+      "sha256": null
+    },
+    {
+      "name": "rules-aware-study",
+      "original": "artifacts/rules-aware-study",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/rules-aware-study",
+      "kind": "directory",
+      "bytes": 597259,
+      "sha256": null
+    },
+    {
+      "name": "s-tape4-budget-admission-20260804",
+      "original": "artifacts/s-tape4-budget-admission-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/s-tape4-budget-admission-20260804",
+      "kind": "directory",
+      "bytes": 1267866,
+      "sha256": null
+    },
+    {
+      "name": "s-tape4-budget-smoke-20260804",
+      "original": "artifacts/s-tape4-budget-smoke-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/s-tape4-budget-smoke-20260804",
+      "kind": "directory",
+      "bytes": 1267844,
+      "sha256": null
+    },
+    {
+      "name": "s-window-128-paired-smoke",
+      "original": "artifacts/s-window-128-paired-smoke",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/s-window-128-paired-smoke",
+      "kind": "directory",
+      "bytes": 4676421,
+      "sha256": null
+    },
+    {
+      "name": "s-window-l1000-adaptive-fold-five-rung-seed71",
+      "original": "artifacts/s-window-l1000-adaptive-fold-five-rung-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/s-window-l1000-adaptive-fold-five-rung-seed71",
+      "kind": "directory",
+      "bytes": 15724753,
+      "sha256": null
+    },
+    {
+      "name": "s-window-l1000-adaptive-fold-five-rung-seed71-v2",
+      "original": "artifacts/s-window-l1000-adaptive-fold-five-rung-seed71-v2",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/s-window-l1000-adaptive-fold-five-rung-seed71-v2",
+      "kind": "directory",
+      "bytes": 16283892,
+      "sha256": null
+    },
+    {
+      "name": "s-window-l1000-adaptive24-fold-five-rung-seed71",
+      "original": "artifacts/s-window-l1000-adaptive24-fold-five-rung-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/s-window-l1000-adaptive24-fold-five-rung-seed71",
+      "kind": "directory",
+      "bytes": 23106046,
+      "sha256": null
+    },
+    {
+      "name": "s-window-l1000-five-rung-seed71",
+      "original": "artifacts/s-window-l1000-five-rung-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/s-window-l1000-five-rung-seed71",
+      "kind": "directory",
+      "bytes": 11707438,
+      "sha256": null
+    },
+    {
+      "name": "s-window-l1000-fold1-five-rung-seed71",
+      "original": "artifacts/s-window-l1000-fold1-five-rung-seed71",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/s-window-l1000-fold1-five-rung-seed71",
+      "kind": "directory",
+      "bytes": 7934614,
+      "sha256": null
+    },
+    {
+      "name": "s-window-l1000-fold1-five-rung-seed71-v2",
+      "original": "artifacts/s-window-l1000-fold1-five-rung-seed71-v2",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/s-window-l1000-fold1-five-rung-seed71-v2",
+      "kind": "directory",
+      "bytes": 15430029,
+      "sha256": null
+    },
+    {
+      "name": "scrambler-fix",
+      "original": "artifacts/scrambler-fix",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/scrambler-fix",
+      "kind": "directory",
+      "bytes": 559208,
+      "sha256": null
+    },
+    {
+      "name": "scrambler-paired-0",
+      "original": "artifacts/scrambler-paired-0",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/scrambler-paired-0",
+      "kind": "directory",
+      "bytes": 1325,
+      "sha256": null
+    },
+    {
+      "name": "scrambler-paired-0.log",
+      "original": "artifacts/scrambler-paired-0.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/scrambler-paired-0.log",
+      "kind": "file",
+      "bytes": 3496,
+      "sha256": "6d94a304f11acf555c0723a293686667e13fb15cd9dccbedb1c524923b42266f"
+    },
+    {
+      "name": "scrambler-paired-1",
+      "original": "artifacts/scrambler-paired-1",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/scrambler-paired-1",
+      "kind": "directory",
+      "bytes": 1312,
+      "sha256": null
+    },
+    {
+      "name": "scrambler-paired-1.log",
+      "original": "artifacts/scrambler-paired-1.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/scrambler-paired-1.log",
+      "kind": "file",
+      "bytes": 3527,
+      "sha256": "0b584506ac86e18b049130f823c7e77eb4335787d2ad8dce702c6d0a66a5bab5"
+    },
+    {
+      "name": "scrambler-paired-2",
+      "original": "artifacts/scrambler-paired-2",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/scrambler-paired-2",
+      "kind": "directory",
+      "bytes": 1325,
+      "sha256": null
+    },
+    {
+      "name": "scrambler-paired-2.log",
+      "original": "artifacts/scrambler-paired-2.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/scrambler-paired-2.log",
+      "kind": "file",
+      "bytes": 3504,
+      "sha256": "c15b4893e4e9bea6d9f7f20da6a424c0fbff48dfbad73e78d1934816a6b420bb"
+    },
+    {
+      "name": "scrambler-trace",
+      "original": "artifacts/scrambler-trace",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/scrambler-trace",
+      "kind": "directory",
+      "bytes": 406097,
+      "sha256": null
+    },
+    {
+      "name": "screen-k6",
+      "original": "artifacts/screen-k6",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/screen-k6",
+      "kind": "directory",
+      "bytes": 4561162,
+      "sha256": null
+    },
+    {
+      "name": "semantic-budget-migration-v11-k3-seed20261130-20260807",
+      "original": "artifacts/semantic-budget-migration-v11-k3-seed20261130-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/semantic-budget-migration-v11-k3-seed20261130-20260807",
+      "kind": "directory",
+      "bytes": 18935,
+      "sha256": null
+    },
+    {
+      "name": "semantic-critic-v11-s-tape4-early-rungs-seed20261110-20260807",
+      "original": "artifacts/semantic-critic-v11-s-tape4-early-rungs-seed20261110-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/semantic-critic-v11-s-tape4-early-rungs-seed20261110-20260807",
+      "kind": "directory",
+      "bytes": 1270119,
+      "sha256": null
+    },
+    {
+      "name": "semantic-critic-v11-s-tape4-early10-seed20261120-20260807",
+      "original": "artifacts/semantic-critic-v11-s-tape4-early10-seed20261120-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/semantic-critic-v11-s-tape4-early10-seed20261120-20260807",
+      "kind": "directory",
+      "bytes": 1278529,
+      "sha256": null
+    },
+    {
+      "name": "semantic-critic-v11-s-tape4-seed20261110-20260807",
+      "original": "artifacts/semantic-critic-v11-s-tape4-seed20261110-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/semantic-critic-v11-s-tape4-seed20261110-20260807",
+      "kind": "directory",
+      "bytes": 1268202,
+      "sha256": null
+    },
+    {
+      "name": "semantic-sharing-v11-budget-generalization-smoke-seed20261140-20260807",
+      "original": "artifacts/semantic-sharing-v11-budget-generalization-smoke-seed20261140-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/semantic-sharing-v11-budget-generalization-smoke-seed20261140-20260807",
+      "kind": "directory",
+      "bytes": 1453664,
+      "sha256": null
+    },
+    {
+      "name": "semantic-sharing-v11-dose-s16-32-64-seed20261160-20260807",
+      "original": "artifacts/semantic-sharing-v11-dose-s16-32-64-seed20261160-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/semantic-sharing-v11-dose-s16-32-64-seed20261160-20260807",
+      "kind": "directory",
+      "bytes": 171174,
+      "sha256": null
+    },
+    {
+      "name": "semantic-sharing-v11-fresh64-preflight-s-tape4-seed20261170-20260807",
+      "original": "artifacts/semantic-sharing-v11-fresh64-preflight-s-tape4-seed20261170-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/semantic-sharing-v11-fresh64-preflight-s-tape4-seed20261170-20260807",
+      "kind": "directory",
+      "bytes": 1742141,
+      "sha256": null
+    },
+    {
+      "name": "semantic-sharing-v11-preflight-s-tape4-seed20261150-20260807",
+      "original": "artifacts/semantic-sharing-v11-preflight-s-tape4-seed20261150-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/semantic-sharing-v11-preflight-s-tape4-seed20261150-20260807",
+      "kind": "directory",
+      "bytes": 4543,
+      "sha256": null
+    },
+    {
+      "name": "semantic-sharing-v11-preflight-s-tape4-seed20261150-lr-fixed-20260807",
+      "original": "artifacts/semantic-sharing-v11-preflight-s-tape4-seed20261150-lr-fixed-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/semantic-sharing-v11-preflight-s-tape4-seed20261150-lr-fixed-20260807",
+      "kind": "directory",
+      "bytes": 1683907,
+      "sha256": null
+    },
+    {
+      "name": "semantic-sharing-v11-preflight-s-tape4-seed20261150-repaired-20260807",
+      "original": "artifacts/semantic-sharing-v11-preflight-s-tape4-seed20261150-repaired-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/semantic-sharing-v11-preflight-s-tape4-seed20261150-repaired-20260807",
+      "kind": "directory",
+      "bytes": 1683777,
+      "sha256": null
+    },
+    {
+      "name": "semantic-sharing-v11-smoke-seed20261100-20260807",
+      "original": "artifacts/semantic-sharing-v11-smoke-seed20261100-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/semantic-sharing-v11-smoke-seed20261100-20260807",
+      "kind": "directory",
+      "bytes": 1453393,
+      "sha256": null
+    },
+    {
+      "name": "semantic-sharing-v11-smoke2-seed20261100-20260807",
+      "original": "artifacts/semantic-sharing-v11-smoke2-seed20261100-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/semantic-sharing-v11-smoke2-seed20261100-20260807",
+      "kind": "directory",
+      "bytes": 1453871,
+      "sha256": null
+    },
+    {
+      "name": "semantic-witness-bank-v2-20260807",
+      "original": "artifacts/semantic-witness-bank-v2-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/semantic-witness-bank-v2-20260807",
+      "kind": "directory",
+      "bytes": 12693,
+      "sha256": null
+    },
+    {
+      "name": "serial-screen",
+      "original": "artifacts/serial-screen",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/serial-screen",
+      "kind": "directory",
+      "bytes": 4088674,
+      "sha256": null
+    },
+    {
+      "name": "serial-screen-driver.log",
+      "original": "artifacts/serial-screen-driver.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/serial-screen-driver.log",
+      "kind": "file",
+      "bytes": 396,
+      "sha256": "c53c2d9f6dc688a76424a79190ced9cab6344fc3cbaa64a69627430beb87c358"
+    },
+    {
+      "name": "sharing-simulation-dose-v1-train128-s-tape4-h5-seed20260970-20260806",
+      "original": "artifacts/sharing-simulation-dose-v1-train128-s-tape4-h5-seed20260970-20260806",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/sharing-simulation-dose-v1-train128-s-tape4-h5-seed20260970-20260806",
+      "kind": "directory",
+      "bytes": 266526,
+      "sha256": null
+    },
+    {
+      "name": "sharing-simulation-dose-v1-train64-s-tape4-h5-seed20260970-20260806",
+      "original": "artifacts/sharing-simulation-dose-v1-train64-s-tape4-h5-seed20260970-20260806",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/sharing-simulation-dose-v1-train64-s-tape4-h5-seed20260970-20260806",
+      "kind": "directory",
+      "bytes": 266160,
+      "sha256": null
+    },
+    {
+      "name": "sigterm-smoke",
+      "original": "artifacts/sigterm-smoke",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/sigterm-smoke",
+      "kind": "directory",
+      "bytes": 2617003,
+      "sha256": null
+    },
+    {
+      "name": "smoke",
+      "original": "artifacts/smoke",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/smoke",
+      "kind": "directory",
+      "bytes": 89905,
+      "sha256": null
+    },
+    {
+      "name": "smoke-sweep",
+      "original": "artifacts/smoke-sweep",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/smoke-sweep",
+      "kind": "directory",
+      "bytes": 450120,
+      "sha256": null
+    },
+    {
+      "name": "solver-gate-banks-independent-k3-20260804",
+      "original": "artifacts/solver-gate-banks-independent-k3-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/solver-gate-banks-independent-k3-20260804",
+      "kind": "directory",
+      "bytes": 11546,
+      "sha256": null
+    },
+    {
+      "name": "solver-learning-f8-old1-swindow-20260804",
+      "original": "artifacts/solver-learning-f8-old1-swindow-20260804",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/solver-learning-f8-old1-swindow-20260804",
+      "kind": "directory",
+      "bytes": 703301,
+      "sha256": null
+    },
+    {
+      "name": "split-loss-gate-swindow-20260805",
+      "original": "artifacts/split-loss-gate-swindow-20260805",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/split-loss-gate-swindow-20260805",
+      "kind": "directory",
+      "bytes": 196565,
+      "sha256": null
+    },
+    {
+      "name": "strand-architecture-first-stage128-compact-confirm-20260808",
+      "original": "artifacts/strand-architecture-first-stage128-compact-confirm-20260808",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/strand-architecture-first-stage128-compact-confirm-20260808",
+      "kind": "directory",
+      "bytes": 22993824,
+      "sha256": null
+    },
+    {
+      "name": "strand-architecture-first-stage128-seed71-20260808",
+      "original": "artifacts/strand-architecture-first-stage128-seed71-20260808",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/strand-architecture-first-stage128-seed71-20260808",
+      "kind": "directory",
+      "bytes": 163945110,
+      "sha256": null
+    },
+    {
+      "name": "strand-architecture-first-stage128-shead-long-seed71-20260808",
+      "original": "artifacts/strand-architecture-first-stage128-shead-long-seed71-20260808",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/strand-architecture-first-stage128-shead-long-seed71-20260808",
+      "kind": "directory",
+      "bytes": 5160629,
+      "sha256": null
+    },
+    {
+      "name": "strand-architecture-gate-pilot32-seed71-20260808",
+      "original": "artifacts/strand-architecture-gate-pilot32-seed71-20260808",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/strand-architecture-gate-pilot32-seed71-20260808",
+      "kind": "directory",
+      "bytes": 36961870,
+      "sha256": null
+    },
+    {
+      "name": "strand-architecture-gate-smoke-20260808",
+      "original": "artifacts/strand-architecture-gate-smoke-20260808",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/strand-architecture-gate-smoke-20260808",
+      "kind": "directory",
+      "bytes": 6523100,
+      "sha256": null
+    },
+    {
+      "name": "strand-architecture-mixed128-balanced-rehearsal-seed71-20260808",
+      "original": "artifacts/strand-architecture-mixed128-balanced-rehearsal-seed71-20260808",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/strand-architecture-mixed128-balanced-rehearsal-seed71-20260808",
+      "kind": "directory",
+      "bytes": 63783267,
+      "sha256": null
+    },
+    {
+      "name": "strand-architecture-mixed128-balanced-seed71-20260808",
+      "original": "artifacts/strand-architecture-mixed128-balanced-seed71-20260808",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/strand-architecture-mixed128-balanced-seed71-20260808",
+      "kind": "directory",
+      "bytes": 46302834,
+      "sha256": null
+    },
+    {
+      "name": "strand-architecture-mixed128-compact-rehearsal-seed73-20260808",
+      "original": "artifacts/strand-architecture-mixed128-compact-rehearsal-seed73-20260808",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/strand-architecture-mixed128-compact-rehearsal-seed73-20260808",
+      "kind": "directory",
+      "bytes": 23749946,
+      "sha256": null
+    },
+    {
+      "name": "strand-architecture-mixed128-compact-seed73-20260808",
+      "original": "artifacts/strand-architecture-mixed128-compact-seed73-20260808",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/strand-architecture-mixed128-compact-seed73-20260808",
+      "kind": "directory",
+      "bytes": 25142722,
+      "sha256": null
+    },
+    {
+      "name": "strand-gate-maskednorm-20260808",
+      "original": "artifacts/strand-gate-maskednorm-20260808",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/strand-gate-maskednorm-20260808",
+      "kind": "directory",
+      "bytes": 102451856,
+      "sha256": null
+    },
+    {
+      "name": "strand-gate-maskednorm-20260808.log",
+      "original": "artifacts/strand-gate-maskednorm-20260808.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/strand-gate-maskednorm-20260808.log",
+      "kind": "file",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "strand-gate-raster-vs-window-20260808",
+      "original": "artifacts/strand-gate-raster-vs-window-20260808",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/strand-gate-raster-vs-window-20260808",
+      "kind": "directory",
+      "bytes": 47868489,
+      "sha256": null
+    },
+    {
+      "name": "strand-gate-raster-vs-window-20260808.log",
+      "original": "artifacts/strand-gate-raster-vs-window-20260808.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/strand-gate-raster-vs-window-20260808.log",
+      "kind": "file",
+      "bytes": 79,
+      "sha256": "276f334057f922d8c01e7e355bad83479c98e45c7b06b20eb6f35f6eb7daa602"
+    },
+    {
+      "name": "strand-gate-realbudget-20260808",
+      "original": "artifacts/strand-gate-realbudget-20260808",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/strand-gate-realbudget-20260808",
+      "kind": "directory",
+      "bytes": 68593250,
+      "sha256": null
+    },
+    {
+      "name": "strand-gate-realbudget-20260808.log",
+      "original": "artifacts/strand-gate-realbudget-20260808.log",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/strand-gate-realbudget-20260808.log",
+      "kind": "file",
+      "bytes": 73,
+      "sha256": "40335db7adff5093008c97f7950eb504d3b9873c3eb9953dc322ea72ee7ddf85"
+    },
+    {
+      "name": "structural-budget-audit-smoke-20260807",
+      "original": "artifacts/structural-budget-audit-smoke-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/structural-budget-audit-smoke-20260807",
+      "kind": "directory",
+      "bytes": 2141,
+      "sha256": null
+    },
+    {
+      "name": "structural-budget-equivalence-k3-100-seed20261600-20260807",
+      "original": "artifacts/structural-budget-equivalence-k3-100-seed20261600-20260807",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/structural-budget-equivalence-k3-100-seed20261600-20260807",
+      "kind": "directory",
+      "bytes": 1547009,
+      "sha256": null
+    },
+    {
+      "name": "superseded-by-server",
+      "original": "artifacts/superseded-by-server",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/superseded-by-server",
+      "kind": "directory",
+      "bytes": 1678832,
+      "sha256": null
+    },
+    {
+      "name": "tape-scan-r0-r3",
+      "original": "artifacts/tape-scan-r0-r3",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/tape-scan-r0-r3",
+      "kind": "directory",
+      "bytes": 25028513,
+      "sha256": null
+    },
+    {
+      "name": "top-checkpoints-challenge-20260802",
+      "original": "artifacts/top-checkpoints-challenge-20260802",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/top-checkpoints-challenge-20260802",
+      "kind": "directory",
+      "bytes": 655403,
+      "sha256": null
+    },
+    {
+      "name": "triad-snapshot-20260801",
+      "original": "artifacts/triad-snapshot-20260801",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/triad-snapshot-20260801",
+      "kind": "directory",
+      "bytes": 3739726,
+      "sha256": null
+    },
+    {
+      "name": "u2-u4-screen",
+      "original": "artifacts/u2-u4-screen",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/u2-u4-screen",
+      "kind": "directory",
+      "bytes": 1803752,
+      "sha256": null
+    },
+    {
+      "name": "value-eval-r31-r40.json",
+      "original": "artifacts/value-eval-r31-r40.json",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/value-eval-r31-r40.json",
+      "kind": "file",
+      "bytes": 55632,
+      "sha256": "cb704175808a80a8f816812560b1e9aab138ad90347d77cc95c0f799ffaee214"
+    },
+    {
+      "name": "value-eval-r31-r40.md",
+      "original": "artifacts/value-eval-r31-r40.md",
+      "archived": "archive/pre-semantic-moves-v1/artifacts/value-eval-r31-r40.md",
+      "kind": "file",
+      "bytes": 3918,
+      "sha256": "3cd2f13dde39acda7be0f0cfc3f259a7e50160ecb94b692ec652dcf6962012da"
+    }
+  ]
+}

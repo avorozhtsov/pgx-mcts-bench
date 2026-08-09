@@ -717,13 +717,15 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "jax", specifier = ">=0.4.30" },
+    { name = "knot-floer-homology", marker = "extra == 'bounds'", specifier = ">=1.2" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pgx", specifier = ">=2.6.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.2" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
+    { name = "spherogram", marker = "extra == 'bounds'", specifier = ">=2.2" },
     { name = "typer", specifier = ">=0.12" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "bounds"]
 
 [[package]]
 name = "rich"

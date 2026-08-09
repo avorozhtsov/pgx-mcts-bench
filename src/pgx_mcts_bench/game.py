@@ -10,6 +10,24 @@ from pgx.go import Go
 from pgx_mcts_bench.config import AnyGameConfig, BraidGameConfig, GameConfig, pick_stage
 
 
+def sample_log_ratio(config: BraidGameConfig, rng: np.random.Generator) -> float:
+    """Sample either an explicit objective or the historical continuous range."""
+    if config.objective_ratio_choices:
+        choices = np.asarray(config.objective_ratio_choices, dtype=np.float64)
+        if np.any(choices <= 0):
+            raise ValueError("objective ratio choices must be positive")
+        if config.objective_ratio_weights:
+            weights = np.asarray(config.objective_ratio_weights, dtype=np.float64)
+            if weights.shape != choices.shape or np.any(weights < 0) or weights.sum() <= 0:
+                raise ValueError("objective ratio weights must be non-negative and aligned")
+            probabilities = weights / weights.sum()
+        else:
+            probabilities = None
+        return float(np.log(rng.choice(choices, p=probabilities)))
+    low, high = config.log_ratio_range
+    return float(rng.uniform(low, high)) if high > low else low
+
+
 @dataclass(frozen=True)
 class Transition:
     state: Any
@@ -225,8 +243,7 @@ class BraidUnknotGame:
         rng = np.random.default_rng(seed)
         source, moves = pick_stage(self.config, self.generator, rng)
         instance = self.generator.generate(source, moves, rng)
-        low, high = self.config.log_ratio_range
-        log_ratio = float(rng.uniform(low, high)) if high > low else low
+        log_ratio = sample_log_ratio(self.config, rng)
         state = self.env.init_from_word(
             list(instance.word), instance.strands, log_ratio=log_ratio
         )

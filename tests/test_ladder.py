@@ -18,14 +18,31 @@ from pgx_mcts_bench.config import pick_stage
 from pgx_mcts_bench.game import make_game
 from pgx_mcts_bench.ladder import (
     STAGES,
+    _auxiliary_encoder_active_for_stage,
     _candidate_specs_compatible,
     _config,
     _duration,
+    _use_auxiliary_value_for_stage,
+    experimental_capacity_arms,
     parallel_arms,
     promotion_reason,
     resume_point,
+    retry_last_capped_stage,
     stage_mixture,
 )
+
+
+def test_retry_last_capped_stage_preserves_promoted_history() -> None:
+    from pgx_mcts_bench.ladder import LadderResult, StageResult
+
+    promoted = StageResult(0, "unknot", 2, 5, {}, 1.0, 0.0, 0, True, 1.0)
+    capped = StageResult(1, "unknot", 6, 5, {}, 0.6, 1.0, 0, False, 1.0)
+    result = LadderResult("x", "x", 0, 2.0, [promoted, capped])
+
+    assert retry_last_capped_stage(result, 1) == (1, 0)
+    assert result.stages == [promoted]
+    assert result.highest_stage == 0
+    assert retry_last_capped_stage(result, 0) is None
 
 
 def test_old_candidate_spec_accepts_only_known_additive_fields() -> None:
@@ -48,6 +65,29 @@ def test_progress_duration_is_compact_and_human_readable() -> None:
     assert _duration(12.4) == "12s"
     assert _duration(125) == "2m 05s"
     assert _duration(3 * 3600 + 12 * 60) == "3h 12m"
+
+
+def test_l1000_arm_trains_and_evaluates_only_the_target_objective() -> None:
+    candidate = next(
+        arm for arm in experimental_capacity_arms() if arm.name == "s-window-128-l1000"
+    )
+    config = _config(candidate, STAGES[0], 0, "cpu")
+
+    assert candidate.objective_ratios == (1000.0,)
+    np.testing.assert_allclose(config.game.log_ratio_range, np.log((1000.0, 1000.0)))
+
+
+def test_scalable_factorized_critic_warms_up_in_shadow_for_one_stage() -> None:
+    candidate = next(
+        arm
+        for arm in experimental_capacity_arms()
+        if arm.name == "conv-torus-recurrent-idcols-128-bstar"
+    )
+    assert candidate.use_auxiliary_value
+    assert not _use_auxiliary_value_for_stage(candidate, 0)
+    assert _use_auxiliary_value_for_stage(candidate, 1)
+    assert not _auxiliary_encoder_active_for_stage(candidate, 0)
+    assert _auxiliary_encoder_active_for_stage(candidate, 1)
 
 
 def test_stages_keep_the_calibration_order_and_attach_scheduled_exact_values() -> None:
@@ -75,10 +115,7 @@ def test_stages_keep_the_calibration_order_and_attach_scheduled_exact_values() -
 
     crossings = [by_name[s].crossing_number for s, _ in random_tail]
     assert crossings == sorted(crossings), crossings
-    assert any(
-        by_name[source].unknotting_number == UNKNOWN_UNKNOTTING
-        for source, _ in random_tail
-    )
+    assert any(by_name[source].unknotting_number == UNKNOWN_UNKNOTTING for source, _ in random_tail)
     assert [by_name[source].unknotting_number for source, _ in STAGES[18:28]] == [
         1,
         1,
@@ -199,6 +236,22 @@ def test_plateau_needs_two_windows_before_it_can_fire() -> None:
     assert (
         promotion_reason(1.0, 5.0, flat * 2, 1, promote_at=0.8, tolerance=0.25, window=3)
         == "plateau"
+    )
+
+
+def test_known_objective_gate_can_forbid_plateau_promotion() -> None:
+    assert (
+        promotion_reason(
+            1.0,
+            5.0,
+            [5.0] * 6,
+            1,
+            promote_at=0.8,
+            tolerance=0.25,
+            window=3,
+            plateau_on_known_objective=False,
+        )
+        is None
     )
 
 
@@ -343,6 +396,19 @@ def test_learned_algebra_arms_have_finite_relation_objective() -> None:
         relation.backward()
         parameters = network.transitions if arm.serial_encoder == "fsa" else network.field_matrices
         assert parameters.grad is not None and torch.isfinite(parameters.grad).all()
+
+
+def test_final_ladder_checkpoint_prefers_progress_after_a_capped_rung(tmp_path) -> None:
+    from pgx_mcts_bench.ladder import final_ladder_checkpoint
+
+    promoted = tmp_path / "candidate.pt"
+    promoted.touch()
+    assert final_ladder_checkpoint(promoted) == promoted
+
+    progress = tmp_path / "candidate" / "progress.pt"
+    progress.parent.mkdir()
+    progress.touch()
+    assert final_ladder_checkpoint(promoted) == progress
 
 
 # -- thread colours ------------------------------------------------------------
@@ -654,10 +720,23 @@ def test_evaluation_batches_all_ratios_and_games(monkeypatch) -> None:
             ]
 
     monkeypatch.setattr(ladder, "NeuralMCTS", FakeSearch)
-    rows = ladder.evaluate_stage(game, object(), config, games=2, seed=123)
+    rows = ladder.evaluate_stage(
+        game,
+        object(),
+        config,
+        games=2,
+        seed=123,
+        include_attempts=True,
+    )
 
     assert batch_sizes[0] == 6  # 3 ratios * 2 held-out instances
     assert set(rows) == set(ladder.RATIOS)
+    for ratio in ladder.RATIOS:
+        attempts = rows[ratio]["attempts"]
+        assert len(attempts) == 2
+        assert [row["attempt"] for row in attempts] == [0, 1]
+        assert all(row["word"] and row["strands"] >= 2 for row in attempts)
+        assert all(isinstance(row["solved"], bool) for row in attempts)
 
 
 def test_partial_rung_checkpoint_restores_training_state(tmp_path) -> None:
@@ -838,3 +917,36 @@ def test_explicit_rehearsal_pins_each_cleared_stage(monkeypatch) -> None:
     assert result.highest_stage == 1
     pinned_rehearsal = [call for call in calls if not call[0] and call[3] == 2]
     assert pinned_rehearsal == [((), STAGES[0][0], STAGES[0][1], 2)]
+
+
+def test_adaptive_rehearsal_doubles_only_a_failing_old_rung(monkeypatch) -> None:
+    import pgx_mcts_bench.ladder as ladder
+
+    monkeypatch.setattr(ladder, "play_selfplay_games", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(ladder, "train_alphazero_step", lambda *_args, **_kwargs: None)
+
+    def evaluation(game, *_args, ratios=ladder.RATIOS, **_kwargs):
+        retention_probe = ratios == (max(ladder.RATIOS),)
+        solved = 0.5 if retention_probe else 1.0
+        return {ratio: {"solved": solved, "crossings": 0.0, "moves": 1.0} for ratio in ratios}
+
+    monkeypatch.setattr(ladder, "evaluate_stage", evaluation)
+    result = ladder.run_ladder(
+        parallel_arms()[1],
+        max_iterations_per_stage=1,
+        selfplay_games=1,
+        eval_every=1,
+        eval_games=4,
+        retro_games=2,
+        stop_after=1,
+        rehearsal_games_per_cleared_stage=1,
+        adaptive_rehearsal=True,
+        rehearsal_target=0.8,
+        max_rehearsal_games_per_stage=8,
+        log=lambda *_args, **_kwargs: None,
+    )
+
+    assert result.rehearsal_doses == {"0": 2}
+    assert not result.stages[1].promoted
+    assert result.stages[1].retrospective["0"]["dose_before"] == 1
+    assert result.stages[1].retrospective["0"]["dose_after"] == 2

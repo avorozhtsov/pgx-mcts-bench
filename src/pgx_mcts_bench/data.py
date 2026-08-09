@@ -116,9 +116,7 @@ class ReplayBuffer:
     def _representation(game: GameRecord) -> str:
         return str(getattr(game[0], "representation_id", "")) if game else ""
 
-    def set_representation_embedding(
-        self, representation_id: str, embedding: np.ndarray
-    ) -> None:
+    def set_representation_embedding(self, representation_id: str, embedding: np.ndarray) -> None:
         self._ensure_replay_state()
         vector = np.asarray(embedding, dtype=np.float32).reshape(-1)
         norm = float(np.linalg.norm(vector))
@@ -150,22 +148,16 @@ class ReplayBuffer:
             return
         key, objective, shared = solution
         archive = (
-            self.best_shared_solution_objectives
-            if shared
-            else self.best_native_solution_objectives
+            self.best_shared_solution_objectives if shared else self.best_native_solution_objectives
         )
         incumbent = archive.get(key, float("inf"))
         archive[key] = min(objective, incumbent)
         if not shared and objective < incumbent:
             self.best_native_solution_records[key] = copy.deepcopy(game)
 
-    def best_native_objective(
-        self, representation_id: str, ratio: float
-    ) -> float | None:
+    def best_native_objective(self, representation_id: str, ratio: float) -> float | None:
         self._ensure_replay_state()
-        return self.best_native_solution_objectives.get(
-            (str(representation_id), float(ratio))
-        )
+        return self.best_native_solution_objectives.get((str(representation_id), float(ratio)))
 
     def record_native_objective(
         self, representation_id: str, ratio: float, objective: float
@@ -185,9 +177,7 @@ class ReplayBuffer:
     ) -> GameRecord | None:
         """Return a fresh copy of the permanent best native solution."""
         self._ensure_replay_state()
-        record = self.best_native_solution_records.get(
-            (str(representation_id), float(ratio))
-        )
+        record = self.best_native_solution_records.get((str(representation_id), float(ratio)))
         return copy.deepcopy(record) if record is not None else None
 
     def active_distillation_records(self) -> list[GameRecord]:
@@ -309,6 +299,7 @@ class ReplayBuffer:
         if current_fraction + similar_fraction > 1.0:
             raise ValueError("current and similar fractions must sum to at most one")
         self._ensure_replay_state()
+
         def eligible_game(game: GameRecord) -> bool:
             return bool(game) and (
                 max_position_uses == 0
@@ -357,7 +348,9 @@ class ReplayBuffer:
         episode_slots = max(1, int(np.ceil(batch_size / positions_per_episode)))
         shared_count = min(
             episode_slots,
-            max(0, round(episode_slots * shared_fraction)) if shared else 0,
+            max(1, round(episode_slots * shared_fraction))
+            if shared and shared_fraction > 0.0
+            else 0,
         )
         native_count = episode_slots - shared_count
         has_negative = bool(native_failure or capped_failure)
@@ -397,20 +390,14 @@ class ReplayBuffer:
         )
         selected: list[GameRecord] = []
         trace: list[dict[str, Any]] = []
-        for stratum, representation_group in zip(
-            strata, representation_groups, strict=True
-        ):
-            candidates = self._filter_representations(
-                pools[stratum], representation_group
-            )
+        for stratum, representation_group in zip(strata, representation_groups, strict=True):
+            candidates = self._filter_representations(pools[stratum], representation_group)
             fallback = "none"
             if not candidates:
                 candidates = pools[stratum]
                 fallback = "representation"
             if not candidates:
-                candidates = self._filter_representations(
-                    eligible_games, representation_group
-                )
+                candidates = self._filter_representations(eligible_games, representation_group)
                 fallback = "stratum"
             if not candidates:
                 candidates = eligible_games
@@ -475,8 +462,7 @@ class ReplayBuffer:
             return bool(game) and (
                 max_position_uses == 0
                 or any(
-                    int(getattr(position, "replay_position_uses", 0))
-                    < max_position_uses
+                    int(getattr(position, "replay_position_uses", 0)) < max_position_uses
                     for position in game
                 )
             )
@@ -484,8 +470,7 @@ class ReplayBuffer:
         native = [
             game
             for game in self.games
-            if eligible(game)
-            and not bool(getattr(game[0], "shared_witness", False))
+            if eligible(game) and not bool(getattr(game[0], "shared_witness", False))
         ]
         successes = [
             game
@@ -500,9 +485,7 @@ class ReplayBuffer:
             and float(getattr(game[0], "solved", -1.0)) <= 0.5
         ]
         capped_failures = [
-            game
-            for game in native
-            if bool(getattr(game[0], "objective_censored", False))
+            game for game in native if bool(getattr(game[0], "objective_censored", False))
         ]
         failures = ordinary_failures + capped_failures
         if not successes and not failures:
@@ -520,25 +503,17 @@ class ReplayBuffer:
             success_slots, failure_slots = 0, slots
 
         current_successes = [
-            game
-            for game in successes
-            if self._representation(game) == current_representation
+            game for game in successes if self._representation(game) == current_representation
         ]
         rehearsal_successes = [
-            game
-            for game in successes
-            if self._representation(game) in rehearsal_representations
+            game for game in successes if self._representation(game) in rehearsal_representations
         ]
         success_requests: list[tuple[str, list[GameRecord]]] = []
         if current_successes and rehearsal_successes:
             current_slots = success_slots // 2
             rehearsal_slots = success_slots - current_slots
-            success_requests.extend(
-                [("current-success", current_successes)] * current_slots
-            )
-            success_requests.extend(
-                [("rehearsal-success", rehearsal_successes)] * rehearsal_slots
-            )
+            success_requests.extend([("current-success", current_successes)] * current_slots)
+            success_requests.extend([("rehearsal-success", rehearsal_successes)] * rehearsal_slots)
         else:
             pool = current_successes or rehearsal_successes or successes
             label = (
@@ -554,16 +529,11 @@ class ReplayBuffer:
         if ordinary_failures and capped_failures:
             capped_slots = max(1, min(failure_slots // 3, failure_slots - 1))
             failure_requests.extend(
-                [("ordinary-failure", ordinary_failures)]
-                * (failure_slots - capped_slots)
+                [("ordinary-failure", ordinary_failures)] * (failure_slots - capped_slots)
             )
-            failure_requests.extend(
-                [("budget-censored-failure", capped_failures)] * capped_slots
-            )
+            failure_requests.extend([("budget-censored-failure", capped_failures)] * capped_slots)
         elif failures:
-            label = (
-                "ordinary-failure" if ordinary_failures else "budget-censored-failure"
-            )
+            label = "ordinary-failure" if ordinary_failures else "budget-censored-failure"
             failure_requests.extend([(label, failures)] * failure_slots)
 
         requests = success_requests + failure_requests
@@ -578,8 +548,7 @@ class ReplayBuffer:
                 position
                 for position in game
                 if max_position_uses == 0
-                or int(getattr(position, "replay_position_uses", 0))
-                < max_position_uses
+                or int(getattr(position, "replay_position_uses", 0)) < max_position_uses
             ]
             positions = self._spread_positions(
                 eligible_positions,
@@ -596,9 +565,7 @@ class ReplayBuffer:
         self.last_collaboration_sample_trace = trace
         return batch
 
-    def _similar_representations(
-        self, current: str, count: int
-    ) -> set[str]:
+    def _similar_representations(self, current: str, count: int) -> set[str]:
         current_embedding = self.representation_embeddings.get(current)
         if current_embedding is None or count <= 0:
             return set()
@@ -625,9 +592,7 @@ class ReplayBuffer:
         similar = self._similar_representations(
             current_representation, similar_representation_count
         )
-        current_count = (
-            round(slots * current_fraction) if current_representation else 0
-        )
+        current_count = round(slots * current_fraction) if current_representation else 0
         similar_count = round(slots * similar_fraction) if similar else 0
         if current_count + similar_count > slots:
             similar_count = max(0, slots - current_count)
@@ -647,9 +612,7 @@ class ReplayBuffer:
             return games
         return [game for game in games if self._representation(game) in identities]
 
-    def _draw_exposure_balanced_episode(
-        self, games: list[GameRecord]
-    ) -> GameRecord:
+    def _draw_exposure_balanced_episode(self, games: list[GameRecord]) -> GameRecord:
         by_representation: dict[str, list[GameRecord]] = {}
         for game in games:
             by_representation.setdefault(self._representation(game), []).append(game)
@@ -657,18 +620,12 @@ class ReplayBuffer:
         identity = identities[int(self.rng.integers(0, len(identities)))]
         candidates = by_representation[identity]
         weights = np.asarray(
-            [
-                1.0
-                / (1.0 + int(getattr(game[0], "replay_episode_uses", 0)))
-                for game in candidates
-            ],
+            [1.0 / (1.0 + int(getattr(game[0], "replay_episode_uses", 0))) for game in candidates],
             dtype=np.float64,
         )
         weights /= weights.sum()
         game = candidates[int(self.rng.choice(len(candidates), p=weights))]
-        game[0].replay_episode_uses = int(
-            getattr(game[0], "replay_episode_uses", 0)
-        ) + 1
+        game[0].replay_episode_uses = int(getattr(game[0], "replay_episode_uses", 0)) + 1
         return game
 
     def _spread_positions(self, game: GameRecord, count: int) -> list[Position]:
@@ -702,9 +659,7 @@ class ReplayBuffer:
             indexes.append(int(self.rng.choice(len(game), p=weights)))
         result = [game[index] for index in indexes[:count]]
         for position in result:
-            position.replay_position_uses = int(
-                getattr(position, "replay_position_uses", 0)
-            ) + 1
+            position.replay_position_uses = int(getattr(position, "replay_position_uses", 0)) + 1
         return result
 
     def has_trainable_collaboration_positions(self) -> bool:

@@ -17,11 +17,15 @@ from pgx_mcts_bench.collaboration_eval import (
     export_collaboration_scientist,
 )
 from pgx_mcts_bench.collaborative_scientists import (
+    _adaptive_dose,
     _bank_payload,
     _commit_round,
+    _portfolio_noninferior,
     _refresh_schedule,
+    _rehearsal_ids,
     _strict_shared_improvement,
     common_structural_objective_cap,
+    load_round_state,
     play_with_common_objective_restarts,
     play_with_objective_restarts,
     run_collaborative_scientists,
@@ -53,6 +57,37 @@ def test_stratified_banks_are_identity_disjoint_and_span_quartiles() -> None:
     assert {item.id for item in bank}.isdisjoint(item.id for item in anchors)
     assert {item.difficulty_quartile for item in bank} == {0, 1, 2, 3}
     assert bank == sorted(bank, key=lambda item: (item.cheap_score, item.id))
+
+
+def test_adaptive_rehearsal_doubles_only_after_an_unhealthy_block() -> None:
+    assert _adaptive_dose(8, True, 32) == 8
+    assert _adaptive_dose(8, False, 32) == 16
+    assert _adaptive_dose(24, False, 32) == 32
+    assert _adaptive_dose(32, False, 32) == 32
+
+
+def test_rehearsal_is_bounded_and_prioritizes_degraded_recent_and_underexposed() -> None:
+    exposures = {"old-a": 9, "old-b": 0, "old-c": 1, "old-d": 2}
+    selected = _rehearsal_ids(
+        ["old-a", "old-b", "old-c", "old-d"],
+        ["old-a"],
+        exposures,
+        dose=8,
+    )
+
+    assert len(selected) == 8
+    assert selected[:4] == ["old-a"] * 4
+    assert selected[4:6] == ["old-d", "old-c"]
+    assert selected[6:] == ["old-b", "old-c"]
+    assert exposures["old-a"] == 13
+    assert exposures["old-b"] == 1
+
+
+def test_portfolio_guard_requires_coverage_and_capped_loss_noninferiority() -> None:
+    before = {"solved": 7, "capped_objective": 100.0}
+    assert _portfolio_noninferior(before, {"solved": 7, "capped_objective": 99.0})
+    assert not _portfolio_noninferior(before, {"solved": 6, "capped_objective": 90.0})
+    assert not _portfolio_noninferior(before, {"solved": 8, "capped_objective": 101.0})
 
 
 def test_pilot_banks_are_not_unknotting_number_one_only() -> None:
@@ -117,9 +152,7 @@ def test_verified_cost_separates_semantic_moves_from_receiver_head_route() -> No
         config.game._spec.encode(DESTABILIZE),
     ]
 
-    record = translate_semantic_record(
-        SimpleNamespace(game=game), knot, 10.0, semantic, seed=13
-    )
+    record = translate_semantic_record(SimpleNamespace(game=game), knot, 10.0, semantic, seed=13)
 
     assert record is not None
     assert len(record) == 3  # shift, reduction, destabilization
@@ -129,9 +162,7 @@ def test_verified_cost_separates_semantic_moves_from_receiver_head_route() -> No
     assert record[0].final_native_plies == 3
     assert record[0].final_internal_plies == 1
 
-    window_config = _config(
-        _window_candidate(), ("R(3,12)#0", 0), 0, "cpu", selfplay_games=1
-    )
+    window_config = _config(_window_candidate(), ("R(3,12)#0", 0), 0, "cpu", selfplay_games=1)
     window_game = make_game(window_config.game)
     direct = translate_semantic_record(
         SimpleNamespace(game=window_game), knot, 10.0, semantic, seed=13
@@ -141,14 +172,35 @@ def test_verified_cost_separates_semantic_moves_from_receiver_head_route() -> No
     assert verified_record_cost(window_game, knot, 10.0, direct)[:2] == (0, 2)
 
 
+def test_verified_cost_accepts_a_cyclic_band_witness() -> None:
+    candidate = next(
+        candidate
+        for candidate in candidates()
+        if candidate.name == "conv-cylinder-recurrent-idcols-128-bstar"
+    )
+    config = _config(candidate, ("R(3,12)#0", 0), 0, "cpu", selfplay_games=1)
+    game = make_game(config.game)
+    knot = KnotItem("cyclic-band-unknot", 4, (3, -3, 1, 2), 3)
+    semantic = [
+        config.game._spec.encode(REDUCE, position=0),
+        config.game._spec.encode(DESTABILIZE),
+        config.game._spec.encode(DESTABILIZE),
+    ]
+
+    record = translate_semantic_record(
+        SimpleNamespace(game=game), knot, 1000.0, semantic, seed=19
+    )
+
+    assert record is not None
+    assert verified_record_cost(game, knot, 1000.0, record)[:2] == (0, 3)
+
+
 def test_internal_controller_action_does_not_spend_semantic_L_budget() -> None:
     candidate = next(candidate for candidate in candidates() if candidate.name == "s-tape4")
     config = _config(candidate, ("R(3,12)#0", 0), 0, "cpu", selfplay_games=1)
     config = replace(config, game=replace(config.game, objective_budget_channel=True))
     game = make_game(config.game)
-    fixed = FixedWordGame(
-        game, KnotItem("route", 3, (1, 1, -1), 2), 10.0, objective_cap=20.0
-    )
+    fixed = FixedWordGame(game, KnotItem("route", 3, (1, 1, -1), 2), 10.0, objective_cap=20.0)
     before = fixed.reset(0)
     shift = int(
         game._shift_base  # noqa: SLF001
@@ -294,9 +346,7 @@ def test_budget_channel_without_explicit_cap_is_soft() -> None:
     raw = game.unwrap(serial_state)
     raw = raw.replace(_crossing_changes=np.int32(2 * config.game.simplify_budget))
     updated_state = (raw, *serial_state[1:])
-    soft = fixed._budgeted(
-        replace(transition, state=updated_state), fixed._global_cap()
-    )
+    soft = fixed._budgeted(replace(transition, state=updated_state), fixed._global_cap())
 
     assert float(soft.observation[0, 0, -1]) < 0.0
     assert not soft.terminated
@@ -354,9 +404,7 @@ def test_old_checkpoint_ignores_new_objective_budget_channel(tmp_path: Path) -> 
 
 
 def test_triad_checkpoint_zero_pads_nested_remaining_budget_inputs(tmp_path: Path) -> None:
-    candidate = next(
-        candidate for candidate in candidates() if candidate.name == "s-triad-wst"
-    )
+    candidate = next(candidate for candidate in candidates() if candidate.name == "s-triad-wst")
     config = _config(candidate, ("R(3,12)#0", 0), 0, "cpu", selfplay_games=1)
     original = make_braid_network(config.game, config.model)
     checkpoint = tmp_path / "triad.pt"
@@ -415,12 +463,10 @@ def test_tape4_h5_migrates_two_trailing_budget_channels_exactly(tmp_path: Path) 
         objective_budget_channel=True,
     )
     knot = KnotItem("stabilized-unknot", 1, (1,), 2)
-    old_observation = FixedWordGame(
-        make_game(source_config.game), knot, 10.0
-    ).reset(0).observation
-    new_observation = FixedWordGame(
-        scientist.game, knot, 10.0, objective_cap=12.0
-    ).reset(0).observation
+    old_observation = FixedWordGame(make_game(source_config.game), knot, 10.0).reset(0).observation
+    new_observation = (
+        FixedWordGame(scientist.game, knot, 10.0, objective_cap=12.0).reset(0).observation
+    )
     old_tensor = torch.from_numpy(old_observation).permute(2, 0, 1)[None]
     new_tensor = torch.from_numpy(new_observation).permute(2, 0, 1)[None]
 
@@ -632,6 +678,60 @@ def test_minimal_run_resumes_from_committed_round(tmp_path: Path) -> None:
     assert len(json.loads((tmp_path / "evaluation/items/0000.json").read_text())["attempts"]) == 4
 
 
+def test_adaptive_rehearsal_runner_persists_dose_and_portfolio_certificate(
+    tmp_path: Path,
+) -> None:
+    candidate = _window_candidate()
+    config = _config(candidate, ("R(3,12)#0", 0), 0, "cpu", selfplay_games=1)
+    checkpoint = tmp_path / "initial.pt"
+    torch.save(
+        {"network": make_braid_network(config.game, config.model).state_dict()},
+        checkpoint,
+    )
+    output = tmp_path / "adaptive"
+
+    report = run_collaborative_scientists(
+        {candidate.name: checkpoint},
+        output,
+        arm="static-no-sharing",
+        rounds=2,
+        pool_size=4,
+        anchor_size=2,
+        frontier=2,
+        ratios=(1000.0,),
+        qualification_simulations=1,
+        qualification_attempts=2,
+        simulations=1,
+        full_attempts_per_scientist=2,
+        train_every=2,
+        train_steps=0,
+        adaptive_rehearsal=True,
+        rehearsal_games_per_block=1,
+        max_rehearsal_games_per_block=4,
+        retention_attempts=3,
+        retention_simulations=1,
+        bank_seed=31,
+        seed=37,
+    )
+
+    assert report["schema"] == "collaborative-scientists-v7-adaptive-rehearsal-portfolio"
+    assert report["adaptive_rehearsal_result"] == {
+        "final_dose": 1,
+        "accepted_blocks": 1,
+        "rolled_back_blocks": 0,
+    }
+    event = json.loads((output / "rounds/000001/event.json").read_text())
+    assert len(event["qualification"][0]["attempts"]) == 2
+    assert len(event["full_attempts"]) == 2
+    assert event["adaptive_rehearsal"]["dose"] == 1
+    assert event["portfolio_guard"]["accepted"]
+    assert event["portfolio_guard"]["before"]["attempts"] >= 3
+    assert event["portfolio_guard"]["before"]["attempts_per_cell"] == 2
+    state = load_round_state(output / "rounds/000001", map_location="cpu")
+    assert state["rehearsal_dose"] == 1
+    assert state["rehearsal_exposures"]
+
+
 def test_primary_sharing_gate_uses_aggregate_objective_not_exact_retention() -> None:
     sharing_blocks = [
         {
@@ -768,9 +868,7 @@ def test_multiseed_sharing_summary_uses_mean_and_median_paired_delta(
                     "paired_non_target_canaries": final,
                     "paired_generalization": final,
                     "lost_from_before": [],
-                    "sharing_blocks": [
-                        {"mean_route_loss_relative_reduction": -0.2}
-                    ],
+                    "sharing_blocks": [{"mean_route_loss_relative_reduction": -0.2}],
                 }
             }
         }
@@ -785,12 +883,7 @@ def test_multiseed_sharing_summary_uses_mean_and_median_paired_delta(
     assert receiver["sharing_wins"] == 2
     assert receiver["control_wins"] == 1
     assert receiver["training_targets_summary"]["sharing_wins"] == 2
-    assert (
-        receiver["non_target_canary_summary"][
-            "mean_delta_sharing_minus_control"
-        ]
-        < 0.0
-    )
+    assert receiver["non_target_canary_summary"]["mean_delta_sharing_minus_control"] < 0.0
     assert receiver["passed"]
     assert receiver["generalization_summary"]["sharing_wins"] == 2
     assert summary["decision"]["passed"]

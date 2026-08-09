@@ -161,14 +161,21 @@ def _run_workers(jobs: list[tuple[Path, dict[str, Any]]], *, workers: int) -> li
         else:
             pending.append((path, payload))
     if pending:
+        errors: list[Exception] = []
         with ProcessPoolExecutor(max_workers=min(workers, len(pending))) as executor:
             futures = {
                 executor.submit(_evaluate_worker, payload): path for path, payload in pending
             }
             for future in as_completed(futures):
-                row = future.result()
+                try:
+                    row = future.result()
+                except Exception as error:  # preserve other completed workers for resume
+                    errors.append(error)
+                    continue
                 _atomic_json(futures[future], row)
                 rows.append(row)
+        if errors:
+            raise errors[0]
     return sorted(rows, key=lambda row: str(row["scientist"]))
 
 

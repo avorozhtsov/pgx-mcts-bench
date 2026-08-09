@@ -17,6 +17,7 @@ import os
 import tempfile
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
@@ -35,8 +36,8 @@ from pgx_mcts_bench.adaptive_scientists import (
 )
 from pgx_mcts_bench.data import GameRecord, Position
 from pgx_mcts_bench.distill import _best_destination, train_bounded_option_step
-from pgx_mcts_bench.networks import load_policy_value_state_dict
 from pgx_mcts_bench.game import make_game
+from pgx_mcts_bench.networks import load_policy_value_state_dict
 from pgx_mcts_bench.search import NeuralMCTS
 from pgx_mcts_bench.serial_braid import SerialBraidGame
 from pgx_mcts_bench.training import (
@@ -47,6 +48,7 @@ from pgx_mcts_bench.training import (
 
 Arm = Literal[
     "adaptive-sharing",
+    "adaptive-sharing-direct",
     "adaptive-sharing-aux-only",
     "adaptive-no-sharing",
     "static-sharing",
@@ -391,17 +393,12 @@ def play_with_objective_restarts(
             retained_records.append(record)
         solved = bool(record and record[0].solved > 0.5)
         final_moves = float(record[0].final_moves) if record else 0.0
-        final_native_plies = (
-            float(record[0].final_native_plies) if record else 0.0
-        )
+        final_native_plies = float(record[0].final_native_plies) if record else 0.0
         # If the ordinary move clock fired, raising an objective cap cannot add
         # search depth. Otherwise an unsolved attempt below the global cap is a
         # censored result and must be retried geometrically.
         objective_exhausted = bool(
-            record
-            and record[0].objective_censored
-            and not solved
-            and cap < global_cap
+            record and record[0].objective_censored and not solved and cap < global_cap
         )
         attempts.append(
             {
@@ -668,6 +665,92 @@ def _play_bundles(
     return [future.result() for future in futures]
 
 
+def _adaptive_dose(current: int, healthy: bool, maximum: int) -> int:
+    """Hold a healthy rehearsal dose; double an unhealthy one up to its cap."""
+    if current < 1 or maximum < current:
+        raise ValueError("adaptive rehearsal dose must satisfy 1 <= current <= maximum")
+    return current if healthy else min(maximum, max(current + 1, 2 * current))
+
+
+def _rotating_retention_items(
+    items: list[BankItem], count: int, *, seed: int, block: int
+) -> list[BankItem]:
+    """Select a deterministic rotating panel without changing scientific seeds."""
+    if count <= 0 or not items:
+        return []
+    ranked = sorted(
+        items,
+        key=lambda item: hashlib.sha256(f"retention:{seed}:{block}:{item.id}".encode()).digest(),
+    )
+    return ranked[: min(count, len(ranked))]
+
+
+def _rehearsal_ids(
+    processed: list[str],
+    priority: list[str],
+    exposures: dict[str, int],
+    dose: int,
+) -> list[str]:
+    """Allocate 50% degraded, 25% recent, and 25% exposure-balanced games.
+
+    The list may repeat identities when the history is smaller than the requested
+    dose.  This keeps ``F_old`` a bounded *total* per training block instead of
+    growing once for every representation ever seen.
+    """
+    if dose <= 0 or not processed:
+        return []
+    available = list(dict.fromkeys(processed))
+    available_set = set(available)
+    priority = [item for item in dict.fromkeys(priority) if item in available_set]
+    recent = list(reversed(available[-max(1, min(len(available), dose)) :]))
+    uniform = sorted(available, key=lambda item: (exposures.get(item, 0), item))
+    quotas = (math.ceil(dose / 2), math.ceil(dose / 4))
+    pools = (priority or uniform, recent, uniform)
+    counts = (quotas[0], quotas[1], dose - quotas[0] - quotas[1])
+    selected: list[str] = []
+    for pool, count in zip(pools, counts, strict=True):
+        for index in range(max(count, 0)):
+            selected.append(pool[index % len(pool)])
+    for item in selected:
+        exposures[item] = exposures.get(item, 0) + 1
+    return selected
+
+
+def _training_snapshot(
+    scientists: list[Scientist],
+    option_optimizers: dict[str, torch.optim.Optimizer],
+) -> dict[str, dict[str, Any]]:
+    """Capture only trainable state; replay and the permanent bank survive rollback."""
+    snapshots: dict[str, dict[str, Any]] = {}
+    for scientist in scientists:
+        row = {
+            "network": {
+                key: value.detach().cpu().clone()
+                for key, value in scientist.network.state_dict().items()
+            },
+            "optimizer": deepcopy(scientist.optimizer.state_dict()),
+            "prediction_source": scientist.prediction_source,
+        }
+        if scientist.name in option_optimizers:
+            row["option_optimizer"] = deepcopy(option_optimizers[scientist.name].state_dict())
+        snapshots[scientist.name] = row
+    return snapshots
+
+
+def _restore_training_snapshot(
+    scientists: list[Scientist],
+    option_optimizers: dict[str, torch.optim.Optimizer],
+    snapshots: dict[str, dict[str, Any]],
+) -> None:
+    for scientist in scientists:
+        row = snapshots[scientist.name]
+        load_policy_value_state_dict(scientist.network, row["network"])
+        scientist.optimizer.load_state_dict(row["optimizer"])
+        scientist.prediction_source = str(row["prediction_source"])
+        if scientist.name in option_optimizers:
+            option_optimizers[scientist.name].load_state_dict(row["option_optimizer"])
+
+
 def _raw_state(game: Any, state: Any) -> Any:
     return game.unwrap(state) if hasattr(game, "unwrap") else state
 
@@ -725,14 +808,13 @@ def verified_record_cost(
         BraidState(
             tuple(int(value) for value in np.asarray(state._word) if int(value)),
             int(np.asarray(state._n)),
+            game.config._spec.cyclic_band_generators,
         )
         for state in raw_states
     ]
     witness = UnknotWitness.from_states(states, game.config._spec)
     witness.verify()
-    semantic = [
-        int(step.action.to_flat(game.config._spec)) for step in witness.steps
-    ]
+    semantic = [int(step.action.to_flat(game.config._spec)) for step in witness.steps]
     return witness.crossing_changes, witness.moves, semantic
 
 
@@ -859,6 +941,101 @@ def _attempt_payload(
 
 def _failure_cost(ratio: float, move_budget: int, failure_crossings: int = 20) -> float:
     return ratio * failure_crossings + move_budget
+
+
+def _portfolio_probe(
+    scientists: list[Scientist],
+    items: list[BankItem],
+    ratios: tuple[float, ...],
+    *,
+    simulations: int,
+    seed: int,
+    objective_budget: bool,
+    remaining_budget_channel: bool,
+    action_horizon: int,
+    minimum_attempts: int,
+    executor: ProcessPoolExecutor | None,
+) -> dict[str, Any]:
+    """Measure the paired population portfolio on a small frozen panel."""
+    cells_per_attempt = len(scientists) * len(items) * len(ratios)
+    attempts_per_cell = max(1, math.ceil(minimum_attempts / max(1, cells_per_attempt)))
+    probe_ratios = tuple(
+        ratio for _attempt in range(attempts_per_cell) for ratio in ratios
+    )
+    jobs = []
+    coordinates: list[tuple[int, int]] = []
+    for scientist_index, scientist in enumerate(scientists):
+        for item_index, item in enumerate(items):
+            seeds = tuple(
+                seed
+                + scientist_index * 10_000_000
+                + item_index * 10_000
+                + attempt_index * 100
+                + ratio_index
+                for attempt_index in range(attempts_per_cell)
+                for ratio_index in range(len(ratios))
+            )
+            jobs.append(
+                (
+                    scientist,
+                    item.knot,
+                    probe_ratios,
+                    simulations,
+                    seeds,
+                    objective_budget,
+                    remaining_budget_channel,
+                    action_horizon,
+                )
+            )
+            coordinates.append((scientist_index, item_index))
+    results = _play_bundles(executor, jobs)
+    cells: dict[str, dict[str, Any]] = {}
+    failure = {ratio: _failure_cost(ratio, action_horizon) for ratio in ratios}
+    for (scientist_index, item_index), runs in zip(coordinates, results, strict=True):
+        scientist = scientists[scientist_index]
+        item = items[item_index]
+        for flat_index, (ratio, run) in enumerate(zip(probe_ratios, runs, strict=True)):
+            payload, verified = _attempt_payload(scientist, item.knot, ratio, run.record)
+            payload["attempt"] = flat_index // len(ratios)
+            key = f"{item.id}|{ratio:g}"
+            objective = (
+                ratio * verified[0] + verified[1] if verified is not None else failure[ratio]
+            )
+            incumbent = cells.get(key)
+            if incumbent is None or objective < incumbent["objective"]:
+                cells[key] = {
+                    "item": item.id,
+                    "ratio": ratio,
+                    "solved": verified is not None,
+                    "objective": objective,
+                    "scientist": scientist.name,
+                    "attempt": payload,
+                }
+    return {
+        "representations": [item.id for item in items],
+        "attempts": len(jobs) * len(probe_ratios),
+        "attempts_per_cell": attempts_per_cell,
+        "solved": sum(bool(row["solved"]) for row in cells.values()),
+        "capped_objective": float(sum(row["objective"] for row in cells.values())),
+        "cells": cells,
+    }
+
+
+def _portfolio_noninferior(before: dict[str, Any], after: dict[str, Any]) -> bool:
+    """Require both coverage retention and non-increasing complete capped loss."""
+    return bool(
+        after["solved"] >= before["solved"]
+        and after["capped_objective"] <= before["capped_objective"] + 1e-9
+    )
+
+
+def _degraded_representations(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    degraded = []
+    for key, old in before["cells"].items():
+        new = after["cells"][key]
+        if (old["solved"] and not new["solved"]) or (new["objective"] > old["objective"] + 1e-9):
+            degraded.append(str(old["item"]))
+    return list(dict.fromkeys(degraded))
 
 
 def _strict_shared_improvement(
@@ -1000,9 +1177,17 @@ def _manifest(
     ratios: tuple[float, ...],
     frontier: int,
     qualification_simulations: int,
+    qualification_attempts: int,
     simulations: int,
+    full_attempts_per_scientist: int,
     train_every: int,
     train_steps: int,
+    adaptive_rehearsal: bool,
+    rehearsal_games_per_block: int,
+    max_rehearsal_games_per_block: int,
+    retention_attempts: int,
+    retention_simulations: int,
+    direct_shared_fraction: float,
     attempt_workers: int,
     objective_budget: bool,
     remaining_budget_channel: bool,
@@ -1013,7 +1198,11 @@ def _manifest(
     seed: int,
 ) -> dict[str, Any]:
     protocol = {
-        "schema": "collaborative-scientists-v6-soft-budget-horizon",
+        "schema": (
+            "collaborative-scientists-v7-adaptive-rehearsal-portfolio"
+            if adaptive_rehearsal
+            else "collaborative-scientists-v6-soft-budget-horizon"
+        ),
         "arm": arm,
         "schedule": (
             "adaptive-neural-priority"
@@ -1023,9 +1212,29 @@ def _manifest(
         "ratios": list(ratios),
         "frontier": frontier,
         "qualification_simulations": qualification_simulations,
+        "qualification_attempts_per_scientist": qualification_attempts,
         "simulations": simulations,
+        "full_attempts_per_scientist": full_attempts_per_scientist,
         "train_every": train_every,
         "train_steps": train_steps,
+        "adaptive_rehearsal": {
+            "enabled": adaptive_rehearsal,
+            "initial_games_per_block": rehearsal_games_per_block,
+            "maximum_games_per_block": max_rehearsal_games_per_block,
+            "dose_rule": "hold-if-healthy-else-double",
+            "allocation": {
+                "degraded": 0.5,
+                "recent": 0.25,
+                "exposure_balanced": 0.25,
+            },
+            "old_solution_source": (
+                "permanent best-native bank plus one fresh MCTS attempt per scheduled game"
+            ),
+            "retention_attempts": retention_attempts,
+            "retention_simulations": retention_simulations,
+            "acceptance": "solved-nondecreasing-and-capped-objective-nonincreasing",
+            "rollback": "network-and-optimizers-only; replay-and-solution-bank-survive",
+        },
         "attempt_workers": attempt_workers,
         "objective_budget": objective_budget,
         "remaining_budget_channel": remaining_budget_channel,
@@ -1069,6 +1278,13 @@ def _manifest(
         "collaboration_replay_positions_per_episode": 4,
         "collaboration_replay_outcome_mix": "native-success-failure-50-50-when-available",
         "policy_value_update": "success-only-native-plus-gated-option-policy-adapter-v4",
+        "direct_distillation": {
+            "enabled": arm == "adaptive-sharing-direct",
+            "shared_success_fraction": direct_shared_fraction,
+            "target": "strictly-better-receiver-native-semantic-witness",
+            "optimizer": "native-policy-value",
+            "admission": "transactional-complete-portfolio-guard",
+        },
         "sharing_policy_adapter": {
             "initialization": "zero-logit residual with 0.1-probability state gate",
             "width": 32,
@@ -1159,10 +1375,18 @@ def run_collaborative_scientists(
     frontier: int = 100,
     ratios: tuple[float, ...] = (10.0, 1000.0),
     qualification_simulations: int = 16,
+    qualification_attempts: int = 1,
     simulations: int = 128,
+    full_attempts_per_scientist: int = 1,
     train_every: int = 10,
     train_steps: int = 32,
     batch_size: int = 32,
+    adaptive_rehearsal: bool = False,
+    rehearsal_games_per_block: int = 8,
+    max_rehearsal_games_per_block: int = 32,
+    retention_attempts: int = 24,
+    retention_simulations: int = 64,
+    direct_shared_fraction: float = 0.05,
     attempt_workers: int = 1,
     objective_budget: bool = False,
     remaining_budget_channel: bool = False,
@@ -1176,6 +1400,7 @@ def run_collaborative_scientists(
 ) -> dict[str, Any]:
     if arm not in {
         "adaptive-sharing",
+        "adaptive-sharing-direct",
         "adaptive-sharing-aux-only",
         "adaptive-no-sharing",
         "static-sharing",
@@ -1189,8 +1414,18 @@ def run_collaborative_scientists(
         raise ValueError("solo-compute-matched requires exactly one scientist")
     if attempt_workers < 1:
         raise ValueError("attempt_workers must be positive")
+    if qualification_attempts < 1 or full_attempts_per_scientist < 1:
+        raise ValueError("qualification and full attempts must be positive")
     if train_steps < 0:
         raise ValueError("train_steps must be non-negative")
+    if rehearsal_games_per_block < 1:
+        raise ValueError("rehearsal games per block must be positive")
+    if max_rehearsal_games_per_block < rehearsal_games_per_block:
+        raise ValueError("maximum rehearsal games must be at least the initial dose")
+    if retention_attempts < 1 or retention_simulations < 1:
+        raise ValueError("retention attempts and simulations must be positive")
+    if not 0.0 <= direct_shared_fraction <= 0.5:
+        raise ValueError("direct shared fraction must be in 0..0.5")
     if (input_bank is None) != (input_anchor_bank is None):
         raise ValueError("input_bank and input_anchor_bank must be supplied together")
     # A hard objective cap necessarily needs the remaining-L observation.  The
@@ -1244,9 +1479,17 @@ def run_collaborative_scientists(
             ratios=ratios,
             frontier=frontier,
             qualification_simulations=qualification_simulations,
+            qualification_attempts=qualification_attempts,
             simulations=simulations,
+            full_attempts_per_scientist=full_attempts_per_scientist,
             train_every=train_every,
             train_steps=train_steps,
+            adaptive_rehearsal=adaptive_rehearsal,
+            rehearsal_games_per_block=rehearsal_games_per_block,
+            max_rehearsal_games_per_block=max_rehearsal_games_per_block,
+            retention_attempts=retention_attempts,
+            retention_simulations=retention_simulations,
+            direct_shared_fraction=direct_shared_fraction,
             attempt_workers=attempt_workers,
             objective_budget=objective_budget,
             remaining_budget_channel=remaining_budget_channel,
@@ -1280,9 +1523,17 @@ def run_collaborative_scientists(
             ratios=ratios,
             frontier=frontier,
             qualification_simulations=qualification_simulations,
+            qualification_attempts=qualification_attempts,
             simulations=simulations,
+            full_attempts_per_scientist=full_attempts_per_scientist,
             train_every=train_every,
             train_steps=train_steps,
+            adaptive_rehearsal=adaptive_rehearsal,
+            rehearsal_games_per_block=rehearsal_games_per_block,
+            max_rehearsal_games_per_block=max_rehearsal_games_per_block,
+            retention_attempts=retention_attempts,
+            retention_simulations=retention_simulations,
+            direct_shared_fraction=direct_shared_fraction,
             attempt_workers=attempt_workers,
             objective_budget=objective_budget,
             remaining_budget_channel=remaining_budget_channel,
@@ -1325,10 +1576,18 @@ def run_collaborative_scientists(
         active_ids = list(saved["active_ids"])
         cursor = int(saved["cursor"])
         processed = list(saved["processed"])
+        rehearsal_dose = int(saved.get("rehearsal_dose", rehearsal_games_per_block))
+        rehearsal_exposures = {
+            str(key): int(value) for key, value in saved.get("rehearsal_exposures", {}).items()
+        }
+        rehearsal_priority_ids = [str(value) for value in saved.get("rehearsal_priority_ids", [])]
     else:
         active_ids = [item.id for item in bank[: min(frontier, len(bank))]]
         cursor = len(active_ids)
         processed = []
+        rehearsal_dose = rehearsal_games_per_block
+        rehearsal_exposures: dict[str, int] = {}
+        rehearsal_priority_ids: list[str] = []
 
     by_id = {item.id: item for item in bank}
     target_rounds = min(rounds, len(bank))
@@ -1346,18 +1605,26 @@ def run_collaborative_scientists(
             proposals = [static_index] * len(scientists)
 
         qualification_jobs = []
+        qualification_ratios = tuple(
+            ratio for _attempt in range(qualification_attempts) for ratio in ratios
+        )
         for scientist_index, (scientist, proposal_index) in enumerate(
             zip(scientists, proposals, strict=True)
         ):
             seeds = tuple(
-                seed + round_index * 1_000_000 + scientist_index * 10_000 + ratio_index
+                seed
+                + round_index * 1_000_000
+                + scientist_index * 10_000
+                + attempt_index * 100
+                + ratio_index
+                for attempt_index in range(qualification_attempts)
                 for ratio_index in range(len(ratios))
             )
             qualification_jobs.append(
                 (
                     scientist,
                     active[proposal_index].knot,
-                    ratios,
+                    qualification_ratios,
                     qualification_simulations,
                     seeds,
                     objective_budget,
@@ -1374,9 +1641,16 @@ def run_collaborative_scientists(
             item = active[proposal_index]
             total = 0.0
             rows = []
-            for ratio, run in zip(ratios, qualification_records[scientist_index], strict=True):
+            for flat_index, (ratio, run) in enumerate(
+                zip(
+                    qualification_ratios,
+                    qualification_records[scientist_index],
+                    strict=True,
+                )
+            ):
                 record = run.record
                 payload, verified = _attempt_payload(scientist, item.knot, ratio, record)
+                payload["attempt"] = flat_index // len(ratios)
                 if run.budget is not None:
                     payload["budget"] = run.budget
                 rows.append(payload)
@@ -1387,7 +1661,11 @@ def run_collaborative_scientists(
                 ) / _failure_cost(ratio, scientist.config.game.simplify_budget)
             qualification.append({"scientist": scientist.name, "task": item.id, "attempts": rows})
             proposal_totals.append(
-                (total, float(score_rows[scientist_index][proposal_index]), scientist_index)
+                (
+                    total / qualification_attempts,
+                    float(score_rows[scientist_index][proposal_index]),
+                    scientist_index,
+                )
             )
 
         if adaptive_schedule:
@@ -1406,20 +1684,25 @@ def run_collaborative_scientists(
         }
 
         full_jobs = []
+        full_ratios = tuple(
+            ratio for _attempt in range(full_attempts_per_scientist) for ratio in ratios
+        )
         for scientist_index, scientist in enumerate(scientists):
             seeds = tuple(
                 seed
                 + 500_000_000
                 + round_index * 1_000_000
                 + scientist_index * 10_000
+                + attempt_index * 100
                 + ratio_index
+                for attempt_index in range(full_attempts_per_scientist)
                 for ratio_index in range(len(ratios))
             )
             full_jobs.append(
                 (
                     scientist,
                     selected.knot,
-                    ratios,
+                    full_ratios,
                     simulations,
                     seeds,
                     objective_budget,
@@ -1430,8 +1713,12 @@ def run_collaborative_scientists(
         full_records = _play_bundles(executor, full_jobs)
         full_attempts: list[dict[str, Any]] = []
         winners: dict[float, tuple[int, GameRecord, tuple[int, int, list[int]]]] = {}
+        native_best_records: dict[tuple[int, int], tuple[GameRecord, float | None]] = {}
         for scientist_index, scientist in enumerate(scientists):
-            for ratio, run in zip(ratios, full_records[scientist_index], strict=True):
+            for flat_index, (ratio, run) in enumerate(
+                zip(full_ratios, full_records[scientist_index], strict=True)
+            ):
+                ratio_index = flat_index % len(ratios)
                 record = run.record
                 records_for_replay = run.replay_records or (record,)
                 for replay_record in records_for_replay:
@@ -1441,9 +1728,18 @@ def run_collaborative_scientists(
                         objective_ratio=ratio,
                     )
                 payload, verified = _attempt_payload(scientist, selected.knot, ratio, record)
+                payload["attempt"] = flat_index // len(ratios)
                 if run.budget is not None:
                     payload["budget"] = run.budget
                 full_attempts.append(payload)
+                objective = ratio * verified[0] + verified[1] if verified is not None else None
+                native_key = (scientist_index, ratio_index)
+                native_incumbent = native_best_records.get(native_key)
+                if native_incumbent is None or (
+                    objective is not None
+                    and (native_incumbent[1] is None or objective < native_incumbent[1])
+                ):
+                    native_best_records[native_key] = (record, objective)
                 if verified is not None:
                     incumbent = winners.get(ratio)
                     if incumbent is None or (
@@ -1460,7 +1756,12 @@ def run_collaborative_scientists(
                         winners[ratio] = (scientist_index, record, verified)
 
         translations: list[dict[str, Any]] = []
-        if arm in {"adaptive-sharing", "adaptive-sharing-aux-only", "static-sharing"}:
+        if arm in {
+            "adaptive-sharing",
+            "adaptive-sharing-direct",
+            "adaptive-sharing-aux-only",
+            "static-sharing",
+        }:
             for ratio_index, ratio in enumerate(ratios):
                 winner = winners.get(ratio)
                 if winner is None:
@@ -1486,7 +1787,7 @@ def run_collaborative_scientists(
                         receiver,
                         selected.knot,
                         ratio,
-                        full_records[receiver_index][ratio_index].record,
+                        native_best_records[(receiver_index, ratio_index)][0],
                         translated,
                         best_native_objective=receiver.replay.best_native_objective(
                             selected.id, ratio
@@ -1511,20 +1812,113 @@ def run_collaborative_scientists(
                                 int(translated[0].final_moves) if translated else None
                             ),
                             "receiver_native_plies": (
-                                int(translated[0].final_native_plies)
-                                if translated
-                                else None
+                                int(translated[0].final_native_plies) if translated else None
                             ),
                             "receiver_internal_plies": (
-                                int(translated[0].final_internal_plies)
-                                if translated
-                                else None
+                                int(translated[0].final_internal_plies) if translated else None
                             ),
                         }
                     )
 
         losses: dict[str, dict[str, float] | None] = {}
+        rehearsal_event: dict[str, Any] | None = None
+        portfolio_guard: dict[str, Any] | None = None
         if (round_index + 1) % train_every == 0:
+            training_snapshot = _training_snapshot(scientists, option_optimizers)
+            retention_panel: list[BankItem] = []
+            portfolio_before: dict[str, Any] | None = None
+            if adaptive_rehearsal and processed:
+                rehearsal_schedule = _rehearsal_ids(
+                    processed,
+                    rehearsal_priority_ids,
+                    rehearsal_exposures,
+                    rehearsal_dose,
+                )
+                rehearsal_jobs = []
+                rehearsal_coordinates: list[tuple[int, str, float]] = []
+                archived_rehearsals = 0
+                for scientist_index, scientist in enumerate(scientists):
+                    for game_index, item_id in enumerate(rehearsal_schedule):
+                        ratio = ratios[(round_index + game_index) % len(ratios)]
+                        archived = scientist.replay.best_native_solution_record(
+                            item_id, ratio
+                        )
+                        if archived is not None:
+                            scientist.replay.add(
+                                archived,
+                                representation_id=item_id,
+                                objective_ratio=ratio,
+                            )
+                            archived_rehearsals += 1
+                        rehearsal_jobs.append(
+                            (
+                                scientist,
+                                by_id[item_id].knot,
+                                (ratio,),
+                                simulations,
+                                (
+                                    seed
+                                    + 800_000_000
+                                    + round_index * 1_000_000
+                                    + scientist_index * 10_000
+                                    + game_index,
+                                ),
+                                objective_budget,
+                                remaining_budget_channel,
+                                native_action_horizon,
+                            )
+                        )
+                        rehearsal_coordinates.append((scientist_index, item_id, ratio))
+                rehearsal_runs = _play_bundles(executor, rehearsal_jobs)
+                rehearsal_solved = 0
+                for (scientist_index, item_id, ratio), runs in zip(
+                    rehearsal_coordinates, rehearsal_runs, strict=True
+                ):
+                    scientist = scientists[scientist_index]
+                    run = runs[0]
+                    records_for_replay = run.replay_records or (run.record,)
+                    for replay_record in records_for_replay:
+                        scientist.replay.add(
+                            replay_record,
+                            representation_id=item_id,
+                            objective_ratio=ratio,
+                        )
+                    rehearsal_solved += int(
+                        verified_record_cost(scientist.game, by_id[item_id].knot, ratio, run.record)
+                        is not None
+                    )
+                panel_items = max(
+                    1,
+                    math.ceil(retention_attempts / (len(scientists) * len(ratios))),
+                )
+                seen_items = [by_id[item_id] for item_id in [*processed, selected.id]]
+                retention_panel = _rotating_retention_items(
+                    seen_items,
+                    panel_items,
+                    seed=seed,
+                    block=(round_index + 1) // train_every,
+                )
+                probe_seed = seed + 850_000_000 + round_index * 1_000_000
+                portfolio_before = _portfolio_probe(
+                    scientists,
+                    retention_panel,
+                    ratios,
+                    simulations=retention_simulations,
+                    seed=probe_seed,
+                    objective_budget=objective_budget,
+                    remaining_budget_channel=remaining_budget_channel,
+                    action_horizon=native_action_horizon,
+                    minimum_attempts=retention_attempts,
+                    executor=executor,
+                )
+                rehearsal_event = {
+                    "dose": rehearsal_dose,
+                    "scheduled_ids": rehearsal_schedule,
+                    "attempts": len(rehearsal_jobs),
+                    "solved": rehearsal_solved,
+                    "archived_best_solutions_replayed": archived_rehearsals,
+                    "exposures": dict(rehearsal_exposures),
+                }
             for scientist in scientists:
                 last = None
                 matched_update_steps = math.ceil(train_steps / 4)
@@ -1538,7 +1932,9 @@ def run_collaborative_scientists(
                             torch.device(device),
                             collaboration_replay=True,
                             shared_fraction=(
-                                0.1
+                                direct_shared_fraction
+                                if arm == "adaptive-sharing-direct"
+                                else 0.1
                                 if arm
                                 in {
                                     "adaptive-sharing",
@@ -1558,8 +1954,7 @@ def run_collaborative_scientists(
                     position
                     for game_record in active_option_records
                     for position in game_record
-                    if position.option_state is not None
-                    and position.target_external_action >= 0
+                    if position.option_state is not None and position.target_external_action >= 0
                 ]
                 if (
                     arm in {"adaptive-sharing", "static-sharing"}
@@ -1567,9 +1962,7 @@ def run_collaborative_scientists(
                     and option_positions
                     and matched_update_steps
                 ):
-                    preservation_positions = _native_preservation_positions(
-                        scientist, batch_size
-                    )
+                    preservation_positions = _native_preservation_positions(scientist, batch_size)
                     option_updates: list[dict[str, float | str]] = []
                     option_losses: list[float] = []
                     for _ in range(matched_update_steps):
@@ -1625,6 +2018,42 @@ def run_collaborative_scientists(
                 losses[scientist.name] = last
                 if last is not None and scientist.prediction_source == "legacy_proxy":
                     scientist.prediction_source = "factorized_collaboration"
+            if portfolio_before is not None:
+                probe_seed = seed + 850_000_000 + round_index * 1_000_000
+                portfolio_after = _portfolio_probe(
+                    scientists,
+                    retention_panel,
+                    ratios,
+                    simulations=retention_simulations,
+                    seed=probe_seed,
+                    objective_budget=objective_budget,
+                    remaining_budget_channel=remaining_budget_channel,
+                    action_horizon=native_action_horizon,
+                    minimum_attempts=retention_attempts,
+                    executor=executor,
+                )
+                accepted = _portfolio_noninferior(portfolio_before, portfolio_after)
+                degraded = _degraded_representations(portfolio_before, portfolio_after)
+                dose_before = rehearsal_dose
+                rehearsal_dose = _adaptive_dose(
+                    rehearsal_dose,
+                    accepted,
+                    max_rehearsal_games_per_block,
+                )
+                if not accepted:
+                    _restore_training_snapshot(scientists, option_optimizers, training_snapshot)
+                    rehearsal_priority_ids = list(
+                        dict.fromkeys([*degraded, *rehearsal_priority_ids])
+                    )
+                portfolio_guard = {
+                    "accepted": accepted,
+                    "before": portfolio_before,
+                    "after": portfolio_after,
+                    "degraded_representations": degraded,
+                    "rolled_back": not accepted,
+                    "dose_before": dose_before,
+                    "dose_after": rehearsal_dose,
+                }
 
         active_ids.remove(selected.id)
         processed.append(selected.id)
@@ -1661,15 +2090,18 @@ def run_collaborative_scientists(
             },
             "translations": translations,
             "training": losses,
+            "adaptive_rehearsal": rehearsal_event,
+            "portfolio_guard": portfolio_guard,
         }
         state = {
             "active_ids": active_ids,
             "cursor": cursor,
             "processed": processed,
+            "rehearsal_dose": rehearsal_dose,
+            "rehearsal_exposures": rehearsal_exposures,
+            "rehearsal_priority_ids": rehearsal_priority_ids,
             "scientists": {
-                scientist.name: _scientist_state(
-                    scientist, option_optimizers.get(scientist.name)
-                )
+                scientist.name: _scientist_state(scientist, option_optimizers.get(scientist.name))
                 for scientist in scientists
             },
         }
@@ -1700,8 +2132,31 @@ def run_collaborative_scientists(
             "qualification_simulations": qualification_simulations
             * len(scientists)
             * len(ratios)
+            * qualification_attempts
             * len(events),
-            "full_simulations": simulations * len(scientists) * len(ratios) * len(events),
+            "full_simulations": simulations
+            * len(scientists)
+            * len(ratios)
+            * full_attempts_per_scientist
+            * len(events),
+            "rehearsal_simulations": simulations
+            * sum(
+                int((event.get("adaptive_rehearsal") or {}).get("attempts", 0)) for event in events
+            ),
+            "retention_simulations": retention_simulations
+            * sum(
+                2 * int((event.get("portfolio_guard") or {}).get("before", {}).get("attempts", 0))
+                for event in events
+            ),
+        },
+        "adaptive_rehearsal_result": {
+            "final_dose": rehearsal_dose,
+            "accepted_blocks": sum(
+                bool((event.get("portfolio_guard") or {}).get("accepted")) for event in events
+            ),
+            "rolled_back_blocks": sum(
+                bool((event.get("portfolio_guard") or {}).get("rolled_back")) for event in events
+            ),
         },
     }
     _atomic_json(output / "report.json", report)

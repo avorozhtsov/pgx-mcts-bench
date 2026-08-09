@@ -11,7 +11,7 @@ import numpy as np
 import torch
 
 from pgx_mcts_bench.adaptive_scientists import (
-    COLLABORATION_K3,
+    BUDGET_PROTOTYPES,
     FixedWordGame,
     KnotItem,
     calibrated_solve_probability,
@@ -193,13 +193,20 @@ def train_budget_curriculum(
     bank: Path | None = None,
     curriculum_source: str = "early-rungs",
     monotonic_weight: float | None = None,
+    retention_stage: tuple[str, int] | None = None,
 ) -> dict[str, Any]:
-    if scientist_name not in COLLABORATION_K3:
+    if scientist_name not in BUDGET_PROTOTYPES:
         raise ValueError(
-            f"budget-critic curriculum is admitted only for {COLLABORATION_K3}, "
+            f"budget-critic curriculum is admitted only for {BUDGET_PROTOTYPES}, "
             f"not {scientist_name!r}"
         )
-    metadata = promoted_checkpoint_metadata(checkpoint, scientist_name)
+    if retention_stage is None:
+        metadata = promoted_checkpoint_metadata(checkpoint, scientist_name)
+        retention_anchor = "embedded-promoted-rung"
+    else:
+        source, scramble = retention_stage
+        metadata = {"source": source, "scramble": int(scramble)}
+        retention_anchor = "explicit-frozen-stage"
     scientist = load_scientist(
         scientist_name,
         checkpoint,
@@ -380,6 +387,11 @@ def train_budget_curriculum(
             "monotonic_weight": float(
                 scientist.network.auxiliary_budget_monotonic_weight
             ),
+            "retention_anchor": {
+                "kind": retention_anchor,
+                "source": metadata["source"],
+                "scramble": metadata["scramble"],
+            },
         },
         "training": rows,
         "last_metrics": last_metrics,

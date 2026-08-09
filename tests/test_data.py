@@ -95,16 +95,30 @@ def test_collaboration_sampling_balances_success_and_includes_cap_failures() -> 
     censored_only = ReplayBuffer(10, np.random.default_rng(5))
     censored_only.add([censored])
     assert all(
-        position.objective_censored
-        for position in censored_only.sample_collaboration_positions(4)
+        position.objective_censored for position in censored_only.sample_collaboration_positions(4)
     )
     assert censored_only.has_trainable_collaboration_positions()
 
 
-def test_replay_retains_all_attempts_for_last_m_representations() -> None:
-    replay = ReplayBuffer(
-        100, np.random.default_rng(7), representation_capacity=2
+def test_small_positive_shared_fraction_still_schedules_one_witness_episode() -> None:
+    replay = ReplayBuffer(100, np.random.default_rng(6))
+    replay.add(_episode("native", 1.0, length=8), representation_id="native")
+    shared = _episode("donated", 1.0, length=8)
+    for position in shared:
+        position.shared_witness = True
+    replay.add(shared, representation_id="donated")
+
+    batch = replay.sample_collaboration_positions(
+        32,
+        shared_fraction=0.05,
+        positions_per_episode=4,
     )
+
+    assert sum(position.shared_witness for position in batch) == 4
+
+
+def test_replay_retains_all_attempts_for_last_m_representations() -> None:
+    replay = ReplayBuffer(100, np.random.default_rng(7), representation_capacity=2)
     replay.add(_episode("a", 1.0), representation_id="a")
     replay.add(_episode("b", 0.0), representation_id="b")
     replay.add(_episode("a", 0.0), representation_id="a")
@@ -141,20 +155,23 @@ def test_collaboration_replay_uses_current_similar_and_global_quotas() -> None:
     assert identities.count("current") >= 10
     assert identities.count("similar") >= 10
     assert sum(position.solved > 0.5 for position in batch) == 20
-    assert sum(
-        row["positions"]
-        for row in replay.last_collaboration_sample_trace
-        if row["requested_representation_group"] == "current"
-    ) == 10
-    assert sum(
-        row["positions"]
-        for row in replay.last_collaboration_sample_trace
-        if row["requested_representation_group"] == "similar"
-    ) == 10
-    assert all(
-        row["fallback"] == "none"
-        for row in replay.last_collaboration_sample_trace
+    assert (
+        sum(
+            row["positions"]
+            for row in replay.last_collaboration_sample_trace
+            if row["requested_representation_group"] == "current"
+        )
+        == 10
     )
+    assert (
+        sum(
+            row["positions"]
+            for row in replay.last_collaboration_sample_trace
+            if row["requested_representation_group"] == "similar"
+        )
+        == 10
+    )
+    assert all(row["fallback"] == "none" for row in replay.last_collaboration_sample_trace)
 
 
 def test_collaboration_replay_spreads_positions_and_persists_exposure() -> None:
@@ -175,14 +192,10 @@ def test_collaboration_replay_spreads_positions_and_persists_exposure() -> None:
 def test_collaboration_replay_enforces_position_exposure_cap() -> None:
     replay = ReplayBuffer(100, np.random.default_rng(9))
     replay.add(_episode("a", 1.0), representation_id="a")
-    replay.sample_collaboration_positions(
-        4, positions_per_episode=4, max_position_uses=1
-    )
+    replay.sample_collaboration_positions(4, positions_per_episode=4, max_position_uses=1)
     assert max(position.replay_position_uses for position in replay.games[0]) == 1
     with pytest.raises(RuntimeError, match="reached max_position_uses"):
-        replay.sample_collaboration_positions(
-            1, positions_per_episode=1, max_position_uses=1
-        )
+        replay.sample_collaboration_positions(1, positions_per_episode=1, max_position_uses=1)
 
 
 def test_collaboration_replay_prefers_less_exposed_attempts() -> None:
@@ -193,10 +206,7 @@ def test_collaboration_replay_prefers_less_exposed_attempts() -> None:
     replay.add(overused, representation_id="same")
     replay.add(fresh, representation_id="same")
 
-    seeds = [
-        replay.sample_collaboration_positions(1)[0].episode_seed
-        for _ in range(40)
-    ]
+    seeds = [replay.sample_collaboration_positions(1)[0].episode_seed for _ in range(40)]
 
     assert seeds.count(2) > seeds.count(1)
 

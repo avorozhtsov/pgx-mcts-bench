@@ -37,7 +37,7 @@ import jax
 import numpy as np
 
 from pgx_mcts_bench.config import BraidGameConfig, pick_stage
-from pgx_mcts_bench.game import Transition
+from pgx_mcts_bench.game import Transition, sample_log_ratio
 
 
 class SerialState(NamedTuple):
@@ -63,6 +63,7 @@ class SerialState(NamedTuple):
     # Portable braid-state changes since the start of the simplifier episode.
     # Appended with a default so old seven-field pickles remain loadable.
     semantic_moves: int = 0
+
 
 # Serial action layout, with G = max_strands - 1 generators and W = act_width.
 # One block of `per_offset = 3 + 2G + 1` actions per actionable offset, then the
@@ -99,9 +100,7 @@ SERIAL_INSERT = 3
 DEFAULT_STRIDES: tuple[int, ...] = (1, 2, 4, 8, 16)
 
 
-def shift_strides(
-    window: int, max_len: int, strides: tuple[int, ...] = ()
-) -> tuple[int, ...]:
+def shift_strides(window: int, max_len: int, strides: tuple[int, ...] = ()) -> tuple[int, ...]:
     """Head strides. `strides` overrides; `(w // 2,)` reproduces the old tape."""
     del window, max_len  # deliberately not a function of the word capacity
     return tuple(strides) if strides else DEFAULT_STRIDES
@@ -115,6 +114,7 @@ def serial_action_size(
     colours: int = 0,
     tape_symbols: int = 0,
     tape_preserve_shift: bool = False,
+    cyclic_band_generators: bool = False,
 ) -> int:
     """Actions for a window agent.
 
@@ -126,7 +126,8 @@ def serial_action_size(
     Either way the count is independent of L, which is the whole point: the
     stride set is fixed by `max_len` at *construction*, not by the current word.
     """
-    positional = 3 + 2 * (max_strands - 1) + 1  # reduce/commute/braid, inserts, crossing
+    generators = max_strands - 1 + int(cyclic_band_generators)
+    positional = 3 + 2 * generators + 1  # reduce/commute/braid, inserts, crossing
     # Colours cost three actions however many colours there are: PAINT_LOW,
     # PAINT_HIGH, CYCLE. Paint-per-(strand, colour) would be 20 dead actions at
     # N=5, C=4, and dead actions are what sank the register arm.
@@ -140,9 +141,14 @@ def serial_action_size(
     )
 
 
-def serial_action_names(max_strands: int, strides: tuple[int, ...] = (1,)) -> list[str]:
+def serial_action_names(
+    max_strands: int,
+    strides: tuple[int, ...] = (1,),
+    cyclic_band_generators: bool = False,
+) -> list[str]:
     names = ["REDUCE", "COMMUTE", "BRAID"]
-    for generator in range(1, max_strands):
+    capacity = max_strands - 1 + int(cyclic_band_generators)
+    for generator in range(1, capacity + 1):
         for sign in ("+", "-"):
             names.append(f"INSERT(s{generator}{sign})")
     names += [
@@ -208,12 +214,10 @@ class SerialBraidGame:
                 random_seed=config.generator_random_seed,
             )
 
-        generators = config.max_strands - 1
+        generators = config.generator_capacity
         self._positional_kinds = [REDUCE, COMMUTE, BRAID]
         self._inserts = [
-            (generator, sign)
-            for generator in range(1, generators + 1)
-            for sign in (1, -1)
+            (generator, sign) for generator in range(1, generators + 1) for sign in (1, -1)
         ]
         self._singletons = [DESTABILIZE, STABILIZE_POS, STABILIZE_NEG, PASS]
         self._crossing = CROSSING_CHANGE
@@ -226,19 +230,16 @@ class SerialBraidGame:
             max(config.serial_colours, 0),
             max(config.serial_tape_symbols, 0),
             config.serial_tape_preserve_shift,
+            config.cyclic_band_generators,
         )
         self._per_offset = 3 + 2 * generators + 1
         self._singleton_base = self.act_width * self._per_offset
         self._shift_base = self._singleton_base + 4
         self.tape_symbols = max(config.serial_tape_symbols, 0)
         self.tape_preserve_shift = bool(config.serial_tape_preserve_shift)
-        self._tape_variants = max(
-            self.tape_symbols + int(self.tape_preserve_shift), 1
-        )
+        self._tape_variants = max(self.tape_symbols + int(self.tape_preserve_shift), 1)
         self.registers = max(config.serial_registers, 0)
-        self._register_base = (
-            self._shift_base + 2 * len(self.strides) * self._tape_variants
-        )
+        self._register_base = self._shift_base + 2 * len(self.strides) * self._tape_variants
         self.colours = max(config.serial_colours, 0)
         self._colour_base = self._register_base + self.registers
         self._paint_low = self._colour_base
@@ -297,7 +298,7 @@ class SerialBraidGame:
             ]
         offset, within = divmod(action, self._per_offset)
         names = ["REDUCE", "COMMUTE", "BRAID"]
-        for generator in range(1, self.config.max_strands):
+        for generator in range(1, self.config.generator_capacity + 1):
             for sign in ("+", "-"):
                 names.append(f"INSERT(s{generator}{sign})")
         names.append("CROSSING_CHANGE")
@@ -337,6 +338,9 @@ class SerialBraidGame:
         word = np.asarray(pgx_state._word)
         length = max(int((word != 0).sum()), 1)
         generator = abs(int(word[head % length]))
+        strands = int(np.asarray(pgx_state._n))
+        if self.config.cyclic_band_generators and generator == strands:
+            return strands - 1, 0
         low = max(generator - 1, 0)
         return low, min(low + 1, self.config.max_strands - 1)
 
@@ -362,7 +366,10 @@ class SerialBraidGame:
             positions = [(head - i) % length for i in range(1, -displacement + 1)]
         for position in positions:
             generator = abs(int(word[position]))
-            if 1 <= generator < self.config.max_strands:
+            strands = int(np.asarray(pgx_state._n))
+            if self.config.cyclic_band_generators and generator == strands:
+                moved[0], moved[strands - 1] = moved[strands - 1], moved[0]
+            elif 1 <= generator < self.config.max_strands:
                 low = generator - 1
                 moved[low], moved[low + 1] = moved[low + 1], moved[low]
         return moved
@@ -373,12 +380,22 @@ class SerialBraidGame:
         if self.generator is None:
             state = self._init(jax.random.PRNGKey(seed))
             return self._view(
-                state, 0, self._no_registers(), self._no_colours(), 0,
-                self._no_tape(), reward=0.0,
+                state,
+                0,
+                self._no_registers(),
+                self._no_colours(),
+                0,
+                self._no_tape(),
+                reward=0.0,
             )
         return self._view(
-            self._generated(seed), 0, self._no_registers(), self._no_colours(), 0,
-            self._no_tape(), reward=0.0,
+            self._generated(seed),
+            0,
+            self._no_registers(),
+            self._no_colours(),
+            0,
+            self._no_tape(),
+            reward=0.0,
         )
 
     def _generated(self, seed: int):
@@ -386,15 +403,31 @@ class SerialBraidGame:
         rng = np.random.default_rng(seed)
         source, moves = pick_stage(self.config, self.generator, rng)
         instance = self.generator.generate(source, moves, rng)
-        low, high = self.config.log_ratio_range
-        log_ratio = float(rng.uniform(low, high)) if high > low else low
-        return self.env.init_from_word(
-            list(instance.word), instance.strands, log_ratio=log_ratio
-        )
+        log_ratio = sample_log_ratio(self.config, rng)
+        word, strands = self._initial_representation(list(instance.word), instance.strands)
+        return self.env.init_from_word(word, strands, log_ratio=log_ratio)
 
-    def from_word(
-        self, word: list[int], strands: int, log_ratio: float = 0.0
-    ) -> Transition:
+    def _initial_representation(self, word: list[int], strands: int) -> tuple[list[int], int]:
+        """Apply configured Markov stabilizations without charging solve cost."""
+        count = self.config.serial_initial_markov_stabilizations
+        sign = self.config.serial_initial_markov_sign
+        if count < 0:
+            raise ValueError("initial Markov stabilization count must be non-negative")
+        if sign not in {-1, 1}:
+            raise ValueError("initial Markov stabilization sign must be -1 or 1")
+        expanded = list(word)
+        height = int(strands)
+        if height + count > self.config.max_strands:
+            raise ValueError("initial Markov stabilizations exceed strand capacity")
+        if len(expanded) + count > self.config.max_len:
+            raise ValueError("initial Markov stabilizations exceed word capacity")
+        for _ in range(count):
+            expanded.append(sign * height)
+            height += 1
+        return expanded, height
+
+    def from_word(self, word: list[int], strands: int, log_ratio: float = 0.0) -> Transition:
+        word, strands = self._initial_representation(word, strands)
         return self._view(
             self.env.init_from_word(word, strands, log_ratio=log_ratio),
             0,
@@ -426,8 +459,14 @@ class SerialBraidGame:
             flipped = registers.copy()
             flipped[slot] = 1.0 - flipped[slot]
             return self._view(
-                self._charge_budget(pgx_state), head, flipped, colours, colour,
-                tape, reward=0.0, internal_steps=internal_steps + 1,
+                self._charge_budget(pgx_state),
+                head,
+                flipped,
+                colours,
+                colour,
+                tape,
+                reward=0.0,
+                internal_steps=internal_steps + 1,
                 semantic_moves=semantic_moves,
             )
 
@@ -443,8 +482,14 @@ class SerialBraidGame:
                 low, high = self._crossing_heights(pgx_state, head)
                 painted[low if paint == "low" else high] = colour + 1
             return self._view(
-                self._charge_budget(pgx_state), head, registers, painted, held,
-                tape, reward=0.0, internal_steps=internal_steps + 1,
+                self._charge_budget(pgx_state),
+                head,
+                registers,
+                painted,
+                held,
+                tape,
+                reward=0.0,
+                internal_steps=internal_steps + 1,
                 semantic_moves=semantic_moves,
             )
 
@@ -459,8 +504,14 @@ class SerialBraidGame:
                 written[head % length] = symbol
             advanced = self._charge_budget(pgx_state)
             return self._view(
-                advanced, new_head, registers, carried, colour, written,
-                reward=0.0, internal_steps=internal_steps + 1,
+                advanced,
+                new_head,
+                registers,
+                carried,
+                colour,
+                written,
+                reward=0.0,
+                internal_steps=internal_steps + 1,
                 semantic_moves=semantic_moves,
             )
 
@@ -481,14 +532,18 @@ class SerialBraidGame:
             int(np.asarray(next_state._n)),
         )
         return self._view(
-            next_state, head % length, registers, colours, colour, moved_tape,
-            reward=float(rewards[actor]), internal_steps=0,
+            next_state,
+            head % length,
+            registers,
+            colours,
+            colour,
+            moved_tape,
+            reward=float(rewards[actor]),
+            internal_steps=0,
             semantic_moves=semantic_moves + int(after_braid != before_braid),
         )
 
-    def _rewrite_tape(
-        self, pgx_state: Any, action: int, head: int, tape: np.ndarray
-    ) -> np.ndarray:
+    def _rewrite_tape(self, pgx_state: Any, action: int, head: int, tape: np.ndarray) -> np.ndarray:
         """Apply the braid rewrite's positional transport to the annotation tape."""
         if not self.tape_symbols:
             return tape
@@ -513,9 +568,7 @@ class SerialBraidGame:
 
         def delete(positions: set[int]) -> np.ndarray:
             kept = [out[i] for i in range(length) if i not in positions]
-            return np.asarray(
-                kept + [0] * (self.config.max_len - len(kept)), dtype=np.int64
-            )
+            return np.asarray(kept + [0] * (self.config.max_len - len(kept)), dtype=np.int64)
 
         if kind == REDUCE:
             return delete({position % length, (position + 1) % length})
@@ -530,9 +583,7 @@ class SerialBraidGame:
         elif kind == INSERT:
             values = list(out[:length])
             values[position:position] = [0, 0]
-            out = np.asarray(
-                values + [0] * (self.config.max_len - len(values)), dtype=np.int64
-            )
+            out = np.asarray(values + [0] * (self.config.max_len - len(values)), dtype=np.int64)
         elif kind == DESTABILIZE:
             top = int(np.asarray(pgx_state._n)) - 1
             position = int(np.flatnonzero(np.abs(word[:length]) == top)[0])
@@ -552,9 +603,7 @@ class SerialBraidGame:
         budget = pgx_state._budget - 1
         switching = (pgx_state._phase == 0) & (budget <= 0)
         phase = jnp.where(switching, 1, pgx_state._phase).astype(jnp.int32)
-        budget = jnp.where(
-            switching, self.config.simplify_budget, budget
-        ).astype(jnp.int32)
+        budget = jnp.where(switching, self.config.simplify_budget, budget).astype(jnp.int32)
         exhausted = (phase == 1) & (budget <= 0)
         simplifier = 1 - pgx_state._scrambler
         rewards = jnp.zeros(2, dtype=jnp.float32)
@@ -571,8 +620,27 @@ class SerialBraidGame:
         )
 
     def final_rewards(self, state: Any) -> np.ndarray:
-        pgx_state = state[0]
-        return np.asarray(pgx_state.rewards, dtype=np.float32)
+        return self._semantic_final_rewards(state.pgx, self.semantic_move_count(state))
+
+    def _semantic_final_rewards(self, pgx_state: Any, semantic_moves: int) -> np.ndarray:
+        """Recompute serial terminal payoff from the portable scientific cost.
+
+        The underlying environment's move clock includes head shifts and memory
+        writes. Those plies bound computation but must not leak into L_AB.
+        """
+        rewards = np.asarray(pgx_state.rewards, dtype=np.float32).copy()
+        if not self.config.multi_objective or not bool(np.asarray(pgx_state.terminated)):
+            return rewards
+        solved = int(np.asarray(pgx_state._n)) == 1
+        ratio = float(np.exp(float(np.asarray(pgx_state._log_ratio))))
+        crossings = int(np.asarray(pgx_state._crossing_changes))
+        worst = (ratio + 1.0) * self.config.simplify_budget
+        cost = ratio * crossings + int(semantic_moves)
+        payoff = 1.0 - 2.0 * min(max(cost / max(worst, 1.0), 0.0), 1.0) if solved else -1.0
+        simplifier = 1 - int(np.asarray(pgx_state._scrambler))
+        rewards[simplifier] = payoff
+        rewards[1 - simplifier] = -payoff
+        return rewards
 
     def value_potential(self, state: Any, player: int) -> float:
         pgx_state = state.pgx
@@ -607,9 +675,7 @@ class SerialBraidGame:
         return int(getattr(state, "semantic_moves", 0))
 
     def native_ply_count(self, state: Any) -> int:
-        return max(
-            self.config.simplify_budget - int(np.asarray(state.pgx._budget)), 0
-        )
+        return max(self.config.simplify_budget - int(np.asarray(state.pgx._budget)), 0)
 
     def internal_ply_count(self, state: Any) -> int:
         return max(self.native_ply_count(state) - self.semantic_move_count(state), 0)
@@ -668,6 +734,142 @@ class SerialBraidGame:
         held[colour % self.colours] = 1.0
         return np.concatenate([heights.reshape(-1), held])
 
+    @staticmethod
+    def _strand_graph_planes(word: np.ndarray, strands: int, observed_width: int) -> np.ndarray:
+        """Compile the closed braid into four crossing-neighbour pointers.
+
+        Every crossing has two incidences, one on each physical strand.  The
+        planes give previous/next crossing positions along incidence 0 and then
+        incidence 1.  Following the closure matters: the strand leaving bottom
+        height ``h`` continues at top height ``h``, which may be a differently
+        labelled open-braid strand.
+        """
+        length = len(word)
+        planes = np.zeros((observed_width, 4), dtype=np.float32)
+        if not length:
+            return planes
+
+        at_height = list(range(strands))
+        occurrences: list[list[tuple[int, int]]] = [[] for _ in range(strands)]
+        for position, letter in enumerate(word):
+            generator = abs(int(letter)) - 1
+            seam = generator == strands - 1
+            if not 0 <= generator < strands - 1 and not seam:
+                raise ValueError(f"generator {generator + 1} is invalid for {strands} strands")
+            left, right = (strands - 1, 0) if seam else (generator, generator + 1)
+            lower, upper = at_height[left], at_height[right]
+            occurrences[lower].append((position, 0))
+            occurrences[upper].append((position, 1))
+            at_height[left], at_height[right] = upper, lower
+
+        # An open strand label ending at bottom height h continues, through the
+        # closure arc, as the strand whose top label is h.
+        successor = [0] * strands
+        for bottom_height, label in enumerate(at_height):
+            successor[label] = bottom_height
+
+        next_incidence: dict[tuple[int, int], tuple[int, int]] = {}
+        for label, path in enumerate(occurrences):
+            if not path:
+                continue
+            for current, following in zip(path, path[1:], strict=False):
+                next_incidence[current] = following
+            next_label = successor[label]
+            for _ in range(strands):
+                if occurrences[next_label]:
+                    next_incidence[path[-1]] = occurrences[next_label][0]
+                    break
+                next_label = successor[next_label]
+            else:  # pragma: no cover - current path itself is non-empty
+                raise RuntimeError("closed strand component has no crossing incidence")
+
+        previous_incidence = {following: current for current, following in next_incidence.items()}
+        scale = float(max(observed_width - 1, 1))
+        for position in range(length):
+            for incidence in (0, 1):
+                current = (position, incidence)
+                previous = previous_incidence[current][0]
+                following = next_incidence[current][0]
+                planes[position, 2 * incidence] = previous / scale
+                planes[position, 2 * incidence + 1] = following / scale
+        return planes
+
+    @staticmethod
+    def braid_raster_planes(
+        word: np.ndarray,
+        strands: int,
+        max_strands: int,
+        cyclic_band_generators: bool = False,
+    ) -> np.ndarray:
+        """Encode an Artin word as ``(columns, rows, [route bits, active])``.
+
+        For positive ``sigma_i`` the strand entering row ``i`` goes right and
+        over (011), while the strand entering row ``i+1`` goes left and under
+        (100); a negative letter reverses over/under.  Non-participating active
+        strands go straight (010).  Inactive capacity rows are 000 with mask 0.
+
+        The active mask is not optional: without it an absent strand and a
+        padding cell both look like 000.  Keeping this compiler deterministic
+        also prevents the network from seeing locally inconsistent crossing
+        pairs which cannot represent a braid.
+        """
+        if not 1 <= strands <= max_strands:
+            raise ValueError(f"strands={strands} outside 1..{max_strands}")
+        raster = np.zeros((len(word), max_strands, 4), dtype=np.float32)
+        raster[:, :strands, 1] = 1.0  # 010: an active straight strand
+        raster[:, :strands, 3] = 1.0  # explicit active-row mask
+        for column, raw_letter in enumerate(word):
+            letter = int(raw_letter)
+            generator = abs(letter)
+            seam = cyclic_band_generators and generator == strands
+            if not 1 <= generator < strands and not seam:
+                raise ValueError(f"generator {generator} is invalid for {strands} strands")
+            upper, lower = (strands - 1, 0) if seam else (generator - 1, generator)
+            if letter > 0:
+                raster[column, upper, :3] = (0.0, 1.0, 1.0)  # right, over
+                raster[column, lower, :3] = (1.0, 0.0, 0.0)  # left, under
+            else:
+                raster[column, upper, :3] = (0.0, 0.0, 1.0)  # right, under
+                raster[column, lower, :3] = (1.0, 1.0, 0.0)  # left, over
+        return raster
+
+    @staticmethod
+    def word_from_braid_raster(
+        raster: np.ndarray,
+        strands: int,
+        cyclic_band_generators: bool = False,
+    ) -> np.ndarray:
+        """Strict inverse used by representation tests and data validation."""
+        if raster.ndim != 3 or raster.shape[2] != 4:
+            raise ValueError("raster must have shape (columns, rows, 4)")
+        letters: list[int] = []
+        straight = np.asarray((0, 1, 0), dtype=np.float32)
+        for column in raster:
+            active = column[:, 3] > 0.5
+            if not np.array_equal(active, np.arange(len(active)) < strands):
+                raise ValueError("active mask is not a contiguous strand prefix")
+            changed = [
+                row for row in range(strands) if not np.array_equal(column[row, :3], straight)
+            ]
+            # An all-straight column is an explicit identity slice.  It has no
+            # Artin letter and therefore disappears when decoding to the compact
+            # word, exactly as intended for safe column insertion.
+            if not changed:
+                continue
+            is_seam = cyclic_band_generators and changed == [0, strands - 1]
+            if len(changed) != 2 or (changed[1] != changed[0] + 1 and not is_seam):
+                raise ValueError("column is not one paired Artin crossing")
+            upper, lower = (strands - 1, 0) if is_seam else tuple(changed)
+            pair = (tuple(column[upper, :3]), tuple(column[lower, :3]))
+            if pair == ((0.0, 1.0, 1.0), (1.0, 0.0, 0.0)):
+                sign = 1
+            elif pair == ((0.0, 0.0, 1.0), (1.0, 1.0, 0.0)):
+                sign = -1
+            else:
+                raise ValueError("crossing halves disagree on direction or sign")
+            letters.append(sign * (strands if is_seam else upper + 1))
+        return np.asarray(letters, dtype=np.int32)
+
     def _view(
         self,
         pgx_state: Any,
@@ -684,10 +886,7 @@ class SerialBraidGame:
         objective_remaining = None
         if self.config.objective_budget_channel:
             ratio = float(np.exp(float(np.asarray(pgx_state._log_ratio))))
-            spent = (
-                ratio * int(np.asarray(pgx_state._crossing_changes))
-                + int(semantic_moves)
-            )
+            spent = ratio * int(np.asarray(pgx_state._crossing_changes)) + int(semantic_moves)
             cap = (ratio + 1.0) * self.config.simplify_budget
             remaining = np.clip((cap - spent) / max(cap, 1.0), -1.0, 1.0)
             objective_remaining = remaining
@@ -696,22 +895,21 @@ class SerialBraidGame:
         # The word is cyclic: gather the window with wraparound. When the word is
         # shorter than the window the same positions repeat, which is what the
         # necklace actually looks like.
-        if length > 0 and (self.config.serial_encoder or self.config.serial_ensemble):
+        full_scan = bool(
+            self.config.serial_encoder
+            or self.config.serial_ensemble
+            or self.config.serial_raster == "scalable"
+        )
+        if length > 0 and full_scan:
             # A head-relative complete scan: occupied letters first, then the
             # environment's padding slots. The action semantics remain local and
             # O(1); only the candidate encoder changes.
             occupied = (head + np.arange(length)) % length
-            indexes = np.concatenate(
-                [occupied, np.arange(length, self.config.max_len)]
-            )
+            indexes = np.concatenate([occupied, np.arange(length, self.config.max_len)])
         elif length > 0:
             indexes = (head + np.arange(self.window) - self._window_origin) % length
         else:
-            width = (
-                self.config.max_len
-                if self.config.serial_encoder or self.config.serial_ensemble
-                else self.window
-            )
+            width = self.config.max_len if full_scan else self.window
             indexes = np.zeros(width, dtype=int)
         window = observation[indexes]
         observed_width = window.shape[0]
@@ -720,20 +918,43 @@ class SerialBraidGame:
             # Carrying the control state in the observation rather than in a
             # separate channel to the network is what keeps search, the replay
             # buffer and the training step untouched.
-            planes = np.broadcast_to(
-                registers[None, :], (observed_width, self.registers)
-            )
+            planes = np.broadcast_to(registers[None, :], (observed_width, self.registers))
             window = np.concatenate([window, planes], axis=1)
         if self.colours:
             palette = self._colour_planes(colours, colour)
-            planes = np.broadcast_to(
-                palette[None, :], (observed_width, palette.shape[0])
-            )
+            planes = np.broadcast_to(palette[None, :], (observed_width, palette.shape[0]))
             window = np.concatenate([window, planes], axis=1)
         if self.tape_symbols:
             tape_window = tape[indexes]
             one_hot = np.eye(self.tape_symbols, dtype=np.float32)[tape_window]
             window = np.concatenate([window, one_hot], axis=1)
+        if self.config.serial_encoder.startswith("strand-graph"):
+            scanned_word = np.asarray(word[indexes[:length]], dtype=np.int32)
+            graph = self._strand_graph_planes(
+                scanned_word,
+                int(np.asarray(pgx_state._n)),
+                observed_width,
+            )
+            window = np.concatenate([window, graph], axis=1)
+        if self.config.serial_raster:
+            selected_word = np.asarray(word[indexes], dtype=np.int32)
+            # A zero can only occur in a full-word padded scan.  It is encoded
+            # as a completely inactive column; ordinary serial windows contain
+            # occupied letters and therefore remain exactly invertible.
+            raster = np.zeros((observed_width, self.config.max_strands, 4), dtype=np.float32)
+            if self.config.serial_raster_identity_padding:
+                strands = int(np.asarray(pgx_state._n))
+                raster[:, :strands, 1] = 1.0
+                raster[:, :strands, 3] = 1.0
+            occupied_columns = selected_word != 0
+            if occupied_columns.any():
+                raster[occupied_columns] = self.braid_raster_planes(
+                    selected_word[occupied_columns],
+                    int(np.asarray(pgx_state._n)),
+                    self.config.max_strands,
+                    self.config.cyclic_band_generators,
+                )
+            window = np.concatenate([window, raster.reshape(observed_width, -1)], axis=1)
         if self.config.serial_internal_horizon:
             fraction = min(internal_steps / self.config.serial_internal_horizon, 1.0)
             if self.config.serial_internal_budget_remaining:
@@ -744,10 +965,11 @@ class SerialBraidGame:
             # Append after registers, colours and tape so every historical
             # channel keeps its index. Checkpoint migration then only has to
             # zero one genuinely new final input, including for tape agents.
-            plane = np.full(
-                (observed_width, 1), objective_remaining, dtype=np.float32
-            )
+            plane = np.full((observed_width, 1), objective_remaining, dtype=np.float32)
             window = np.concatenate([window, plane], axis=1)
+        terminal_rewards = self._semantic_final_rewards(pgx_state, semantic_moves)
+        if bool(np.asarray(pgx_state.terminated)):
+            reward = float(terminal_rewards[int(np.asarray(pgx_state.current_player))])
         return Transition(
             state=SerialState(
                 pgx_state,
@@ -768,8 +990,7 @@ class SerialBraidGame:
             consecutive_passes=0,
             termination_reason=(
                 "solved"
-                if bool(np.asarray(pgx_state.terminated))
-                and int(np.asarray(pgx_state._n)) == 1
+                if bool(np.asarray(pgx_state.terminated)) and int(np.asarray(pgx_state._n)) == 1
                 else "move_budget_exhausted"
                 if bool(np.asarray(pgx_state.terminated))
                 else ""

@@ -25,25 +25,30 @@ from pgx_mcts_bench.training import play_selfplay_games, train_alphazero_step
 # per architecture, but keeping the list here prevents the launcher, loader, and
 # admission tools from silently disagreeing about which scientists are repaired.
 COLLABORATION_K3 = ("s-window-128", "s-tape4", "s-w11-128")
+BUDGET_PROTOTYPES = (*COLLABORATION_K3, "s-cyclic-tape8-192")
 BUDGET_LEARNING_RATES = {
     "s-window-128": 2.5e-4,
     "s-tape4": 5.0e-5,
     "s-w11-128": 2.5e-4,
+    "s-cyclic-tape8-192": 1.0e-4,
 }
 BUDGET_AUXILIARY_LEARNING_RATES = {
     "s-window-128": 2.5e-4,
     "s-tape4": 1.0e-3,
     "s-w11-128": 2.5e-4,
+    "s-cyclic-tape8-192": 5.0e-4,
 }
 BUDGET_PRESERVATION_WEIGHTS = {
     "s-window-128": 1.0,
     "s-tape4": 20.0,
     "s-w11-128": 5.0,
+    "s-cyclic-tape8-192": 5.0,
 }
 BUDGET_MONOTONIC_WEIGHTS = {
     "s-window-128": 0.25,
     "s-tape4": 1.0,
     "s-w11-128": 1.0,
+    "s-cyclic-tape8-192": 0.25,
 }
 
 
@@ -342,7 +347,7 @@ def load_scientist(
         candidate = Candidate(**{**asdict(candidate), "simulations": simulations})
     config = _config(candidate, ("R(3,12)#0", 0), seed, device, selfplay_games=1)
     if objective_budget_channel:
-        budget_prototype = name in COLLABORATION_K3
+        budget_prototype = name in BUDGET_PROTOTYPES
         config = replace(
             config,
             game=replace(config.game, objective_budget_channel=True),
@@ -379,7 +384,21 @@ def load_scientist(
     load_policy_value_state_dict(network, state)
     solve_calibration = payload.get("solve_calibration", {})
     if objective_budget_channel and budget_prototype:
-        auxiliary_parameters = list(network.auxiliary.parameters())
+        auxiliary_prefixes = (
+            "auxiliary.",
+            "window.auxiliary.",
+            "scan.auxiliary.",
+            "tape.auxiliary.",
+            "solve_residual.",
+            "cost_residual.",
+        )
+        auxiliary_parameters = [
+            parameter
+            for parameter_name, parameter in network.named_parameters()
+            if parameter_name.startswith(auxiliary_prefixes)
+        ]
+        if not auxiliary_parameters:
+            raise ValueError(f"{name} exposes no trainable factorized value parameters")
         auxiliary_ids = {id(parameter) for parameter in auxiliary_parameters}
         controller_parameters = [
             parameter for parameter in network.parameters() if id(parameter) not in auxiliary_ids

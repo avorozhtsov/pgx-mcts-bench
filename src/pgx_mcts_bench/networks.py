@@ -22,7 +22,7 @@ class ResidualBlock(nn.Module):
         )
         self.relu = nn.ReLU()
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, _active: Tensor | None = None) -> Tensor:
         return self.relu(x + self.body(x))
 
 
@@ -92,13 +92,9 @@ class PredictionHead(nn.Module):
             # model has evidence for termination.
             nn.init.constant_(self.terminal[-1].bias, -3.0)
 
-    def forward(
-        self, hidden: Tensor
-    ) -> tuple[Tensor, Tensor, Tensor | None, Tensor | None]:
+    def forward(self, hidden: Tensor) -> tuple[Tensor, Tensor, Tensor | None, Tensor | None]:
         legal_logits = self.legal(hidden) if self.legal is not None else None
-        terminal_logits = (
-            self.terminal(hidden).squeeze(-1) if self.terminal is not None else None
-        )
+        terminal_logits = self.terminal(hidden).squeeze(-1) if self.terminal is not None else None
         return (
             self.policy(hidden),
             self.value(hidden).squeeze(-1),
@@ -162,9 +158,7 @@ class FiLM(nn.Module):
 
     def __init__(self, channels: int, hidden: int = 32):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(1, hidden), nn.ReLU(), nn.Linear(hidden, 2 * channels)
-        )
+        self.net = nn.Sequential(nn.Linear(1, hidden), nn.ReLU(), nn.Linear(hidden, 2 * channels))
         # Start as the identity, so conditioning is learned rather than imposed.
         nn.init.zeros_(self.net[-1].weight)
         nn.init.zeros_(self.net[-1].bias)
@@ -221,9 +215,7 @@ class AuxiliaryValueMember(nn.Module):
         nn.init.zeros_(self.solve_conditioning[-1].weight)
         nn.init.zeros_(self.solve_conditioning[-1].bias)
         with torch.no_grad():
-            self.cost[-1].bias.copy_(
-                torch.tensor([_inverse_softplus(1.0), _inverse_softplus(8.0)])
-            )
+            self.cost[-1].bias.copy_(torch.tensor([_inverse_softplus(1.0), _inverse_softplus(8.0)]))
 
     def forward(
         self,
@@ -246,9 +238,9 @@ class AuxiliaryValueMember(nn.Module):
             # becoming arbitrary hidden variables optimized by solve BCE.
             normalized_cc = costs[:, 0].detach() / scale
             normalized_moves = costs[:, 1].detach() / scale
-            normalized_l = (
-                ratio * costs[:, 0].detach() + costs[:, 1].detach()
-            ) / ((ratio + 1.0) * scale)
+            normalized_l = (ratio * costs[:, 0].detach() + costs[:, 1].detach()) / (
+                (ratio + 1.0) * scale
+            )
             conditioned = torch.cat(
                 [
                     solve_features,
@@ -268,9 +260,7 @@ class AuxiliaryValueHeads(nn.Module):
         super().__init__()
         if members < 1:
             raise ValueError("auxiliary_value_members must be positive")
-        self.members = nn.ModuleList(
-            AuxiliaryValueMember(features, width) for _ in range(members)
-        )
+        self.members = nn.ModuleList(AuxiliaryValueMember(features, width) for _ in range(members))
         self.body_budget_skip = nn.Sequential(
             nn.Linear(1, 32),
             nn.SiLU(),
@@ -291,18 +281,14 @@ class AuxiliaryValueHeads(nn.Module):
         cost_features: Tensor | None = None,
         conditioning: tuple[Tensor, Tensor, float] | None = None,
     ) -> tuple[Tensor, Tensor, Tensor]:
-        outputs = [
-            member(solve_features, cost_features, conditioning) for member in self.members
-        ]
+        outputs = [member(solve_features, cost_features, conditioning) for member in self.members]
         return tuple(torch.stack(items, dim=1) for items in zip(*outputs, strict=True))  # type: ignore[return-value]
 
 
 class BraidPolicyValueNet(PolicyValueNet):
     """Common shadow-critic plumbing for every braid representation."""
 
-    def _set_auxiliary_training_controls(
-        self, game: BraidGameConfig, model: ModelConfig
-    ) -> None:
+    def _set_auxiliary_training_controls(self, game: BraidGameConfig, model: ModelConfig) -> None:
         self.auxiliary_loss_weight = model.auxiliary_value_loss_weight
         self.auxiliary_backprop = model.auxiliary_backprop_to_encoder
         self.auxiliary_solve_backprop = model.auxiliary_solve_backprop_to_encoder
@@ -315,7 +301,7 @@ class BraidPolicyValueNet(PolicyValueNet):
             game.observation_channels - 1 if game.objective_budget_channel else None
         )
         self.auxiliary_budget = float(game.simplify_budget)
-        self.auxiliary_ratio_channel = 2 * (game.max_strands - 1) + 1 + 1 + 6
+        self.auxiliary_ratio_channel = 2 * game.generator_capacity + 1 + 1 + 6
         self.use_auxiliary_value = model.use_auxiliary_value
         self.option_policy_adapter: OptionPolicyAdapter | None = None
         self.option_policy_gate: OptionPolicyGate | None = None
@@ -324,9 +310,7 @@ class BraidPolicyValueNet(PolicyValueNet):
             game.observation_channels,
             game.action_size,
             (
-                game.observation_channels
-                - int(game.objective_budget_channel)
-                - 1
+                game.observation_channels - int(game.objective_budget_channel) - 1
                 if game.serial_internal_horizon
                 else None
             ),
@@ -379,27 +363,20 @@ class BraidPolicyValueNet(PolicyValueNet):
         )
         return residual * gate, gate
 
-    def _apply_option_policy_adapter(
-        self, observation: Tensor, logits: Tensor
-    ) -> Tensor:
+    def _apply_option_policy_adapter(self, observation: Tensor, logits: Tensor) -> Tensor:
         if self.option_policy_adapter is None or not self.option_adapter_enabled:
             return logits
         residual, _ = self.option_policy_components(observation)
         return logits + residual
 
-
-    def _init_auxiliary(
-        self, features: int, game: BraidGameConfig, model: ModelConfig
-    ) -> None:
+    def _init_auxiliary(self, features: int, game: BraidGameConfig, model: ModelConfig) -> None:
         self.auxiliary = AuxiliaryValueHeads(
             features, model.auxiliary_value_width, model.auxiliary_value_members
         )
         self.auxiliary_members = model.auxiliary_value_members
         self._set_auxiliary_training_controls(game, model)
 
-    def _budget_conditioning(
-        self, observation: Tensor
-    ) -> tuple[Tensor, Tensor, float] | None:
+    def _budget_conditioning(self, observation: Tensor) -> tuple[Tensor, Tensor, float] | None:
         if not self.auxiliary_budget_conditioning or self.objective_budget_channel is None:
             return None
         remaining = observation[:, self.objective_budget_channel, 0, 0].clamp(0.0, 1.0)
@@ -422,24 +399,16 @@ class BraidPolicyValueNet(PolicyValueNet):
     ) -> Tensor:
         solve_logits, crossings, moves = auxiliary
         probability = solve_logits.sigmoid()
-        ratio = torch.exp(
-            5.0 * observation[:, self.auxiliary_ratio_channel, 0, 0]
-        )[:, None]
-        normalized_cost = (ratio * crossings + moves) / (
-            (ratio + 1.0) * self.auxiliary_budget
-        )
+        ratio = torch.exp(5.0 * observation[:, self.auxiliary_ratio_channel, 0, 0])[:, None]
+        normalized_cost = (ratio * crossings + moves) / ((ratio + 1.0) * self.auxiliary_budget)
         normalized_cost = normalized_cost.clamp(0.0, 1.0)
         member_values = -1.0 + 2.0 * probability * (1.0 - normalized_cost)
         return member_values.mean(dim=1)
 
-    def _search_value(
-        self, observation: Tensor, legacy: Tensor, features: Tensor
-    ) -> Tensor:
+    def _search_value(self, observation: Tensor, legacy: Tensor, features: Tensor) -> Tensor:
         if not self.use_auxiliary_value:
             return legacy
-        return self.composed_auxiliary_value(
-            observation, self._auxiliary(features, observation)
-        )
+        return self.composed_auxiliary_value(observation, self._auxiliary(features, observation))
 
 
 class _OptionResidualBlock(nn.Module):
@@ -473,9 +442,7 @@ class OptionPolicyAdapter(nn.Module):
             raise ValueError("option adapter width must be >=16 and divisible by 4")
         self.internal_budget_channel = internal_budget_channel
         self.input = nn.Conv1d(observation_channels, width, 3, padding=1)
-        self.blocks = nn.ModuleList(
-            _OptionResidualBlock(width) for _ in range(residual_blocks)
-        )
+        self.blocks = nn.ModuleList(_OptionResidualBlock(width) for _ in range(residual_blocks))
         self.readout = nn.Sequential(
             nn.Linear(3 * width + 1, width),
             nn.SiLU(),
@@ -527,9 +494,7 @@ class OptionPolicyGate(nn.Module):
             raise ValueError("initial gate probability must be between zero and one")
         self.internal_budget_channel = internal_budget_channel
         self.input = nn.Conv1d(observation_channels, width, 3, padding=1)
-        self.blocks = nn.ModuleList(
-            _OptionResidualBlock(width) for _ in range(residual_blocks)
-        )
+        self.blocks = nn.ModuleList(_OptionResidualBlock(width) for _ in range(residual_blocks))
         self.readout = nn.Sequential(
             nn.Linear(3 * width + 1, width),
             nn.SiLU(),
@@ -584,7 +549,7 @@ class BraidPolicyHead(nn.Module):
     def __init__(self, channels: int, game: BraidGameConfig):
         super().__init__()
         self.action_size = game.action_size
-        self.leading_blocks = 3 + 2 * (game.max_strands - 1)
+        self.leading_blocks = 3 + 2 * game.generator_capacity
         # Derived, never assumed: the singleton block shrank from 6 to 4 when the
         # word became cyclic and the two rotation moves were deleted.
         self.singleton_actions = game.action_size - (self.leading_blocks + 1) * game.max_len
@@ -615,7 +580,7 @@ class BraidAlphaZeroNet(BraidPolicyValueNet):
         self.representation = Representation(game, model, model.channels)
         # log(A/B) is the 7th scalar plane; it is constant across positions, so
         # one value per batch element suffices.
-        self.ratio_channel = 2 * (game.max_strands - 1) + 1 + 1 + 6
+        self.ratio_channel = 2 * game.generator_capacity + 1 + 1 + 6
         self.film = FiLM(model.channels) if model.film_on_ratio else None
         self.policy_head = BraidPolicyHead(model.channels, game)
         # Pooled, not flattened. `Flatten -> Linear(L, ...)` would tie the value
@@ -626,7 +591,7 @@ class BraidAlphaZeroNet(BraidPolicyValueNet):
         # pooling preserves "does any position have this feature", which mean
         # alone washes out on a mostly padded array.
         # The padding plane is the last of the letter one-hots.
-        self.padding_channel = 2 * (game.max_strands - 1)
+        self.padding_channel = 2 * game.generator_capacity
         self.value_project = nn.Conv2d(model.channels, model.channels, 1)
         self.value_head = nn.Sequential(
             nn.Linear(2 * model.channels, 32),
@@ -687,11 +652,11 @@ class SerialBraidNet(BraidPolicyValueNet):
     def __init__(self, game: BraidGameConfig, model: ModelConfig):
         super().__init__()
         self.representation = Representation(game, model, model.channels)
-        self.ratio_channel = 2 * (game.max_strands - 1) + 1 + 1 + 6
+        self.ratio_channel = 2 * game.generator_capacity + 1 + 1 + 6
         self.film = FiLM(model.channels) if model.film_on_ratio else None
 
         self.act_width = game.serial_width
-        self.per_offset = 3 + 2 * (game.max_strands - 1) + 1
+        self.per_offset = 3 + 2 * game.generator_capacity + 1
         self.n_global = game.action_size - self.act_width * self.per_offset
         # The actionable offsets are centred on the head, and so is the window,
         # so the actionable cells are the middle `act_width` columns.
@@ -734,9 +699,414 @@ class SerialBraidNet(BraidPolicyValueNet):
         logits = torch.cat([positional, self.global_policy(features)], dim=1)
         value_logit = self.value[0](features)
         if conditioning is not None:
-            value_logit = value_logit + self.auxiliary.legacy_budget_skip(
-                remaining_budget[:, None]
+            value_logit = value_logit + self.auxiliary.legacy_budget_skip(remaining_budget[:, None])
+        logits = self._apply_option_policy_adapter(observation, logits)
+        return logits, torch.tanh(value_logit).squeeze(-1), features
+
+    def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
+        policy, legacy, features = self._forward_core(observation)
+        return policy, self._search_value(observation, legacy, features)
+
+    def forward_with_auxiliary(
+        self, observation: Tensor
+    ) -> tuple[Tensor, Tensor, tuple[Tensor, Tensor, Tensor]]:
+        policy, value, features = self._forward_core(observation)
+        return policy, value, self._auxiliary(features, observation)
+
+
+class MaskedGroupNorm(nn.Module):
+    """GroupNorm whose statistics ignore inactive cells.
+
+    `nn.GroupNorm` averages over every cell of `(channels, strands, positions)`,
+    and on a raster canvas that is 50-82% padding (measured in
+    `rf-knots/research/experiments/padding_overhead.py`) most of what it averages
+    is zeros. That dilutes the statistics with the capacity rather than the
+    diagram, and it makes the layer's output depend on `max_strands` -- so two
+    braids that differ only in how much empty canvas surrounds them normalise
+    differently.
+
+    It also blocks cropping. Grouping a batch by live strand count and running
+    each group on a smaller tensor is only equivalent to the full canvas if the
+    normalisation does not see the padding; with plain GroupNorm the two differ by
+    2.09 on live cells, which is why shape bucketing could not be applied to the
+    windowed arm.
+    """
+
+    def __init__(self, groups: int, channels: int, eps: float = 1e-5):
+        super().__init__()
+        self.groups = groups
+        self.channels = channels
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(channels))
+        self.bias = nn.Parameter(torch.zeros(channels))
+
+    def forward(self, x: Tensor, mask: Tensor | None = None) -> Tensor:
+        if mask is None:
+            return F.group_norm(x, self.groups, self.weight, self.bias, self.eps)
+        batch, channels, height, width = x.shape
+        grouped = x.reshape(batch, self.groups, channels // self.groups, height, width)
+        weights = mask.reshape(batch, 1, 1, height, width)
+        # Every channel in a group shares the same spatial mask, so the cell count
+        # is the live area times the group's channel count.
+        count = weights.sum(dim=(2, 3, 4), keepdim=True) * (channels // self.groups)
+        count = count.clamp(min=1.0)
+        mean = (grouped * weights).sum(dim=(2, 3, 4), keepdim=True) / count
+        centred = (grouped - mean) * weights
+        variance = centred.pow(2).sum(dim=(2, 3, 4), keepdim=True) / count
+        normalised = centred / torch.sqrt(variance + self.eps)
+        out = normalised.reshape(batch, channels, height, width)
+        return out * self.weight[None, :, None, None] + self.bias[None, :, None, None]
+
+
+class MaskedCylinderResidualBlock(nn.Module):
+    """`CylinderResidualBlock` with mask-aware normalisation.
+
+    Same padding rules -- circular in word position, strand padding zero unless
+    `wrap_strands` -- and the same parameter shapes. Only the normalisation
+    changes, so this is a different function and not a drop-in for an existing
+    checkpoint; it is a separate arm.
+    """
+
+    def __init__(self, channels: int, *, wrap_strands: bool = False):
+        super().__init__()
+        self.wrap_strands = wrap_strands
+        groups = min(8, channels)
+        while channels % groups:
+            groups -= 1
+        self.conv1 = nn.Conv2d(channels, channels, 3, padding=0, bias=False)
+        self.norm1 = MaskedGroupNorm(groups, channels)
+        self.conv2 = nn.Conv2d(channels, channels, 3, padding=0, bias=False)
+        self.norm2 = MaskedGroupNorm(groups, channels)
+
+    def _pad(self, x: Tensor) -> Tensor:
+        padded = F.pad(x, (1, 1, 0, 0), mode="circular")
+        if self.wrap_strands:
+            return F.pad(padded, (0, 0, 1, 1), mode="circular")
+        return F.pad(padded, (0, 0, 1, 1))
+
+    def forward(self, x: Tensor, active: Tensor | None = None) -> Tensor:
+        hidden = torch.relu(self.norm1(self.conv1(self._pad(x)), active))
+        hidden = self.norm2(self.conv2(self._pad(hidden)), active)
+        return torch.relu(x + hidden)
+
+
+class CylinderResidualBlock(nn.Module):
+    """Shared 2D block: circular in word position, bounded in strand height."""
+
+    def __init__(self, channels: int, *, wrap_strands: bool = False):
+        super().__init__()
+        self.wrap_strands = wrap_strands
+        groups = min(8, channels)
+        while channels % groups:
+            groups -= 1
+        self.conv1 = nn.Conv2d(channels, channels, 3, padding=0, bias=False)
+        self.norm1 = nn.GroupNorm(groups, channels)
+        self.conv2 = nn.Conv2d(channels, channels, 3, padding=0, bias=False)
+        self.norm2 = nn.GroupNorm(groups, channels)
+
+    def _pad(self, x: Tensor) -> Tensor:
+        # Closing a braid makes word position cyclic.  First/last strand are not
+        # adjacent Artin generators, so strand padding must remain zero.
+        padded = F.pad(x, (1, 1, 0, 0), mode="circular")
+        if self.wrap_strands:
+            return F.pad(padded, (0, 0, 1, 1), mode="circular")
+        return F.pad(padded, (0, 0, 1, 1))
+
+    def forward(self, x: Tensor, _active: Tensor | None = None) -> Tensor:
+        hidden = torch.relu(self.norm1(self.conv1(self._pad(x))))
+        hidden = self.norm2(self.conv2(self._pad(hidden)))
+        return torch.relu(x + hidden)
+
+
+class AxialCylinderResidualBlock(nn.Module):
+    """Separate shared interactions for word-neighbours and strand-neighbours."""
+
+    def __init__(self, channels: int, *, wrap_strands: bool = False):
+        super().__init__()
+        self.wrap_strands = wrap_strands
+        groups = min(8, channels)
+        while channels % groups:
+            groups -= 1
+        self.horizontal = nn.Conv2d(channels, channels, (1, 3), padding=0, bias=False)
+        self.vertical = nn.Conv2d(channels, channels, (3, 1), padding=0, bias=False)
+        self.mix = nn.Conv2d(2 * channels, channels, 1, bias=False)
+        self.norm = nn.GroupNorm(groups, channels)
+
+    def _vertical_convolve(self, x: Tensor, active: Tensor | None) -> Tensor:
+        if not self.wrap_strands:
+            return self.vertical(F.pad(x, (0, 0, 1, 1)))
+        if active is None:
+            raise ValueError("active-row mask is required for a torus raster")
+        # The active strand count is state-dependent and generally smaller than
+        # max_strands.  Wrapping the capacity tensor would connect row 1 to an
+        # inactive row.  Gather cyclic predecessor/successor rows inside each
+        # sample's compact active prefix, apply the three axial kernel slices as
+        # 1x1 convolutions, and mask the inactive suffix.  This stays vectorized
+        # for training batches and does not synchronize counts back to Python.
+        rows = x.shape[2]
+        counts = active[:, 0, :, 0].sum(dim=1).long().clamp(min=1, max=rows)
+        row = torch.arange(rows, device=x.device)[None, :].expand(x.shape[0], -1)
+        previous = torch.where(row == 0, counts[:, None] - 1, row - 1).clamp(min=0)
+        following = torch.where(row == counts[:, None] - 1, 0, row + 1).clamp(max=rows - 1)
+
+        def gather(indices: Tensor) -> Tensor:
+            return x.gather(
+                2,
+                indices[:, None, :, None].expand(-1, x.shape[1], -1, x.shape[3]),
             )
+
+        weight = self.vertical.weight
+        output = (
+            F.conv2d(gather(previous), weight[:, :, 0:1])
+            + F.conv2d(x, weight[:, :, 1:2])
+            + F.conv2d(gather(following), weight[:, :, 2:3])
+        )
+        return output * active
+
+    def forward(self, x: Tensor, active: Tensor | None = None) -> Tensor:
+        horizontal = self.horizontal(F.pad(x, (1, 1, 0, 0), mode="circular"))
+        vertical = self._vertical_convolve(x, active)
+        hidden = self.norm(self.mix(torch.cat([horizontal, vertical], dim=1)))
+        output = torch.relu(x + hidden)
+        return output if active is None else output * active
+
+
+class MaskedAxialCylinderResidualBlock(AxialCylinderResidualBlock):
+    """Axial block whose shared normalization ignores padded strand rows."""
+
+    def __init__(self, channels: int, *, wrap_strands: bool = False):
+        super().__init__(channels, wrap_strands=wrap_strands)
+        groups = min(8, channels)
+        while channels % groups:
+            groups -= 1
+        self.norm = MaskedGroupNorm(groups, channels)
+
+    def forward(self, x: Tensor, active: Tensor | None = None) -> Tensor:
+        horizontal = self.horizontal(F.pad(x, (1, 1, 0, 0), mode="circular"))
+        vertical = self._vertical_convolve(x, active)
+        hidden = self.norm(self.mix(torch.cat([horizontal, vertical], dim=1)), active)
+        output = torch.relu(x + hidden)
+        return output if active is None else output * active
+
+
+class RasterWindowRepresentation(nn.Module):
+    """Turn a ``k x window`` braid raster back into serial per-column features.
+
+    Parameters are independent of both dimensions.  Masked row pooling makes a
+    checkpoint usable with a larger strand capacity, while retaining a feature
+    at every word column for the existing positional action head.
+    """
+
+    def __init__(self, game: BraidGameConfig, model: ModelConfig):
+        super().__init__()
+        self.max_strands = game.max_strands
+        self.raster_channels = 4 * game.max_strands
+        trailing = int(game.serial_internal_horizon > 0) + int(game.objective_budget_channel)
+        self.raster_end = game.observation_channels - trailing
+        self.raster_start = self.raster_end - self.raster_channels
+        self.letter_channels = 2 * game.generator_capacity + 2
+        metadata_channels = self.raster_start - self.letter_channels + trailing
+        width = model.channels
+        self.input = nn.Conv2d(4, width, 1, bias=False)
+        self.variant = game.serial_raster
+        block_type = (
+            CylinderResidualBlock if self.variant == "joint" else AxialCylinderResidualBlock
+        )
+        if game.serial_raster_masked_norm:
+            if self.variant == "joint":
+                block_type = MaskedCylinderResidualBlock
+            elif self.variant == "axial":
+                block_type = MaskedAxialCylinderResidualBlock
+            else:
+                raise ValueError(
+                    "masked normalisation requires a joint or axial raster block"
+                )
+        if self.variant not in {"joint", "axial", "recurrent", "scalable"}:
+            raise ValueError(f"unknown serial_raster variant {self.variant!r}")
+        if game.serial_raster_wrap_strands and self.variant == "joint":
+            raise ValueError("dynamic strand wrapping requires an axial raster block")
+        if self.variant in {"recurrent", "scalable"}:
+            self.blocks = nn.ModuleList(
+                [block_type(width, wrap_strands=game.serial_raster_wrap_strands)]
+            )
+            self.recurrent_steps = max(4, model.residual_blocks)
+        else:
+            self.blocks = nn.ModuleList(
+                [
+                    block_type(width, wrap_strands=game.serial_raster_wrap_strands)
+                    for _ in range(model.residual_blocks)
+                ]
+            )
+            self.recurrent_steps = 0
+        self.row_project = nn.Conv1d(2 * width, width, 1)
+        self.metadata = nn.Conv1d(metadata_channels, width, 1)
+        if game.objective_budget_channel:
+            # A fresh budget-aware raster initially behaves like the same
+            # visual controller: the added scalar is learned deliberately
+            # instead of perturbing the encoder through a random input weight.
+            nn.init.zeros_(self.metadata.weight[:, -1:])
+        self.output_norm = nn.GroupNorm(1, width)
+
+    def encode_spatial(self, observation: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        """Return shared row/column features, active mask, and column metadata."""
+        batch, _, _, columns = observation.shape
+        raster = observation[:, self.raster_start : self.raster_end, 0, :]
+        raster = raster.reshape(batch, self.max_strands, 4, columns).permute(0, 2, 1, 3)
+        active = raster[:, 3:4]
+        hidden = torch.relu(self.input(raster))
+        if self.variant in {"recurrent", "scalable"}:
+            for _ in range(self.recurrent_steps):
+                hidden = self.blocks[0](hidden, active)
+        else:
+            for block in self.blocks:
+                hidden = block(hidden, active)
+        metadata = torch.cat(
+            [
+                observation[:, self.letter_channels : self.raster_start, 0, :],
+                observation[:, self.raster_end :, 0, :],
+            ],
+            dim=1,
+        )
+        return hidden, active, self.metadata(metadata)
+
+    def column_features(self, hidden: Tensor, active: Tensor, metadata: Tensor) -> Tensor:
+        count = active.sum(dim=2).clamp(min=1.0)
+        mean = (hidden * active).sum(dim=2) / count
+        maximum = (hidden + (active - 1.0) * 1e4).amax(dim=2)
+        row_features = self.row_project(torch.cat([mean, maximum], dim=1))
+        return torch.relu(self.output_norm(row_features + metadata))
+
+    def forward(self, observation: Tensor) -> Tensor:
+        hidden, active, metadata = self.encode_spatial(observation)
+        return self.column_features(hidden, active, metadata)[:, :, None, :]
+
+
+class RasterSerialBraidNet(SerialBraidNet):
+    """`s-window` heads driven by a strand-agnostic 2D cylinder encoder."""
+
+    def __init__(self, game: BraidGameConfig, model: ModelConfig):
+        if not game.serial_raster:
+            raise ValueError("RasterSerialBraidNet requires serial_raster=True")
+        super().__init__(game, model)
+        self.representation = RasterWindowRepresentation(game, model)
+
+
+class ScalableRasterSerialBraidNet(BraidPolicyValueNet):
+    """Spatial controller whose learned parameter shapes do not depend on strands.
+
+    The environment still materialises a finite legal-action vector for each
+    configured capacity, as MCTS requires.  The network does not allocate one
+    learned output channel per generator: it applies one shared pair scorer to
+    every adjacent row pair and, for ``B*``, to the last/first seam pair.  A
+    checkpoint can therefore load unchanged at a larger strand capacity.
+    """
+
+    def __init__(self, game: BraidGameConfig, model: ModelConfig):
+        super().__init__()
+        if game.serial_raster != "scalable":
+            raise ValueError("ScalableRasterSerialBraidNet requires serial_raster='scalable'")
+        self.representation = RasterWindowRepresentation(game, model)
+        width = model.channels
+        self.act_width = game.serial_width
+        self.action_origin = self.act_width // 2
+        self.cyclic_band_generators = game.cyclic_band_generators
+        self.generator_capacity = game.generator_capacity
+        self.per_offset = 3 + 2 * self.generator_capacity + 1
+        self.n_global = game.action_size - self.act_width * self.per_offset
+
+        # REDUCE, COMMUTE, BRAID, and CROSSING_CHANGE are shared by column.
+        self.generic_policy = nn.Conv1d(width, 4, 1)
+        # The same scorer handles every ordinary row boundary and the B* seam.
+        self.insert_policy = nn.Sequential(
+            nn.Conv2d(3 * width, width, 1),
+            nn.SiLU(),
+            nn.Conv2d(width, 2, 1),
+        )
+        self.body = nn.Sequential(nn.Linear(3 * width, 64), nn.ReLU())
+        self.global_policy = nn.Linear(64, self.n_global)
+        self.value = nn.Sequential(nn.Linear(64, 1), nn.Tanh())
+        self._init_auxiliary(64, game, model)
+
+    def _insert_logits(self, spatial: Tensor, active: Tensor, columns: Tensor) -> Tensor:
+        upper = spatial[:, :, :-1, :]
+        lower = spatial[:, :, 1:, :]
+        context = columns[:, :, None, :].expand(-1, -1, upper.shape[2], -1)
+        pairs = torch.cat([upper, lower, context], dim=1)
+        logits = self.insert_policy(pairs)
+        if self.cyclic_band_generators:
+            # B*_k's seam generator is generator ``k``, where ``k`` is the
+            # state's *active* strand count.  It is not the fixed capacity
+            # generator.  Append the capacity slot, then replace slot k-1 in
+            # every batch member with the active-last/first pair score.  The
+            # environment mask rejects all inactive ordinary/capacity slots.
+            batch, channels, _, width = spatial.shape
+            active_strands = active[:, 0, :, 0].sum(dim=1).long().clamp(min=1)
+            last_index = (active_strands - 1).view(batch, 1, 1, 1).expand(-1, channels, 1, width)
+            active_last = spatial.gather(2, last_index)
+            seam = torch.cat(
+                [
+                    active_last,
+                    spatial[:, :, :1, :],
+                    columns[:, :, None, :],
+                ],
+                dim=1,
+            )
+            seam_logits = self.insert_policy(seam)
+            logits = torch.cat([logits, torch.zeros_like(seam_logits)], dim=2)
+            seam_slot = (
+                (active_strands - 1).view(batch, 1, 1, 1).expand(-1, seam_logits.shape[1], 1, width)
+            )
+            logits = logits.scatter(2, seam_slot, seam_logits)
+        assert logits.shape[2] == self.generator_capacity
+        return logits
+
+    def _forward_core(self, observation: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        spatial, active, metadata = self.representation.encode_spatial(observation)
+        columns = self.representation.column_features(spatial, active, metadata)
+        # The complete head-relative word occupies the leading columns. Padding
+        # cells are spatial workspace, never additional semantic action sites.
+        # Gather the serial offsets modulo the compact occupied length so the
+        # output layout remains exactly compatible with SerialBraidGame.
+        occupied = observation[:, : self.representation.letter_channels - 2, 0].sum(dim=1)
+        lengths = occupied.gt(0).sum(dim=1).long()
+        offsets = (
+            torch.arange(self.act_width, device=observation.device, dtype=torch.long)
+            - self.action_origin
+        )
+        action_columns = torch.remainder(offsets[None, :], lengths.clamp(min=1)[:, None])
+
+        generic_all = self.generic_policy(columns)
+        generic = generic_all.gather(
+            2,
+            action_columns[:, None, :].expand(-1, generic_all.shape[1], -1),
+        )
+        generic = generic.permute(0, 2, 1)
+        inserts_all = self._insert_logits(spatial, active, columns)
+        inserts = inserts_all.gather(
+            3,
+            action_columns[:, None, None, :].expand(
+                -1, inserts_all.shape[1], inserts_all.shape[2], -1
+            ),
+        )
+        # sign is the innermost coordinate, matching SerialBraidGame's
+        # generator-major (+,-) insertion layout.
+        inserts = inserts.permute(0, 3, 2, 1).flatten(2)
+        positional = torch.cat([generic[:, :, :3], inserts, generic[:, :, 3:4]], dim=2).flatten(1)
+
+        valid_columns = active.amax(dim=2)
+        valid_count = valid_columns.sum(dim=2).clamp(min=1.0)
+        pooled_mean = (columns * valid_columns).sum(dim=2) / valid_count
+        pooled_max = (columns + (valid_columns - 1.0) * 1e4).amax(dim=2)
+        summary = torch.cat([pooled_mean, pooled_max, columns[:, :, 0]], dim=1)
+        features = self.body(summary)
+        conditioning = self._budget_conditioning(observation)
+        if conditioning is not None:
+            remaining_budget, _, _ = conditioning
+            features = features + self.auxiliary.body_budget_skip(remaining_budget[:, None])
+        logits = torch.cat([positional, self.global_policy(features)], dim=1)
+        value_logit = self.value[0](features)
+        if conditioning is not None:
+            value_logit = value_logit + self.auxiliary.legacy_budget_skip(remaining_budget[:, None])
         logits = self._apply_option_policy_adapter(observation, logits)
         return logits, torch.tanh(value_logit).squeeze(-1), features
 
@@ -852,16 +1222,16 @@ class SequenceBraidNet(BraidPolicyValueNet):
         return state
 
     def _field_operators(self) -> Tensor:
-        rounded = self.field_matrices + (
-            torch.round(self.field_matrices) - self.field_matrices
-        ).detach()
+        rounded = (
+            self.field_matrices + (torch.round(self.field_matrices) - self.field_matrices).detach()
+        )
         return _mod_centered(rounded, self.prime)
 
     def _scan_field(self, letters: Tensor, mask: Tensor) -> Tensor:
         batch = letters.shape[0]
-        state = torch.eye(
-            self.states, device=letters.device, dtype=letters.dtype
-        ).expand(batch, -1, -1)
+        state = torch.eye(self.states, device=letters.device, dtype=letters.dtype).expand(
+            batch, -1, -1
+        )
         operators = self._field_operators()
         for index in range(letters.shape[1]):
             selected = torch.einsum("ba,aij->bij", letters[:, index], operators)
@@ -872,9 +1242,11 @@ class SequenceBraidNet(BraidPolicyValueNet):
 
     def _scan_burau(self, letters: Tensor, mask: Tensor) -> Tensor:
         batch = letters.shape[0]
-        states = torch.eye(
-            self.max_strands, device=letters.device, dtype=letters.dtype
-        ).expand(2, batch, -1, -1).clone()
+        states = (
+            torch.eye(self.max_strands, device=letters.device, dtype=letters.dtype)
+            .expand(2, batch, -1, -1)
+            .clone()
+        )
         operators = self.burau_matrices.to(dtype=letters.dtype)
         for index in range(letters.shape[1]):
             selected = torch.einsum("ba,eaij->ebij", letters[:, index], operators)
@@ -909,9 +1281,7 @@ class SequenceBraidNet(BraidPolicyValueNet):
                 2,
                 indexes[:, :, :, None].expand(-1, -1, -1, channels),
             ).flatten(2)
-            scan_bit = torch.ones(
-                batch, capacity, 1, device=sequence.device, dtype=sequence.dtype
-            )
+            scan_bit = torch.ones(batch, capacity, 1, device=sequence.device, dtype=sequence.dtype)
             output, _ = self.gru(torch.cat([gathered, scan_bit], dim=-1))
             final = lengths - 1
             return output[torch.arange(batch, device=output.device), final]
@@ -931,9 +1301,7 @@ class SequenceBraidNet(BraidPolicyValueNet):
             else self._field_operators()
         )
         generators = self.max_strands - 1
-        identity = torch.eye(
-            operators.shape[-1], device=operators.device, dtype=operators.dtype
-        )
+        identity = torch.eye(operators.shape[-1], device=operators.device, dtype=operators.dtype)
 
         def product(*items: Tensor) -> Tensor:
             value = items[0]
@@ -946,8 +1314,10 @@ class SequenceBraidNet(BraidPolicyValueNet):
         residuals = []
         for i in range(generators):
             residuals.extend(
-                [product(operators[i], operators[i + generators]) - identity,
-                 product(operators[i + generators], operators[i]) - identity]
+                [
+                    product(operators[i], operators[i + generators]) - identity,
+                    product(operators[i + generators], operators[i]) - identity,
+                ]
             )
         for i in range(generators - 1):
             residuals.append(
@@ -957,8 +1327,7 @@ class SequenceBraidNet(BraidPolicyValueNet):
         for i in range(generators):
             for j in range(i + 2, generators):
                 residuals.append(
-                    product(operators[i], operators[j])
-                    - product(operators[j], operators[i])
+                    product(operators[i], operators[j]) - product(operators[j], operators[i])
                 )
         return torch.stack([r.square().mean() for r in residuals]).mean()
 
@@ -978,6 +1347,263 @@ class SequenceBraidNet(BraidPolicyValueNet):
     ) -> tuple[Tensor, Tensor, tuple[Tensor, Tensor, Tensor]]:
         policy, value, features = self._forward_core(observation)
         return policy, value, self._auxiliary(features)
+
+
+class _BraidGraphRoutingBlock(nn.Module):
+    """Messages along both word order and the two physical braid strands."""
+
+    def __init__(self, width: int, dilation: int):
+        super().__init__()
+        self.dilation = dilation
+        self.norm = nn.LayerNorm(width)
+        self.body = nn.Sequential(
+            nn.Conv1d(5 * width, 2 * width, 1),
+            nn.SiLU(),
+            nn.Conv1d(2 * width, width, 1),
+        )
+
+    @staticmethod
+    def _neighbour(hidden: Tensor, lengths: Tensor, offset: int) -> Tensor:
+        positions = torch.arange(hidden.shape[-1], device=hidden.device)[None, :]
+        indexes = torch.remainder(positions + offset, lengths[:, None])
+        return torch.gather(hidden, 2, indexes[:, None, :].expand(-1, hidden.shape[1], -1))
+
+    @staticmethod
+    def _strand_neighbour(hidden: Tensor, indexes: Tensor) -> Tensor:
+        return torch.gather(hidden, 2, indexes[:, None, :].expand(-1, hidden.shape[1], -1))
+
+    def forward(
+        self,
+        hidden: Tensor,
+        lengths: Tensor,
+        occupied: Tensor,
+        strand_edges: Tensor,
+    ) -> Tensor:
+        normalized = self.norm(hidden.transpose(1, 2)).transpose(1, 2)
+        neighbours = torch.cat(
+            [
+                self._neighbour(normalized, lengths, -self.dilation),
+                normalized,
+                self._neighbour(normalized, lengths, self.dilation),
+                0.5
+                * (
+                    self._strand_neighbour(normalized, strand_edges[:, 0])
+                    + self._strand_neighbour(normalized, strand_edges[:, 1])
+                ),
+                0.5
+                * (
+                    self._strand_neighbour(normalized, strand_edges[:, 2])
+                    + self._strand_neighbour(normalized, strand_edges[:, 3])
+                ),
+            ],
+            dim=1,
+        )
+        return (hidden + self.body(neighbours)) * occupied
+
+
+class StrandGraphBraidNet(BraidPolicyValueNet):
+    """Compiled physical-strand graph followed by global edit-site routing.
+
+    Before each decision the serial adapter performs a deterministic O(L) sweep
+    and records, for both strands at every crossing, the previous and next
+    crossings met along the closed braid.  This is the compulsory scan: it has no
+    learned choices, creates no MCTS branches, and is rebuilt after every semantic
+    edit.  The network alternates messages along the cyclic word and these exact
+    physical-strand links, retaining a feature at every candidate edit site.
+
+    Edit logits are read at the head.  Each shift logit reads the feature at the
+    position that fixed stride would reach, so the controller can route toward a
+    globally promising site without widening the serial action space.
+    """
+
+    def __init__(self, game: BraidGameConfig, model: ModelConfig):
+        super().__init__()
+        if game.serial_encoder not in {"strand-graph", "strand-graph-local"}:
+            raise ValueError(f"Unknown strand-graph encoder: {game.serial_encoder}")
+        if game.serial_width != 1:
+            raise ValueError("strand-graph requires head-only serial actions")
+        if game.serial_registers or game.serial_colours or game.serial_tape_symbols:
+            raise ValueError("strand-graph has no written register, colour, or tape actions")
+
+        self.max_strands = game.max_strands
+        self.generators = game.max_strands - 1
+        self.alphabet = 2 * self.generators
+        self.padding_channel = self.alphabet
+        self.width = game.serial_encoder_states
+        self.with_local_tower = game.serial_encoder == "strand-graph-local"
+        if self.width < 64:
+            raise ValueError("strand-graph width must be at least 64")
+        self.strides = tuple(game.serial_strides)
+        self.per_offset = 3 + self.alphabet + 1
+        expected_actions = self.per_offset + 4 + 2 * len(self.strides)
+        if game.action_size != expected_actions:
+            raise ValueError(
+                f"strand-graph action layout has {game.action_size} actions, "
+                f"expected {expected_actions}"
+            )
+
+        trailing = int(game.serial_internal_horizon > 0) + int(game.objective_budget_channel)
+        self.graph_channel = game.observation_channels - trailing - 4
+        self.input_project = nn.Conv1d(game.observation_channels - 4, self.width, 1)
+        depth = max(model.residual_blocks, 1)
+        self.routing_blocks = nn.ModuleList(
+            _BraidGraphRoutingBlock(self.width, dilation)
+            for dilation in (2 ** (index % 5) for index in range(depth))
+        )
+
+        self.body = nn.Sequential(
+            nn.LayerNorm(3 * self.width),
+            nn.Linear(3 * self.width, 2 * self.width),
+            nn.SiLU(),
+            nn.Linear(2 * self.width, self.width),
+            nn.SiLU(),
+        )
+        self.local_policy = nn.Sequential(
+            nn.Linear(2 * self.width, self.width),
+            nn.SiLU(),
+            nn.Linear(self.width, self.per_offset),
+        )
+        self.singleton_policy = nn.Linear(self.width, 4)
+        self.route_query = nn.Linear(2 * self.width, self.width)
+        self.route_key = nn.Linear(self.width, self.width)
+        self.route_embeddings = nn.Parameter(0.02 * torch.randn(2 * len(self.strides), self.width))
+        self.route_bias = nn.Parameter(torch.zeros(2 * len(self.strides)))
+        self.register_buffer(
+            "route_offsets",
+            torch.tensor([offset for stride in self.strides for offset in (-stride, stride)]),
+            persistent=False,
+        )
+        self.value = nn.Linear(self.width, 1)
+        if self.with_local_tower:
+            window_game = replace(
+                game,
+                serial_encoder="",
+                serial_encoder_states=0,
+            )
+            self.local_tower = SerialBraidNet(window_game, replace(model, residual_blocks=2))
+            self.local_radius = game.serial_window // 2
+            self.graph_policy_scale = nn.Parameter(torch.zeros(game.action_size))
+            self.graph_value_scale = nn.Parameter(torch.zeros(()))
+            self.auxiliary_fusion = nn.Sequential(
+                nn.LayerNorm(64 + self.width),
+                nn.Linear(64 + self.width, self.width),
+                nn.SiLU(),
+            )
+        else:
+            self.local_tower = None
+            self.local_radius = 0
+            self.graph_policy_scale = None
+            self.graph_value_scale = None
+            self.auxiliary_fusion = None
+        self._init_auxiliary(self.width, game, model)
+
+    def _lengths_and_mask(self, observation: Tensor) -> tuple[Tensor, Tensor]:
+        occupied = 1.0 - observation[:, self.padding_channel, 0, :]
+        lengths = occupied.sum(dim=1).long().clamp(min=1, max=observation.shape[-1])
+        positions = torch.arange(observation.shape[-1], device=observation.device)[None, :]
+        mask = (positions < lengths[:, None]).to(observation.dtype)
+        return lengths, mask
+
+    def encode(self, observation: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        lengths, mask = self._lengths_and_mask(observation)
+        graph_values = observation[:, self.graph_channel : self.graph_channel + 4, 0, :]
+        strand_edges = (
+            torch.round(graph_values * max(observation.shape[-1] - 1, 1))
+            .long()
+            .clamp(min=0, max=observation.shape[-1] - 1)
+        )
+        source = torch.cat(
+            [
+                observation[:, : self.graph_channel, 0, :],
+                observation[:, self.graph_channel + 4 :, 0, :],
+            ],
+            dim=1,
+        )
+        hidden = F.silu(self.input_project(source)) * mask[:, None, :]
+        occupied = mask[:, None, :]
+        for block in self.routing_blocks:
+            hidden = block(hidden, lengths, occupied, strand_edges)
+        return hidden, lengths, occupied
+
+    def _route_targets(self, hidden: Tensor, lengths: Tensor) -> Tensor:
+        indexes = torch.remainder(self.route_offsets[None, :], lengths[:, None])
+        sequence = hidden.transpose(1, 2)
+        return torch.gather(
+            sequence,
+            1,
+            indexes[:, :, None].expand(-1, -1, self.width),
+        )
+
+    def _local_view(self, observation: Tensor, lengths: Tensor) -> Tensor:
+        offsets = torch.arange(
+            -self.local_radius,
+            self.local_radius + 1,
+            device=observation.device,
+        )[None, :]
+        indexes = torch.remainder(offsets, lengths[:, None])
+        source = torch.cat(
+            [
+                observation[:, : self.graph_channel],
+                observation[:, self.graph_channel + 4 :],
+            ],
+            dim=1,
+        )
+        return torch.gather(
+            source,
+            3,
+            indexes[:, None, None, :].expand(-1, source.shape[1], 1, -1),
+        )
+
+    def _forward_core(self, observation: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        hidden, lengths, occupied = self.encode(observation)
+        count = occupied.sum(dim=2).clamp(min=1.0)
+        mean = hidden.sum(dim=2) / count
+        maximum = (hidden + (occupied - 1.0) * 1e4).amax(dim=2)
+        head = hidden[:, :, 0]
+        features = self.body(torch.cat([head, mean, maximum], dim=1))
+        conditioning = self._budget_conditioning(observation)
+        if conditioning is not None:
+            remaining_budget, _, _ = conditioning
+            features = features + self.auxiliary.body_budget_skip(remaining_budget[:, None])
+
+        context = torch.cat([head, features], dim=1)
+        local = self.local_policy(context)
+        singletons = self.singleton_policy(features)
+        query = self.route_query(context)[:, None, :] + self.route_embeddings[None, :, :]
+        keys = self.route_key(self._route_targets(hidden, lengths))
+        routes = (query * keys).sum(dim=2) / math.sqrt(self.width) + self.route_bias
+        graph_logits = torch.cat([local, singletons, routes], dim=1)
+
+        value_logit = self.value(features)
+        if conditioning is not None:
+            value_logit = value_logit + self.auxiliary.legacy_budget_skip(remaining_budget[:, None])
+        graph_value = torch.tanh(value_logit).squeeze(-1)
+        if self.local_tower is not None:
+            local_observation = self._local_view(observation, lengths)
+            local_logits, local_value, local_features = self.local_tower._forward_core(
+                local_observation
+            )
+            assert self.graph_policy_scale is not None
+            assert self.graph_value_scale is not None
+            assert self.auxiliary_fusion is not None
+            logits = local_logits + self.graph_policy_scale * graph_logits
+            legacy = (local_value + self.graph_value_scale * graph_value).clamp(-1.0, 1.0)
+            features = self.auxiliary_fusion(torch.cat([local_features, features], dim=1))
+        else:
+            logits = graph_logits
+            legacy = graph_value
+        logits = self._apply_option_policy_adapter(observation, logits)
+        return logits, legacy, features
+
+    def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
+        policy, legacy, features = self._forward_core(observation)
+        return policy, self._search_value(observation, legacy, features)
+
+    def forward_with_auxiliary(
+        self, observation: Tensor
+    ) -> tuple[Tensor, Tensor, tuple[Tensor, Tensor, Tensor]]:
+        policy, value, features = self._forward_core(observation)
+        return policy, value, self._auxiliary(features, observation)
 
 
 class CyclicMemoryBraidNet(BraidPolicyValueNet):
@@ -1000,7 +1626,9 @@ class CyclicMemoryBraidNet(BraidPolicyValueNet):
         if game.serial_tape_symbols != 8 or not game.serial_tape_preserve_shift:
             raise ValueError("cyclic-memory requires eight tape symbols plus preserve shifts")
         self.tape_symbols = game.serial_tape_symbols
-        self.base_channels = game.observation_channels - self.tape_symbols
+        trailing = int(game.serial_internal_horizon > 0) + int(game.objective_budget_channel)
+        self.tape_end = game.observation_channels - trailing
+        self.tape_start = self.tape_end - self.tape_symbols
         window_game = replace(
             game,
             serial_encoder="",
@@ -1016,6 +1644,8 @@ class CyclicMemoryBraidNet(BraidPolicyValueNet):
         if self.width < 16:
             raise ValueError("cyclic-memory encoder width must be at least 16")
         self.input_project = nn.Conv1d(game.observation_channels, self.width, 1)
+        self.ratio_channel = 2 * game.generator_capacity + 1 + 1 + 6
+        self.global_film = FiLM(self.width) if model.film_on_ratio else None
         self.dilations = (1, 2, 4, 8, 16)
         self.cyclic_blocks = nn.ModuleList(
             nn.Sequential(
@@ -1027,6 +1657,16 @@ class CyclicMemoryBraidNet(BraidPolicyValueNet):
         )
         features = 64 + 2 * self.width
         self.fusion_norm = nn.LayerNorm(features)
+        self.fusion_budget_skip = nn.Sequential(
+            nn.Linear(1, 32),
+            nn.SiLU(),
+            nn.Linear(32, features),
+        )
+        self.value_budget_skip = nn.Sequential(
+            nn.Linear(1, 32),
+            nn.SiLU(),
+            nn.Linear(32, 1),
+        )
         self.policy_residual = nn.Linear(features, game.action_size)
         self.value_residual = nn.Linear(features, 1)
         members = model.auxiliary_value_members
@@ -1040,16 +1680,15 @@ class CyclicMemoryBraidNet(BraidPolicyValueNet):
         ):
             nn.init.zeros_(layer.weight)
             nn.init.zeros_(layer.bias)
-        self.register_buffer(
-            "window_action_map", self._window_action_mapping(game, window_game)
-        )
+        for branch in (self.fusion_budget_skip, self.value_budget_skip):
+            nn.init.zeros_(branch[-1].weight)
+            nn.init.zeros_(branch[-1].bias)
+        self.register_buffer("window_action_map", self._window_action_mapping(game, window_game))
         self.auxiliary_members = members
         self._set_auxiliary_training_controls(game, model)
 
     @staticmethod
-    def _window_action_mapping(
-        game: BraidGameConfig, window_game: BraidGameConfig
-    ) -> Tensor:
+    def _window_action_mapping(game: BraidGameConfig, window_game: BraidGameConfig) -> Tensor:
         per_offset = 3 + 2 * (game.max_strands - 1) + 1
         base = game.serial_width * per_offset + 4
         variants = game.serial_tape_symbols + 1
@@ -1058,8 +1697,7 @@ class CyclicMemoryBraidNet(BraidPolicyValueNet):
         mapping.extend(base + shift * variants for shift in range(shifts))
         if len(mapping) != window_game.action_size:
             raise ValueError(
-                f"window action map has {len(mapping)} entries, expected "
-                f"{window_game.action_size}"
+                f"window action map has {len(mapping)} entries, expected {window_game.action_size}"
             )
         return torch.tensor(mapping, dtype=torch.long)
 
@@ -1082,7 +1720,15 @@ class CyclicMemoryBraidNet(BraidPolicyValueNet):
             3,
             indexes[:, None, None, :].expand(-1, observation.shape[1], 1, -1),
         )
-        return local[:, : self.base_channels]
+        # Tape planes precede optional trailing budget planes.  Removing the
+        # final ``tape_symbols`` channels was only correct before the remaining-L
+        # feature existed: it retained one tape plane and dropped the budget
+        # plane.  Select the two non-tape slices explicitly so the nested window
+        # controller receives exactly its own observation schema.
+        return torch.cat(
+            [local[:, : self.tape_start], local[:, self.tape_end :]],
+            dim=1,
+        )
 
     @staticmethod
     def _cyclic_neighbour(hidden: Tensor, lengths: Tensor, offset: int) -> Tensor:
@@ -1105,6 +1751,11 @@ class CyclicMemoryBraidNet(BraidPolicyValueNet):
                 dim=1,
             )
             hidden = (hidden + block(neighbours)) * occupied
+        if self.global_film is not None:
+            hidden = self.global_film(
+                hidden[:, :, None, :],
+                observation[:, self.ratio_channel, 0, 0],
+            )[:, :, 0, :] * occupied
         count = occupied.sum(dim=2).clamp(min=1.0)
         mean = hidden.sum(dim=2) / count
         maximum = (hidden + (occupied - 1.0) * 1e4).amax(dim=2)
@@ -1118,6 +1769,10 @@ class CyclicMemoryBraidNet(BraidPolicyValueNet):
         window_logits, window_value, window_features = self.window._forward_core(local)
         global_features = self.encode_global(observation)
         features = self.fusion_norm(torch.cat([window_features, global_features], dim=1))
+        conditioning = self._budget_conditioning(observation)
+        if conditioning is not None:
+            remaining_budget, _, _ = conditioning
+            features = features + self.fusion_budget_skip(remaining_budget[:, None])
         # New tape-write actions start with negligible mass, so importing the
         # parent does not immediately dilute its established policy. Root noise
         # still explores them and the residual head can raise them during training.
@@ -1125,8 +1780,11 @@ class CyclicMemoryBraidNet(BraidPolicyValueNet):
         logits[:, self.window_action_map] = window_logits
         logits = logits + self.policy_residual(features)
         logits = self._apply_option_policy_adapter(observation, logits)
-        value = (window_value + self.value_residual(features).squeeze(-1)).clamp(-1.0, 1.0)
-        parent_auxiliary = self.window._auxiliary(window_features)
+        value_residual = self.value_residual(features)
+        if conditioning is not None:
+            value_residual = value_residual + self.value_budget_skip(remaining_budget[:, None])
+        value = (window_value + value_residual.squeeze(-1)).clamp(-1.0, 1.0)
+        parent_auxiliary = self.window._auxiliary(window_features, local)
         solve_features = (
             features
             if self.auxiliary_backprop or self.auxiliary_solve_backprop
@@ -1151,12 +1809,8 @@ class CyclicMemoryBraidNet(BraidPolicyValueNet):
     ) -> Tensor:
         solve_logits, crossings, moves = auxiliary
         probability = solve_logits.sigmoid()
-        ratio = torch.exp(
-            5.0 * observation[:, self.auxiliary_ratio_channel, 0, 0]
-        )[:, None]
-        normalized_cost = (ratio * crossings + moves) / (
-            (ratio + 1.0) * self.auxiliary_budget
-        )
+        ratio = torch.exp(5.0 * observation[:, self.auxiliary_ratio_channel, 0, 0])[:, None]
+        normalized_cost = (ratio * crossings + moves) / ((ratio + 1.0) * self.auxiliary_budget)
         member_values = -1.0 + 2.0 * probability * (1.0 - normalized_cost.clamp(0.0, 1.0))
         return member_values.mean(dim=1)
 
@@ -1367,16 +2021,13 @@ class TriadBraidNet(BraidPolicyValueNet):
     ) -> tuple[Tensor, Tensor, Tensor, tuple[Tensor, Tensor, Tensor]]:
         views = self._views(observation)
         outputs = [
-            tower._forward_core(view)
-            for tower, view in zip(self.towers, views, strict=True)
+            tower._forward_core(view) for tower, view in zip(self.towers, views, strict=True)
         ]
         logits = [self._normalize_logits(output[0]) for output in outputs]
         legacy = torch.stack([output[1] for output in outputs], dim=1).mean(dim=1)
         features = self.fusion_norm(torch.cat([output[2] for output in outputs], dim=1))
 
-        scattered = observation.new_zeros(
-            observation.shape[0], self.action_size, len(self.towers)
-        )
+        scattered = observation.new_zeros(observation.shape[0], self.action_size, len(self.towers))
         for tower, tower_logits in enumerate(logits):
             mapping = getattr(self, f"action_map_{tower}")
             scattered[:, mapping, tower] = tower_logits
@@ -1421,12 +2072,10 @@ class TriadBraidNet(BraidPolicyValueNet):
     ) -> Tensor:
         solve_logits, crossings, moves = auxiliary
         probability = solve_logits.sigmoid()
-        ratio = torch.exp(
-            5.0 * observation[:, self.auxiliary_ratio_channel, 0, 0]
-        )[:, None]
-        normalized_cost = ((ratio * crossings + moves) / (
-            (ratio + 1.0) * self.auxiliary_budget
-        )).clamp(0.0, 1.0)
+        ratio = torch.exp(5.0 * observation[:, self.auxiliary_ratio_channel, 0, 0])[:, None]
+        normalized_cost = (
+            (ratio * crossings + moves) / ((ratio + 1.0) * self.auxiliary_budget)
+        ).clamp(0.0, 1.0)
         return (-1.0 + 2.0 * probability * (1.0 - normalized_cost)).mean(dim=1)
 
     def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
@@ -1450,13 +2099,12 @@ class TriadBraidNet(BraidPolicyValueNet):
         return policy, value, auxiliary
 
 
-def load_policy_value_state_dict(
-    network: PolicyValueNet, state_dict: dict[str, Tensor]
-) -> bool:
+def load_policy_value_state_dict(network: PolicyValueNet, state_dict: dict[str, Tensor]) -> bool:
     """Load compatible old braid checkpoints with narrowly defined migrations.
 
     Returns ``True`` when an old checkpoint was migrated. Any missing or extra
-    parameter outside ``auxiliary.*`` remains an error. Newly appended
+    parameter outside explicitly function-preserving auxiliary/conditioning
+    branches remains an error. Newly appended
     observation features are initialized as ignored inputs (all zero weights)
     for the representation layers used by the serial candidates.
     """
@@ -1464,14 +2112,12 @@ def load_policy_value_state_dict(
         network.load_state_dict(state_dict)
         return False
     migrated_state = dict(state_dict)
-    if (
-        network.option_policy_adapter is None
-        and any(key.startswith("option_policy_adapter.") for key in migrated_state)
+    if network.option_policy_adapter is None and any(
+        key.startswith("option_policy_adapter.") for key in migrated_state
     ):
         network.attach_option_policy_adapter()
-    if (
-        network.option_policy_gate is None
-        and any(key.startswith("option_policy_gate.") for key in migrated_state)
+    if network.option_policy_gate is None and any(
+        key.startswith("option_policy_gate.") for key in migrated_state
     ):
         network.attach_option_policy_gate()
     target_state = network.state_dict()
@@ -1541,13 +2187,20 @@ def load_policy_value_state_dict(
         "scan.auxiliary.",
         "tape.auxiliary.",
     )
+    zero_residual_conditioning_prefixes = (
+        "film.",
+        "window.film.",
+        "global_film.",
+        "fusion_budget_skip.",
+        "value_budget_skip.",
+    )
     bad_missing = [
-        key for key in incompatible.missing_keys if not key.startswith(auxiliary_prefixes)
+        key
+        for key in incompatible.missing_keys
+        if not key.startswith(auxiliary_prefixes + zero_residual_conditioning_prefixes)
     ]
     bad_unexpected = [
-        key
-        for key in incompatible.unexpected_keys
-        if not key.startswith(auxiliary_prefixes)
+        key for key in incompatible.unexpected_keys if not key.startswith(auxiliary_prefixes)
     ]
     if bad_missing or bad_unexpected:
         raise RuntimeError(
@@ -1561,8 +2214,14 @@ def make_braid_network(game: BraidGameConfig, model: ModelConfig) -> PolicyValue
         return TriadBraidNet(game, model)
     if game.serial_encoder == "cyclic-memory":
         return CyclicMemoryBraidNet(game, model)
+    if game.serial_encoder in {"strand-graph", "strand-graph-local"}:
+        return StrandGraphBraidNet(game, model)
     if game.serial_encoder:
         return SequenceBraidNet(game, model)
+    if game.serial_raster == "scalable":
+        return ScalableRasterSerialBraidNet(game, model)
+    if game.serial_raster:
+        return RasterSerialBraidNet(game, model)
     if game.serial_window:
         return SerialBraidNet(game, model)
     return BraidAlphaZeroNet(game, model)
@@ -1607,9 +2266,7 @@ class Dynamics(nn.Module):
             cols = action[is_point] % self.board_size
             point[is_point, 0, rows, cols] = 1.0
         is_pass = (action == self.board_size**2).to(hidden.dtype)
-        pass_plane = is_pass[:, None, None, None].expand(
-            batch, 1, self.board_size, self.board_size
-        )
+        pass_plane = is_pass[:, None, None, None].expand(batch, 1, self.board_size, self.board_size)
         next_hidden = self.transition(torch.cat([hidden, point, pass_plane], dim=1))
         reward = self.reward(next_hidden).squeeze(-1)
         return next_hidden, reward

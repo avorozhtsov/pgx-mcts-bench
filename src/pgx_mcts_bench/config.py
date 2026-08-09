@@ -69,6 +69,11 @@ class BraidGameConfig:
     allow_crossing_change: bool = False
     multi_objective: bool = False
     log_ratio_range: tuple[float, float] = (0.0, 0.0)
+    # Optional discrete objective curriculum. When non-empty, generated training
+    # games sample exactly these A:B ratios rather than every log-ratio in the
+    # enclosing range. Weights are normalized at sampling time.
+    objective_ratio_choices: tuple[float, ...] = ()
+    objective_ratio_weights: tuple[float, ...] = ()
     # Instances come from the graded generator rather than from a Scrambler
     # phase: a torus knot of at most this crossing number, plus up to this many
     # scramble moves. u(T(p,q)) = (p-1)(q-1)/2 is a theorem, so the optimal
@@ -154,6 +159,31 @@ class BraidGameConfig:
     serial_encoder: str = ""
     serial_encoder_states: int = 0
     serial_encoder_prime: int = 5
+    # Append a lossless strand-by-word raster to a serial window.  Each row has
+    # the user's three route bits plus an explicit active-strand mask.  The word
+    # axis is cyclic; the strand axis is deliberately bounded (an ordinary
+    # Artin braid is a cylinder, not an affine braid on a torus).
+    # Values: "joint" (3x3 blocks), "axial" (separate horizontal/vertical
+    # interactions), "recurrent" (one axial block reused four times), or
+    # "scalable" (recurrent trunk plus a shared row-pair policy scorer).
+    serial_raster: str = ""
+    # Make the strand axis circular inside the raster trunk.  This is only
+    # semantically appropriate for an explicitly cyclic-band (B*) action
+    # alphabet; ordinary Artin braids retain a bounded strand axis.
+    serial_raster_wrap_strands: bool = False
+    # On a scalable full raster, encode unused word-capacity columns as active
+    # all-straight identity slices instead of inactive zero padding.  This is a
+    # representation augmentation, not a semantic action: decoding deletes the
+    # slices and recovers the same Artin word.
+    serial_raster_identity_padding: bool = False
+    # Normalise the raster trunk over live cells only.  Plain GroupNorm averages
+    # over the padded canvas, which on a 50-82% inactive raster is mostly zeros.
+    serial_raster_masked_norm: bool = False
+    # Optional Markov-equivalent taller initial representation.  Each step adds
+    # one new strand together with the required terminal sigma_k crossing; a
+    # bare active 010 row would instead add an unknot component.
+    serial_initial_markov_stabilizations: int = 0
+    serial_initial_markov_sign: int = 1
     # Frozen-window + full-scan + writable-tape policy ensemble.  The non-empty
     # value selects the composite network and makes the environment expose the
     # complete head-relative word from which all three parent views are derived.
@@ -170,6 +200,9 @@ class BraidGameConfig:
     # global move-derived cap. Kept opt-in so historical checkpoint schemas stay
     # exact unless an experiment explicitly migrates them.
     objective_budget_channel: bool = False
+    # Extend the Artin alphabet with the verified cyclic seam band a_{1,n}.
+    # Witnesses compile back to ordinary B_n; see rf_knots.reference.
+    cyclic_band_generators: bool = False
 
     def to_braid_config(self):
         from rf_knots.config import BraidConfig
@@ -182,21 +215,28 @@ class BraidGameConfig:
             allow_crossing_change=self.allow_crossing_change,
             multi_objective=self.multi_objective,
             log_ratio_range=self.log_ratio_range,
+            cyclic_band_generators=self.cyclic_band_generators,
         )
 
     @property
     def _spec(self):
         from rf_knots.actions import ActionSpec
 
-        return ActionSpec(max_len=self.max_len, max_strands=self.max_strands)
+        return ActionSpec(
+            max_len=self.max_len,
+            max_strands=self.max_strands,
+            cyclic_band_generators=self.cyclic_band_generators,
+        )
+
+    @property
+    def generator_capacity(self) -> int:
+        return self.max_strands - 1 + int(self.cyclic_band_generators)
 
     @property
     def serial_strides(self) -> tuple[int, ...]:
         from pgx_mcts_bench.serial_braid import shift_strides
 
-        return shift_strides(
-            self.serial_window, self.max_len, self.serial_shift_strides
-        )
+        return shift_strides(self.serial_window, self.max_len, self.serial_shift_strides)
 
     @property
     def serial_width(self) -> int:
@@ -215,6 +255,7 @@ class BraidGameConfig:
                 self.serial_colours,
                 self.serial_tape_symbols,
                 self.serial_tape_preserve_shift,
+                self.cyclic_band_generators,
             )
         return self._spec.num_actions
 
@@ -228,18 +269,23 @@ class BraidGameConfig:
         # Colours are one-hot per height plus the colour the agent is holding.
         # One-hot rather than a scalar: colour ids are labels, and a scalar would
         # tell the network that colour 1 is nearer colour 2 than colour 3.
-        colours = (
-            self.serial_colours * (self.max_strands + 1) if self.serial_colours else 0
-        )
+        colours = self.serial_colours * (self.max_strands + 1) if self.serial_colours else 0
         tape = max(self.serial_tape_symbols, 0)
+        # The strand-graph encoder receives four pointer planes per crossing:
+        # previous/next crossing along each of the two physical strands.  They
+        # are constructed by the serial adapter's deterministic full-word scan.
+        strand_graph = 4 if self.serial_encoder.startswith("strand-graph") else 0
+        raster = 4 * self.max_strands if self.serial_raster else 0
         return (
-            2 * (self.max_strands - 1)
+            2 * self.generator_capacity
             + 1
             + 1
             + 8
             + self.serial_registers
             + colours
             + tape
+            + strand_graph
+            + raster
             + int(self.serial_internal_horizon > 0)
             + int(self.objective_budget_channel)
         )
@@ -250,7 +296,9 @@ class BraidGameConfig:
 
     @property
     def width(self) -> int:
-        if self.serial_window and (self.serial_encoder or self.serial_ensemble):
+        if self.serial_window and (
+            self.serial_encoder or self.serial_ensemble or self.serial_raster == "scalable"
+        ):
             return self.max_len
         return self.serial_window or self.max_len
 
@@ -267,7 +315,7 @@ class BraidGameConfig:
         from rf_knots.actions import PASS
 
         if self.serial_window:
-            return self.serial_width * (3 + 2 * (self.max_strands - 1) + 1) + 3  # PASS
+            return self.serial_width * (3 + 2 * self.generator_capacity + 1) + 3  # PASS
         return self._spec.start_of(PASS)
 
     @property
@@ -393,8 +441,8 @@ class TrainConfig:
     # [-0.06, +0.35]) and collapsed to worse than random on some seeds. Only
     # Simplifier positions are trained on.
     random_first_role: bool = False
-    curriculum_start_k: int = 0          # 0 disables; else start here and climb
-    curriculum_promote_at: float = 0.5   # Simplifier self-play win rate to promote
+    curriculum_start_k: int = 0  # 0 disables; else start here and climb
+    curriculum_promote_at: float = 0.5  # Simplifier self-play win rate to promote
     seed: int = 0
     device: str = "cpu"
     exact_position_budget: bool = True

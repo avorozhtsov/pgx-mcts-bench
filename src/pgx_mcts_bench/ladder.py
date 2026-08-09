@@ -148,6 +148,9 @@ class Candidate:
     simulations: int = 64
     channels: int = 32
     train_steps: int = 96
+    batch_size: int = 32
+    learning_rate: float = 1e-3
+    weight_decay: float = 1e-4
     serial_window: int = 0
     serial_act_width: int = 1
     # 0 takes the default rule: 32 plies for parallel candidates, 64 for serial
@@ -167,6 +170,13 @@ class Candidate:
     serial_encoder: str = ""
     serial_encoder_states: int = 0
     serial_encoder_prime: int = 5
+    serial_raster: str = ""
+    serial_raster_wrap_strands: bool = False
+    serial_raster_masked_norm: bool = False
+    serial_raster_identity_padding: bool = False
+    serial_initial_markov_stabilizations: int = 0
+    serial_initial_markov_sign: int = 1
+    cyclic_band_generators: bool = False
     serial_ensemble: str = ""
     serial_internal_horizon: int = 0
     serial_internal_budget_remaining: bool = False
@@ -181,7 +191,29 @@ class Candidate:
     auxiliary_budget_monotonic_weight: float = 0.0
     auxiliary_budget_conditioning: bool = False
     use_auxiliary_value: bool = False
+    # Train the factorized losses from stage zero but optionally keep MCTS on
+    # the proven scalar until the critic has seen solved and failed episodes.
+    auxiliary_value_start_stage: int = 0
+    auxiliary_encoder_start_stage: int = 0
+    # Objectives sampled during self-play and required at promotion.  Historical
+    # arms retain the original broad three-objective curriculum; focused arms
+    # can test whether that breadth harms the crossing-dominant final goal.
+    objective_ratios: tuple[float, ...] = RATIOS
+    objective_ratio_weights: tuple[float, ...] = ()
     train: bool = True
+
+
+def _use_auxiliary_value_for_stage(candidate: Candidate, stage_index: int) -> bool:
+    return bool(
+        candidate.use_auxiliary_value and stage_index >= candidate.auxiliary_value_start_stage
+    )
+
+
+def _auxiliary_encoder_active_for_stage(candidate: Candidate, stage_index: int) -> bool:
+    return bool(
+        candidate.auxiliary_solve_backprop_to_encoder
+        and stage_index >= candidate.auxiliary_encoder_start_stage
+    )
 
 
 def serial_arms() -> list[Candidate]:
@@ -408,6 +440,119 @@ def experimental_capacity_arms() -> list[Candidate]:
     )
     return [
         Candidate(
+            "conv-window-128",
+            "matched seven-column controller with joint 2D cylinder blocks",
+            serial_act_width=7,
+            serial_raster="joint",
+            **(base | {"use_auxiliary_value": False}),
+        ),
+        Candidate(
+            "conv-window-masked-128",
+            "joint raster whose normalisation ignores the padded canvas",
+            serial_act_width=7,
+            serial_raster="joint",
+            serial_raster_masked_norm=True,
+            **(base | {"use_auxiliary_value": False}),
+        ),
+        Candidate(
+            "conv-window-axial-128",
+            "matched raster controller with distinct word/strand interactions",
+            serial_act_width=7,
+            serial_raster="axial",
+            **(base | {"use_auxiliary_value": False}),
+        ),
+        Candidate(
+            "conv-window-recurrent-128",
+            "matched raster controller with one axial block reused four times",
+            serial_act_width=7,
+            serial_raster="recurrent",
+            **(base | {"use_auxiliary_value": False}),
+        ),
+        Candidate(
+            "s-window-128-bstar",
+            "old window architecture retrained with the verified cyclic band generator",
+            serial_act_width=7,
+            cyclic_band_generators=True,
+            **(base | {"use_auxiliary_value": False}),
+        ),
+        Candidate(
+            "s-window-128-l1000",
+            "ordinary window controller trained only for crossing-dominant L1000",
+            serial_act_width=7,
+            objective_ratios=(1000.0,),
+            **(base | {"use_auxiliary_value": False}),
+        ),
+        Candidate(
+            "conv-window-axial-128-bstar",
+            "axial torus raster with the verified cyclic band action alphabet",
+            serial_act_width=7,
+            serial_raster="axial",
+            cyclic_band_generators=True,
+            **(base | {"use_auxiliary_value": False}),
+        ),
+        Candidate(
+            "conv-window-recurrent-128-bstar",
+            "recurrently stacked torus raster with the verified cyclic band alphabet",
+            serial_act_width=7,
+            serial_raster="recurrent",
+            cyclic_band_generators=True,
+            **(base | {"use_auxiliary_value": False}),
+        ),
+        Candidate(
+            "conv-cylinder-recurrent-128-bstar",
+            "strand-agnostic recurrent raster with a shared spatial action pointer",
+            serial_act_width=7,
+            serial_raster="scalable",
+            cyclic_band_generators=True,
+            objective_ratios=(1000.0,),
+            **(base | {"use_auxiliary_value": False}),
+        ),
+        Candidate(
+            "conv-cylinder-recurrent-idcols-128-bstar",
+            "factorized scalable cylinder with full-canvas identity-column padding",
+            serial_act_width=7,
+            serial_raster="scalable",
+            serial_raster_identity_padding=True,
+            cyclic_band_generators=True,
+            objective_ratios=(1000.0,),
+            objective_budget_channel=True,
+            auxiliary_solve_backprop_to_encoder=True,
+            auxiliary_budget_monotonic_weight=0.1,
+            auxiliary_budget_conditioning=True,
+            auxiliary_value_start_stage=1,
+            auxiliary_encoder_start_stage=1,
+            **base,
+        ),
+        Candidate(
+            "conv-torus-recurrent-idcols-128-bstar",
+            "factorized B* torus with dynamic seam interactions and identity columns",
+            serial_act_width=7,
+            serial_raster="scalable",
+            serial_raster_wrap_strands=True,
+            serial_raster_identity_padding=True,
+            cyclic_band_generators=True,
+            objective_ratios=(1000.0,),
+            objective_budget_channel=True,
+            auxiliary_solve_backprop_to_encoder=True,
+            auxiliary_budget_monotonic_weight=0.1,
+            auxiliary_budget_conditioning=True,
+            auxiliary_value_start_stage=1,
+            auxiliary_encoder_start_stage=1,
+            **base,
+        ),
+        Candidate(
+            "conv-cylinder-recurrent-idcanvas-stab1-128-bstar",
+            "identity-column canvas plus one valid positive Markov stabilization",
+            serial_act_width=7,
+            serial_raster="scalable",
+            serial_raster_identity_padding=True,
+            serial_initial_markov_stabilizations=1,
+            serial_initial_markov_sign=1,
+            cyclic_band_generators=True,
+            objective_ratios=(1000.0,),
+            **(base | {"use_auxiliary_value": False}),
+        ),
+        Candidate(
             "s-tape4-h5",
             "independent tape4 controller with five-step internal budget",
             serial_act_width=1,
@@ -418,13 +563,146 @@ def experimental_capacity_arms() -> list[Candidate]:
         ),
         Candidate(
             "s-cyclic-tape8-192",
-            "window-128 controller + cyclic full-word residual encoder + 8-symbol tape",
+            "budget-aware window controller + cyclic full-word residual encoder + 8-symbol tape",
             serial_act_width=7,
             serial_encoder="cyclic-memory",
             serial_encoder_states=64,
             serial_tape_symbols=8,
             serial_tape_preserve_shift=True,
+            objective_budget_channel=True,
+            auxiliary_solve_backprop_to_encoder=True,
+            auxiliary_budget_monotonic_weight=0.25,
+            auxiliary_budget_conditioning=True,
+            **(base | {"use_auxiliary_value": False}),
+        ),
+        Candidate(
+            "s-strand-graph-compact-128",
+            "compact 64x3 physical-strand graph router",
+            serial_act_width=1,
+            serial_encoder="strand-graph",
+            serial_encoder_states=64,
+            residual_blocks=3,
+            learning_rate=2e-3,
+            objective_budget_channel=True,
+            auxiliary_solve_backprop_to_encoder=True,
+            auxiliary_budget_monotonic_weight=0.1,
+            auxiliary_budget_conditioning=True,
             **base,
+        ),
+        Candidate(
+            "s-strand-graph-128",
+            "compiled physical-strand graph + cyclic global edit-site router",
+            serial_act_width=1,
+            serial_encoder="strand-graph",
+            serial_encoder_states=96,
+            residual_blocks=5,
+            objective_budget_channel=True,
+            auxiliary_solve_backprop_to_encoder=True,
+            auxiliary_budget_monotonic_weight=0.1,
+            auxiliary_budget_conditioning=True,
+            **base,
+        ),
+        Candidate(
+            "s-strand-graph-wide-128",
+            "wide/deep 160x8 physical-strand graph router",
+            serial_act_width=1,
+            serial_encoder="strand-graph",
+            serial_encoder_states=160,
+            residual_blocks=8,
+            batch_size=64,
+            learning_rate=5e-4,
+            weight_decay=5e-5,
+            objective_budget_channel=True,
+            auxiliary_solve_backprop_to_encoder=True,
+            auxiliary_budget_monotonic_weight=0.1,
+            auxiliary_budget_conditioning=True,
+            **(base | {"train_steps": 160}),
+        ),
+        Candidate(
+            "s-strand-graph-local-128",
+            "zero-residual local head + 128x6 physical-strand graph tower",
+            serial_act_width=1,
+            serial_encoder="strand-graph-local",
+            serial_encoder_states=128,
+            residual_blocks=6,
+            batch_size=64,
+            learning_rate=7.5e-4,
+            weight_decay=5e-5,
+            objective_budget_channel=True,
+            auxiliary_solve_backprop_to_encoder=True,
+            auxiliary_budget_monotonic_weight=0.1,
+            auxiliary_budget_conditioning=True,
+            **(base | {"train_steps": 128}),
+        ),
+    ]
+
+
+def vnext_arms() -> list[Candidate]:
+    """Stable, from-scratch scientist identities for semantic-move-v1.
+
+    Names describe architecture only. Search simulations and curriculum doses are
+    deliberately ordinary fields so an adaptive run does not create a new model
+    identity every time compute changes.
+    """
+    common = dict(
+        exploration="u1",
+        simulations=64,
+        channels=64,
+        train_steps=128,
+        batch_size=64,
+        learning_rate=7.5e-4,
+        weight_decay=5e-5,
+        serial_window=7,
+        objective_budget_channel=True,
+        auxiliary_value_loss_weight=0.1,
+        auxiliary_solve_backprop_to_encoder=True,
+        auxiliary_budget_monotonic_weight=0.1,
+        auxiliary_budget_conditioning=True,
+        use_auxiliary_value=True,
+        auxiliary_value_start_stage=1,
+        auxiliary_encoder_start_stage=0,
+        objective_ratios=(1000.0, 10.0),
+        objective_ratio_weights=(3.0, 1.0),
+        serial_internal_horizon=5,
+        serial_internal_budget_remaining=True,
+    )
+    return [
+        Candidate(
+            "window-local",
+            "local seven-letter window with a scanning controller",
+            serial_act_width=7,
+            residual_blocks=4,
+            **common,
+        ),
+        Candidate(
+            "raster-axial",
+            "masked braid raster with shared word/strand axial blocks",
+            serial_act_width=7,
+            serial_raster="axial",
+            serial_raster_masked_norm=True,
+            serial_raster_identity_padding=True,
+            residual_blocks=4,
+            **common,
+        ),
+        Candidate(
+            "cyclic-memory",
+            "cyclic full-word residual encoder with persistent eight-symbol tape",
+            serial_act_width=7,
+            serial_encoder="cyclic-memory",
+            serial_encoder_states=64,
+            serial_tape_symbols=8,
+            serial_tape_preserve_shift=True,
+            residual_blocks=4,
+            **common,
+        ),
+        Candidate(
+            "strand-graph",
+            "shared physical-strand graph blocks with a routed local action head",
+            serial_act_width=1,
+            serial_encoder="strand-graph",
+            serial_encoder_states=64,
+            residual_blocks=3,
+            **common,
         ),
     ]
 
@@ -537,6 +815,7 @@ def candidates() -> list[Candidate]:
         + invariant_learning_arms()
         + tape_scan_arms()
         + experimental_capacity_arms()
+        + vnext_arms()
         + distilled_arms()
         + ensemble_arms()
     )
@@ -573,6 +852,23 @@ class LadderResult:
     highest_stage: int
     seconds: float
     stages: list[StageResult] = field(default_factory=list)
+    # Per-stage F_old dose, keyed by stage index as text for stable JSON output.
+    rehearsal_doses: dict[str, int] = field(default_factory=dict)
+
+
+def retry_last_capped_stage(
+    result: LadderResult, consecutive_caps: int
+) -> tuple[int, int] | None:
+    """Remove the terminal capped record so training can continue from its weights."""
+    if not result.stages or result.stages[-1].promoted:
+        return None
+    retry = result.stages.pop()
+    index = STAGES.index((retry.source, retry.scramble))
+    result.highest_stage = max(
+        (stage.stage for stage in result.stages if stage.promoted),
+        default=-1,
+    )
+    return index, max(consecutive_caps - 1, 0)
 
 
 def _silent(*args, **kwargs) -> None:
@@ -630,6 +926,7 @@ def promotion_reason(
     window: int,
     worst_ratio: float = 1.0,
     collapse_floor: float = 0.5,
+    plateau_on_known_objective: bool = True,
 ) -> str | None:
     """Why this stage should end now, or `None` to keep training.
 
@@ -667,6 +964,8 @@ def promotion_reason(
         return None
     if crossings == crossings and crossings <= optimal + tolerance:
         return "objective"
+    if not plateau_on_known_objective:
+        return None
     # Needs two windows of history: one to establish a best, one to fail to beat
     # it. Otherwise the first two flat evaluations of a stage read as a plateau.
     # The comparison is recent-window against everything *before* it -- comparing
@@ -695,7 +994,14 @@ def _config(
         simplify_budget=(candidate.simplify_budget or (32 if not candidate.serial_window else 64)),
         allow_crossing_change=True,
         multi_objective=True,
-        log_ratio_range=(float(np.log(min(RATIOS))), float(np.log(max(RATIOS)))),
+        log_ratio_range=(
+            float(np.log(min(candidate.objective_ratios))),
+            float(np.log(max(candidate.objective_ratios))),
+        ),
+        objective_ratio_choices=(
+            candidate.objective_ratios if candidate.objective_ratio_weights else ()
+        ),
+        objective_ratio_weights=candidate.objective_ratio_weights,
         generator_max_crossings=22,
         generator_max_scramble=6,
         generator_positive_braids=3,
@@ -716,10 +1022,17 @@ def _config(
         serial_encoder=candidate.serial_encoder,
         serial_encoder_states=candidate.serial_encoder_states,
         serial_encoder_prime=candidate.serial_encoder_prime,
+        serial_raster=candidate.serial_raster,
+        serial_raster_wrap_strands=candidate.serial_raster_wrap_strands,
+        serial_raster_masked_norm=candidate.serial_raster_masked_norm,
+        serial_raster_identity_padding=candidate.serial_raster_identity_padding,
+        serial_initial_markov_stabilizations=(candidate.serial_initial_markov_stabilizations),
+        serial_initial_markov_sign=candidate.serial_initial_markov_sign,
         serial_ensemble=candidate.serial_ensemble,
         serial_internal_horizon=candidate.serial_internal_horizon,
         serial_internal_budget_remaining=candidate.serial_internal_budget_remaining,
         objective_budget_channel=candidate.objective_budget_channel,
+        cyclic_band_generators=candidate.cyclic_band_generators,
     )
     return ExperimentConfig(
         game=game,
@@ -739,7 +1052,9 @@ def _config(
             iterations=1,
             selfplay_games=selfplay_games,
             train_steps=candidate.train_steps,
-            batch_size=32,
+            batch_size=candidate.batch_size,
+            learning_rate=candidate.learning_rate,
+            weight_decay=candidate.weight_decay,
             seed=seed,
             device=device,
         ),
@@ -753,6 +1068,7 @@ def evaluate_stage(
     games: int,
     seed: int,
     ratios: tuple[float, ...] = RATIOS,
+    include_attempts: bool = False,
     bounds_path: Path | None = None,
     agent: str = "",
 ) -> dict[float, dict]:
@@ -775,7 +1091,17 @@ def evaluate_stage(
             rng = np.random.default_rng(episode_seed)
             instance = game.generator.generate(src, scramble, rng)
             transition = game.from_word(list(instance.word), instance.strands, float(np.log(ratio)))
-            episodes.append({"ratio": ratio, "rng": rng, "transition": transition})
+            episodes.append(
+                {
+                    "ratio": ratio,
+                    "rng": rng,
+                    "transition": transition,
+                    "attempt": index,
+                    "seed": episode_seed,
+                    "word": [int(letter) for letter in instance.word],
+                    "strands": int(instance.strands),
+                }
+            )
 
     # All ratio/game pairs are independent roots. Searching them together is
     # mathematically identical to the former nested loop, but changes the neural
@@ -799,11 +1125,15 @@ def evaluate_stage(
 
     for ratio in ratios:
         solved = crossings = moves = 0
+        attempts: list[dict] = []
         for episode in episodes:
             if episode["ratio"] != ratio:
                 continue
             final = game.unwrap(episode["transition"].state)
-            if bool((np.asarray(final._word) == 0).all()) and int(final._n) == 1:
+            is_solved = bool((np.asarray(final._word) == 0).all()) and int(final._n) == 1
+            used: int | None = None
+            spent: int | None = None
+            if is_solved:
                 solved += 1
                 used = int(np.asarray(final._crossing_changes))
                 spent = game.semantic_move_count(episode["transition"].state)
@@ -814,6 +1144,18 @@ def evaluate_stage(
                 # claimed once, rather than one write per episode.
                 if best_claim is None or (used, spent) < best_claim:
                     best_claim = (used, spent)
+            if include_attempts:
+                attempts.append(
+                    {
+                        "attempt": episode["attempt"],
+                        "seed": episode["seed"],
+                        "word": episode["word"],
+                        "strands": episode["strands"],
+                        "solved": is_solved,
+                        "crossings": used,
+                        "moves": spent,
+                    }
+                )
         # `crossings` and `moves` are conditional on solving, which makes them
         # anti-correlated with `solved`: an arm that gives up on the hard
         # instances drops them out of the average, so failing more can make its
@@ -830,6 +1172,8 @@ def evaluate_stage(
             "expected_crossings": (crossings / solved) / rate if solved else float("nan"),
             "expected_moves": (moves / solved) / rate if solved else float("nan"),
         }
+        if include_attempts:
+            out[ratio]["attempts"] = attempts
     if bounds_path is not None and best_claim is not None:
         from pgx_mcts_bench import bounds
 
@@ -959,6 +1303,7 @@ def _save_ladder_progress(
         "solve_rate": solve_rate,
         "crossings": crossings,
         "consecutive_caps": consecutive_caps,
+        "rehearsal_doses": dict(result.rehearsal_doses),
         "phase": phase,
         "train_step": train_step,
         "selfplay_complete": selfplay_complete,
@@ -1008,6 +1353,7 @@ def _restore_ladder_progress(
         int(saved.get("highest_stage", -1)),
         0.0,
         stages,
+        {str(key): int(value) for key, value in saved.get("rehearsal_doses", {}).items()},
     )
     completed = {(row["source"], row["scramble"]) for row in saved.get("stages", [])}
     start_stage = next(
@@ -1040,13 +1386,24 @@ _COMPATIBLE_NEW_CANDIDATE_FIELDS = {
     "auxiliary_budget_conditioning",
     "auxiliary_budget_monotonic_weight",
     "auxiliary_solve_backprop_to_encoder",
+    "auxiliary_encoder_start_stage",
     "auxiliary_value_loss_weight",
+    "auxiliary_value_start_stage",
+    "batch_size",
+    "learning_rate",
     "objective_budget_channel",
+    "objective_ratios",
+    "objective_ratio_weights",
     "residual_blocks",
     "serial_ensemble",
     "serial_internal_budget_remaining",
     "serial_internal_horizon",
+    "serial_raster_identity_padding",
+    "serial_raster_wrap_strands",
+    "serial_initial_markov_sign",
+    "serial_initial_markov_stabilizations",
     "serial_tape_preserve_shift",
+    "weight_decay",
 }
 
 
@@ -1078,6 +1435,7 @@ def run_ladder(
     crossing_tolerance: float = 0.25,
     plateau_window: int = 3,
     collapse_floor: float = 0.5,
+    plateau_on_known_objective: bool = True,
     max_consecutive_caps: int = 3,
     stop_after: int = -1,
     min_iterations_per_rung: float = 0.0,
@@ -1088,18 +1446,38 @@ def run_ladder(
     policy_value_success_gated: bool = False,
     balanced_replay: bool = False,
     rehearsal_games_per_cleared_stage: int = 0,
+    adaptive_rehearsal: bool = False,
+    rehearsal_target: float = 0.8,
+    max_rehearsal_games_per_stage: int = 8,
     initial_checkpoint: Path | None = None,
+    retry_capped_on_resume: bool = False,
     log=print,
 ) -> LadderResult:
     if rehearsal_games_per_cleared_stage < 0:
         raise ValueError("rehearsal games per cleared stage must be non-negative")
+    if adaptive_rehearsal and rehearsal_games_per_cleared_stage < 1:
+        raise ValueError("adaptive rehearsal requires an initial F_old of at least one")
+    if adaptive_rehearsal and retro_games < 1:
+        raise ValueError("adaptive rehearsal requires at least one retention probe game")
+    if not 0.0 <= rehearsal_target <= 1.0:
+        raise ValueError("rehearsal target must be in 0..1")
+    if max_rehearsal_games_per_stage < rehearsal_games_per_cleared_stage:
+        raise ValueError("maximum rehearsal dose must be at least the initial F_old")
+    if candidate.auxiliary_value_start_stage < 0:
+        raise ValueError("auxiliary value start stage must be non-negative")
+    if candidate.auxiliary_encoder_start_stage < 0:
+        raise ValueError("auxiliary encoder start stage must be non-negative")
     started = time.perf_counter()
     rng = np.random.default_rng(seed)
     torch.manual_seed(seed)
 
     first = _config(candidate, STAGES[0], seed, device, selfplay_games=selfplay_games)
     network = make_braid_network(first.game, first.model).to(torch.device(device))
-    optimizer = torch.optim.AdamW(network.parameters(), lr=1e-3, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(
+        network.parameters(),
+        lr=first.train.learning_rate,
+        weight_decay=first.train.weight_decay,
+    )
     replay = ReplayBuffer(20_000, rng)
     result = LadderResult(candidate.name, candidate.rationale, -1, 0.0)
 
@@ -1185,10 +1563,7 @@ def run_ladder(
                 rng=rng,
             )
         except (KeyError, TypeError, ValueError) as error:
-            log(
-                f"    [{candidate.name}] ignored incompatible "
-                f"{saved_progress_path.name}: {error}"
-            )
+            log(f"    [{candidate.name}] ignored incompatible {saved_progress_path.name}: {error}")
         else:
             detail = f", iteration {partial['iteration']}" if partial else ""
             phase = f", phase {partial['phase']}" if partial else ""
@@ -1197,6 +1572,15 @@ def run_ladder(
                 f"at stage {start_stage}{detail}{phase}"
             )
             break
+
+    retry = retry_last_capped_stage(result, consecutive_caps) if retry_capped_on_resume else None
+    if retry is not None:
+        start_stage, consecutive_caps = retry
+        partial = None
+        log(
+            f"    [{candidate.name}] retrying capped stage {start_stage} "
+            "from its trained weights"
+        )
 
     def snapshot(index: int, when: str, stage_result: StageResult | None = None) -> None:
         """Weights either side of a stage, kept rather than overwritten.
@@ -1316,6 +1700,8 @@ def run_ladder(
             mix_decay=mix_decay,
             selfplay_games=selfplay_games,
         )
+        network.use_auxiliary_value = _use_auxiliary_value_for_stage(candidate, index)
+        network.auxiliary_solve_backprop = _auxiliary_encoder_active_for_stage(candidate, index)
         game = make_game(config.game)
         source = next(s for s in game.generator.sources if s.name == stage[0])
         search = NeuralMCTS(game, network, config.search, device)
@@ -1329,6 +1715,9 @@ def run_ladder(
         iterations = resumed_partial["iteration"] if resumed_partial else 0
         history: list[float] = resumed_partial["history"] if resumed_partial else []
         iteration_durations: list[float] = []
+        latest_retrospective: dict = {}
+        for old_index in range(index):
+            result.rehearsal_doses.setdefault(str(old_index), rehearsal_games_per_cleared_stage)
         status_context = {
             "path": status_path,
             "candidate_name": candidate.name,
@@ -1345,9 +1734,7 @@ def run_ladder(
                 and resumed_partial.get("phase") in {"selfplay-complete", "training"}
             )
             resume_train_step = (
-                int(resumed_partial.get("train_step", 0))
-                if resuming_active_iteration
-                else 0
+                int(resumed_partial.get("train_step", 0)) if resuming_active_iteration else 0
             )
             resume_selfplay = bool(
                 resuming_active_iteration and resumed_partial.get("selfplay_complete", False)
@@ -1415,14 +1802,17 @@ def run_ladder(
                     # every frontier iteration.  Each rehearsal game is pinned
                     # to its rung; it cannot silently sample the frontier again.
                     for old_index in range(index):
-                        if rehearsal_games_per_cleared_stage == 0:
+                        rehearsal_dose = result.rehearsal_doses.get(
+                            str(old_index), rehearsal_games_per_cleared_stage
+                        )
+                        if rehearsal_dose == 0:
                             break
                         old_config = _config(
                             candidate,
                             STAGES[old_index],
                             seed,
                             device,
-                            selfplay_games=rehearsal_games_per_cleared_stage,
+                            selfplay_games=rehearsal_dose,
                         )
                         old_game = make_game(old_config.game)
                         old_search = NeuralMCTS(old_game, network, old_config.search, device)
@@ -1431,9 +1821,9 @@ def run_ladder(
                             + 90_000_000
                             + index * 100_000
                             + iteration * 1_000
-                            + old_index * rehearsal_games_per_cleared_stage
+                            + old_index * 100
                             + game_index
-                            for game_index in range(rehearsal_games_per_cleared_stage)
+                            for game_index in range(rehearsal_dose)
                         ]
                         old_records = play_selfplay_games(
                             old_game,
@@ -1489,7 +1879,7 @@ def run_ladder(
                         network,
                         optimizer,
                         replay,
-                        32,
+                        candidate.batch_size,
                         torch.device(device),
                         collaboration_replay=(
                             balanced_replay
@@ -1501,6 +1891,7 @@ def run_ladder(
                             policy_value_success_only
                             or (policy_value_success_gated and replay_success_fraction == 0.0)
                         ),
+                        replay_positions_per_episode=4 if balanced_replay else 1,
                     )
                     terminate_if_requested(
                         stage_index=index,
@@ -1540,6 +1931,7 @@ def run_ladder(
                 )
                 iterations += 1
             if not candidate.train or (iteration + 1) % eval_every == 0:
+                retention_gate_passed = True
                 _publish_ladder_status(
                     **status_context,
                     phase="evaluation",
@@ -1553,6 +1945,7 @@ def run_ladder(
                     config,
                     eval_games,
                     seed + 500_000 + index * 997,
+                    ratios=candidate.objective_ratios,
                     bounds_path=bounds_path,
                     agent=candidate.name,
                 )
@@ -1566,11 +1959,60 @@ def run_ladder(
                 # `promotion_reason`. The worst ratio is kept as a collapse check.
                 solve_rate = sum(rates) / len(rates)
                 worst_ratio = min(rates)
-                crossings = by_ratio[max(RATIOS)]["crossings"]
+                crossings = by_ratio[max(candidate.objective_ratios)]["crossings"]
                 # Unsolved sorts as worst rather than as missing, so a stage that
                 # stops solving reads as "not improving" instead of dropping out
                 # of the plateau test entirely.
                 history.append(crossings if crossings == crossings else float("inf"))
+                if adaptive_rehearsal and index > 0:
+                    latest_retrospective = {}
+                    cc_edge = max(candidate.objective_ratios)
+                    for earlier in range(index):
+                        back = _config(candidate, STAGES[earlier], seed, device)
+                        back_game = make_game(back.game)
+                        rows = evaluate_stage(
+                            back_game,
+                            network,
+                            back,
+                            retro_games,
+                            seed + 700_000 + earlier * 997,
+                            ratios=(cc_edge,),
+                        )[cc_edge]
+                        back_source = next(
+                            s for s in back_game.generator.sources if s.name == STAGES[earlier][0]
+                        )
+                        dose_before = result.rehearsal_doses[str(earlier)]
+                        objective_ok = (
+                            rows["crossings"] == rows["crossings"]
+                            and rows["crossings"]
+                            <= back_source.unknotting_number + crossing_tolerance
+                        )
+                        healthy = rows["solved"] >= rehearsal_target and objective_ok
+                        retention_gate_passed = retention_gate_passed and healthy
+                        dose_after = dose_before
+                        if not healthy:
+                            dose_after = min(
+                                max_rehearsal_games_per_stage,
+                                max(dose_before + 1, 2 * dose_before),
+                            )
+                        result.rehearsal_doses[str(earlier)] = dose_after
+                        latest_retrospective[str(earlier)] = {
+                            "source": STAGES[earlier][0],
+                            "scramble": STAGES[earlier][1],
+                            "solved": rows["solved"],
+                            "crossings": rows["crossings"],
+                            "optimal_crossings": back_source.unknotting_number,
+                            "dose_before": dose_before,
+                            "dose_after": dose_after,
+                            "healthy": healthy,
+                        }
+                        if dose_after != dose_before:
+                            log(
+                                f"    [{candidate.name}] adaptive F_old rung {earlier}: "
+                                f"{dose_before} -> {dose_after} "
+                                f"(sr={rows['solved']:.2f}, cc={rows['crossings']:.2f}, "
+                                f"u={back_source.unknotting_number})"
+                            )
                 verdict = promotion_reason(
                     solve_rate,
                     crossings,
@@ -1581,6 +2023,7 @@ def run_ladder(
                     window=plateau_window,
                     worst_ratio=worst_ratio,
                     collapse_floor=collapse_floor,
+                    plateau_on_known_objective=plateau_on_known_objective,
                 )
                 if verdict is not None:
                     # A training-density floor, applied to the *average* over
@@ -1605,8 +2048,13 @@ def run_ladder(
                         density = spent / (len(governed) + 1)
                     else:
                         density = float("inf")  # below the floor's remit
-                    if density >= min_iterations_per_rung:
+                    if density >= min_iterations_per_rung and retention_gate_passed:
                         promoted, reason = True, verdict
+                    elif density >= min_iterations_per_rung and not retention_gate_passed:
+                        log(
+                            f"    [{candidate.name}] frontier meets {verdict}, but "
+                            "adaptive retention keeps the rung open"
+                        )
             if (
                 progress_path is not None
                 and checkpoint_every > 0
@@ -1682,8 +2130,10 @@ def run_ladder(
         # neither confirmed nor ruled out. Only on promotion -- there is nothing to
         # look back on from a stage that was never cleared.
         retrospective: dict = {}
-        if promoted and index > 0:
-            cc_edge = max(RATIOS)
+        if adaptive_rehearsal and index > 0:
+            retrospective = latest_retrospective
+        elif promoted and index > 0:
+            cc_edge = max(candidate.objective_ratios)
             for earlier in range(index):
                 back = _config(candidate, STAGES[earlier], seed, device)
                 back_game = make_game(back.game)
@@ -1849,16 +2299,24 @@ def render(results: list[LadderResult]) -> str:
         "  improves the lower ones.",
         "* `capped` — hit the iteration limit without clearing the promotion bar.",
         "",
-        "| candidate | highest stage | reached | total iterations | seconds |",
-        "|---|---:|---|---:|---:|",
+        "| candidate | highest stage | reached | total iterations "
+        "| final F_old by rung | seconds |",
+        "|---|---:|---|---:|---|---:|",
     ]
     for r in sorted(results, key=lambda x: -x.highest_stage):
         cleared = [s for s in r.stages if s.promoted]
         last = cleared[-1] if cleared else None
         reached = f"`{last.source}+{last.scramble}`" if last else "—"
+        doses = (
+            ", ".join(
+                f"{key}:{value}"
+                for key, value in sorted(r.rehearsal_doses.items(), key=lambda item: int(item[0]))
+            )
+            or "—"
+        )
         lines.append(
             f"| `{r.name}` | {r.highest_stage} | {reached} "
-            f"| {sum(s.iterations for s in r.stages)} | {r.seconds:.0f} |"
+            f"| {sum(s.iterations for s in r.stages)} | {doses} | {r.seconds:.0f} |"
         )
 
     regressions = [
@@ -1932,9 +2390,18 @@ def load(path: Path) -> list[LadderResult]:
             highest_stage=row["highest_stage"],
             seconds=row["seconds"],
             stages=[StageResult(**s) for s in row["stages"]],
+            rehearsal_doses={
+                str(key): int(value) for key, value in row.get("rehearsal_doses", {}).items()
+            },
         )
         for row in json.loads(path.read_text())
     ]
+
+
+def final_ladder_checkpoint(path: Path) -> Path:
+    """Prefer the resumable final snapshot over the last promoted snapshot."""
+    progress = path.parent / path.stem / "progress.pt"
+    return progress if progress.exists() else path
 
 
 def rescore(
@@ -1942,10 +2409,15 @@ def rescore(
     *,
     games: int = 12,
     simulations: int = 0,
+    include_capped: bool = False,
+    stage_indexes: tuple[int, ...] = (),
+    ratios: tuple[float, ...] = RATIOS,
+    candidate_names: tuple[str, ...] = (),
+    output: Path | None = None,
     device: str = "cpu",
     log=print,
 ) -> dict:
-    """Re-measure every cleared rung with each candidate's **final** weights.
+    """Re-measure ladder rungs with each candidate's **final** weights.
 
     A rung's `cc` is recorded once, at the moment it was promoted, and never
     revisited -- so a leaderboard built from those numbers compares networks of
@@ -1953,6 +2425,12 @@ def rescore(
     came to show 9.00 crossing changes on `T(3,4)+0` against an optimum of 3: the
     figure was true of the network that cleared the rung and false of the network
     that exists now, which scores exactly 3.00.
+
+    By default this preserves the historical behaviour and measures promoted
+    rungs only.  ``include_capped`` includes every rung the run encountered;
+    this is essential for deciding whether a failed curriculum gate was caused
+    by shallow search.  ``stage_indexes`` can restrict that diagnosis to a
+    preregistered subset without changing the paired evaluation seeds.
 
     `simulations` overrides the search budget. Worth using, because the same
     weights on `T(3,5)+0` score 14.00 at 64 simulations and 6.00 at 128 -- at the
@@ -1963,16 +2441,37 @@ def rescore(
     from dataclasses import replace as _replace
 
     by_name = {c.name: c for c in candidates()}
+    selected_names = set(candidate_names)
     out: dict = {}
     for path in sorted(root.glob("*/checkpoints/*.pt")) + sorted(root.glob("checkpoints/*.pt")):
-        if path.is_dir() or path.stem not in by_name:
+        if (
+            path.is_dir()
+            or path.stem not in by_name
+            or (selected_names and path.stem not in selected_names)
+        ):
             continue
         candidate = by_name[path.stem]
         if simulations:
             candidate = _replace(candidate, simulations=simulations)
-        saved = torch.load(path, map_location=device, weights_only=False)
-        cleared = [s for s in saved.get("stages", []) if s.get("promoted")]
-        if not cleared:
+        # The top-level checkpoint is written when a rung is promoted.  If the
+        # final rung is capped, it is therefore intentionally older than the
+        # resumable progress snapshot.  A "final weights" rescore must prefer
+        # that progress file or it silently evaluates pre-final weights and can
+        # omit the capped rung altogether.
+        checkpoint = final_ladder_checkpoint(path)
+        saved = torch.load(checkpoint, map_location=device, weights_only=False)
+        measured_stages = list(saved.get("stages", []))
+        if not include_capped:
+            measured_stages = [s for s in measured_stages if s.get("promoted")]
+        if stage_indexes:
+            selected = set(stage_indexes)
+            stage_lookup = {stage: index for index, stage in enumerate(STAGES)}
+            measured_stages = [
+                s
+                for s in measured_stages
+                if stage_lookup.get((s["source"], s["scramble"])) in selected
+            ]
+        if not measured_stages:
             continue
         first = _config(candidate, STAGES[0], 0, device)
         network = make_braid_network(first.game, first.model).to(torch.device(device))
@@ -1980,7 +2479,7 @@ def rescore(
         network.eval()
 
         rows = []
-        for row in cleared:
+        for row in measured_stages:
             stage = (row["source"], row["scramble"])
             if stage not in STAGES:
                 continue
@@ -1988,7 +2487,15 @@ def rescore(
             config = _config(candidate, stage, 0, device)
             game = make_game(config.game)
             source = next(s for s in game.generator.sources if s.name == stage[0])
-            measured = evaluate_stage(game, network, config, games, 900_000 + index * 997)
+            measured = evaluate_stage(
+                game,
+                network,
+                config,
+                games,
+                900_000 + index * 997,
+                ratios=ratios,
+                include_attempts=True,
+            )
             rows.append(
                 {
                     "stage": index,
@@ -1996,9 +2503,12 @@ def rescore(
                     "scramble": stage[1],
                     "optimal_crossings": source.unknotting_number,
                     "then": row.get("crossings", float("nan")),
-                    "now": measured[max(RATIOS)]["crossings"],
+                    "now": measured[max(ratios)]["crossings"],
                     "solved": min(v["solved"] for v in measured.values()),
                     "by_ratio": {str(k): v for k, v in measured.items()},
+                    "was_promoted": bool(row.get("promoted")),
+                    "previous_reason": row.get("reason", ""),
+                    "checkpoint": str(checkpoint),
                 }
             )
             log(
@@ -2006,7 +2516,9 @@ def rescore(
                 f"then {rows[-1]['then']:.2f} -> now {rows[-1]['now']:.2f}"
             )
         out[path.stem] = rows
-    (root / "rescore.json").write_text(json.dumps(out, indent=2, default=float) + "\n")
+    destination = output or root / "rescore.json"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(out, indent=2, default=float) + "\n")
     return out
 
 
