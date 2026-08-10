@@ -370,6 +370,15 @@ def compare_collaboration_evaluations(
             for item in sorted(common)
         }
         comparisons[ratio] = {
+            "representations": int(treatment_report["completed_items"]),
+            "treatment_solve_rate": (
+                float(treatment_summary["portfolio_solved"])
+                / float(treatment_report["completed_items"])
+            ),
+            "control_solve_rate": (
+                float(control_summary["portfolio_solved"])
+                / float(control_report["completed_items"])
+            ),
             "intersection": sorted(common),
             "treatment_only": sorted(treatment_solved - control_solved),
             "control_only": sorted(control_solved - treatment_solved),
@@ -422,6 +431,7 @@ def direct_sharing_preflight(
     output: Path,
     *,
     minimum_donations: int = 10,
+    minimum_solve_rate: float = 0.70,
 ) -> dict[str, Any]:
     """Certify a paired ordinary-policy sharing run before paper-scale arms."""
     sharing_manifest = json.loads((sharing_run / "manifest.json").read_text())
@@ -494,6 +504,12 @@ def direct_sharing_preflight(
     }
     objective_checks = {
         ratio: {
+            "sharing_solve_rate_at_least_minimum": (
+                float(row["treatment_solve_rate"]) >= minimum_solve_rate
+            ),
+            "control_solve_rate_at_least_minimum": (
+                float(row["control_solve_rate"]) >= minimum_solve_rate
+            ),
             "solve_set_nondecreasing": int(row["solve_delta"]) >= 0,
             "capped_objective_nonincreasing": float(row["capped_objective_delta"]) <= 0.0,
         }
@@ -507,6 +523,7 @@ def direct_sharing_preflight(
         "sharing_run": str(sharing_run.resolve()),
         "control_run": str(control_run.resolve()),
         "minimum_donations": minimum_donations,
+        "minimum_solve_rate": minimum_solve_rate,
         "admitted_donation_events": len(admitted),
         "unique_strictly_better_donations": len(unique_donations),
         "donated_receivers": sorted({str(row["receiver"]) for row in admitted}),

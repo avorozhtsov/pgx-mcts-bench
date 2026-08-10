@@ -156,9 +156,12 @@ def test_direct_sharing_preflight_requires_dose_and_paired_nonregression(
         "capped_objective_sum": 90.0,
     }
     control_summary = {
-        "portfolio_solved": 1,
-        "solved_items": ["k0"],
-        "best_by_item": {"k0": {"objective": 12.0}},
+        "portfolio_solved": 2,
+        "solved_items": ["k0", "k1"],
+        "best_by_item": {
+            "k0": {"objective": 12.0},
+            "k1": {"objective": 21.0},
+        },
         "capped_objective_sum": 100.0,
     }
     for path, summary in (
@@ -185,7 +188,26 @@ def test_direct_sharing_preflight_requires_dose_and_paired_nonregression(
 
     assert report["passed"]
     assert report["unique_strictly_better_donations"] == 10
-    assert report["comparison"]["comparisons"]["10.0"]["treatment_only"] == ["k1"]
+    assert report["comparison"]["comparisons"]["10.0"]["treatment_only"] == []
+
+    low_coverage = json.loads((control_eval / "report.json").read_text())
+    low_coverage["summary"]["10.0"]["portfolio_solved"] = 1
+    low_coverage["summary"]["10.0"]["solved_items"] = ["k0"]
+    low_coverage["summary"]["10.0"]["best_by_item"] = {
+        "k0": {"objective": 12.0}
+    }
+    (control_eval / "report.json").write_text(json.dumps(low_coverage))
+    rejected = direct_sharing_preflight(
+        sharing_run,
+        control_run,
+        sharing_eval,
+        control_eval,
+        tmp_path / "low-coverage-preflight.json",
+    )
+    assert not rejected["passed"]
+    assert not rejected["objective_checks"]["10.0"][
+        "control_solve_rate_at_least_minimum"
+    ]
 
 
 def test_pilot_banks_are_not_unknotting_number_one_only() -> None:

@@ -1586,6 +1586,7 @@ def braid_direct_sharing_preflight(
     control_evaluation: Annotated[Path, typer.Option(exists=True, file_okay=False)],
     output: Annotated[Path, typer.Option(dir_okay=False)],
     minimum_donations: Annotated[int, typer.Option(min=1)] = 10,
+    minimum_solve_rate: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.70,
 ) -> None:
     """Gate direct sharing on donation dose and paired portfolio quality."""
     from pgx_mcts_bench.collaboration_eval import direct_sharing_preflight
@@ -1597,6 +1598,7 @@ def braid_direct_sharing_preflight(
         control_evaluation,
         output,
         minimum_donations=minimum_donations,
+        minimum_solve_rate=minimum_solve_rate,
     )
     typer.echo(json.dumps({"passed": report["passed"], "decision": report["decision"]}, indent=2))
 
