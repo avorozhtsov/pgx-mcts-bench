@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import os
 import tempfile
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -23,31 +22,29 @@ from pgx_mcts_bench.collaborative_scientists import (
 from pgx_mcts_bench.game import make_game
 from pgx_mcts_bench.ladder import _config, candidates
 from pgx_mcts_bench.networks import CyclicMemoryBraidNet, make_braid_network
+from pgx_mcts_bench.semantic_verifier import SemanticBraidVerifier
 
 
-def _variant(base, knot, depth: int, seed: int) -> dict[str, Any]:
-    transition = base.from_word(list(knot.word), knot.strands, 0.0)
+def _variant(verifier: SemanticBraidVerifier, knot, depth: int, seed: int) -> dict[str, Any]:
+    state = verifier.state(knot.word, knot.strands)
     rng = np.random.default_rng(seed)
     actions = []
     for _ in range(depth):
         allowed = []
-        for action in np.flatnonzero(transition.legal_actions):
-            kind, _, _, _ = base.config._spec.decode(int(action))
+        for action in verifier.legal_actions(state, allow_crossing_change=False):
+            kind, _, _, _ = verifier.spec.decode(int(action))
             if kind not in {CROSSING_CHANGE, PASS}:
                 allowed.append(int(action))
         if not allowed:
             break
         action = int(rng.choice(allowed))
         actions.append(action)
-        transition = base.step(transition.state, action)
-        if transition.terminated:
-            break
-    raw = transition.state
+        state = verifier.apply(state, action, allow_crossing_change=False)
     return {
-        "word": [int(value) for value in np.asarray(raw._word) if int(value)],
-        "strands": int(np.asarray(raw._n)),
+        "word": list(state.word),
+        "strands": state.strands,
         "actions": actions,
-        "action_descriptions": [base.config._spec.describe(action) for action in actions],
+        "action_descriptions": [verifier.spec.describe(action) for action in actions],
         "seed": seed,
     }
 
@@ -102,17 +99,7 @@ def pretrain_cyclic_invariants(
     )
     config = _config(candidate, ("R(3,12)#0", 0), seed, device, selfplay_games=1)
     game = make_game(config.game)
-    base = make_game(
-        replace(
-            config.game,
-            serial_window=0,
-            serial_act_width=1,
-            serial_tape_symbols=0,
-            serial_tape_preserve_shift=False,
-            serial_encoder="",
-            serial_encoder_states=0,
-        )
-    )
+    verifier = SemanticBraidVerifier.from_config(config.game)
     network = make_braid_network(config.game, config.model).to(device)
     if not isinstance(network, CyclicMemoryBraidNet):
         raise TypeError(type(network).__name__)
@@ -138,7 +125,7 @@ def pretrain_cyclic_invariants(
                 seed + identity_index * 1_000_003 + view * 100_003
             )
             representations.append(
-                _variant(base, knot, view + 1, representation_seed)
+                _variant(verifier, knot, view + 1, representation_seed)
             )
         provenance.append(
             {

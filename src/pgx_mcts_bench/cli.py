@@ -8,10 +8,7 @@ from typing import Annotated
 
 import typer
 
-from pgx_mcts_bench.braid_progress import BraidProgress
-from pgx_mcts_bench.braid_sweep import default_variants, run_sweep
 from pgx_mcts_bench.config import (
-    BraidGameConfig,
     ExperimentConfig,
     GameConfig,
     ModelConfig,
@@ -23,10 +20,8 @@ from pgx_mcts_bench.exploration import describe_rules
 from pgx_mcts_bench.training import (
     compare_agents,
     compare_pair,
-    evaluate_against_random,
     evaluate_learning_curve,
     load_agent,
-    save_braid_experiment,
     save_experiment,
     train_agent,
 )
@@ -293,6 +288,7 @@ def braid_budget_critic_curriculum(
     monotonic_weight: Annotated[float | None, typer.Option(min=0.0)] = None,
     retention_source: str | None = None,
     retention_scramble: Annotated[int, typer.Option(min=0)] = 0,
+    minimum_mean_budget_spread: Annotated[float, typer.Option(min=0.0)] = 0.01,
 ) -> None:
     """Train one budget-conditioned roster critic on the early ladder by default."""
     from pgx_mcts_bench.budget_curriculum import train_budget_curriculum
@@ -315,6 +311,7 @@ def braid_budget_critic_curriculum(
         curriculum_source=curriculum_source,
         monotonic_weight=monotonic_weight,
         retention_stage=(retention_source, retention_scramble) if retention_source else None,
+        minimum_mean_budget_spread=minimum_mean_budget_spread,
     )
     typer.echo(json.dumps(report["decision"], indent=2))
 
@@ -1018,6 +1015,91 @@ def braid_mine_semantic_witnesses(
     typer.echo(json.dumps(report, indent=2))
 
 
+@app.command("braid-assessor-gate")
+def braid_assessor_gate(
+    evidence: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(dir_okay=False)],
+    minimum_representations: Annotated[int, typer.Option(min=1)] = 100,
+    minimum_attempts: Annotated[int, typer.Option(min=1)] = 2,
+    minimum_scan_steps: Annotated[int, typer.Option(min=1)] = 5,
+    minimum_scan_coverage: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.90,
+    minimum_auc: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.70,
+    maximum_brier_ratio: Annotated[float, typer.Option(min=0.0)] = 1.0,
+    minimum_top_quartile_solve_rate: Annotated[
+        float, typer.Option(min=0.0, max=1.0)
+    ] = 0.70,
+    minimum_cost_spearman: Annotated[float, typer.Option(min=-1.0, max=1.0)] = 0.20,
+) -> None:
+    """Certify post-scan solve/cost assessors before adaptive scheduling."""
+    from pgx_mcts_bench.assessor_gate import build_assessor_gate
+
+    report = build_assessor_gate(
+        evidence,
+        output,
+        minimum_representations=minimum_representations,
+        minimum_attempts=minimum_attempts,
+        minimum_scan_steps=minimum_scan_steps,
+        minimum_scan_coverage=minimum_scan_coverage,
+        minimum_auc=minimum_auc,
+        maximum_brier_ratio=maximum_brier_ratio,
+        minimum_top_quartile_solve_rate=minimum_top_quartile_solve_rate,
+        minimum_cost_spearman=minimum_cost_spearman,
+    )
+    typer.echo(json.dumps(report, indent=2))
+
+
+@app.command("braid-assessor-evidence")
+def braid_assessor_evidence(
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    scientist: Annotated[
+        list[str],
+        typer.Option(help="Repeat NAME=CHECKPOINT for the frozen roster"),
+    ],
+    exclude_bank: Annotated[
+        list[Path] | None,
+        typer.Option(exists=True, dir_okay=False, help="Repeat for protected banks"),
+    ] = None,
+    representations: Annotated[int, typer.Option(min=4)] = 100,
+    frontier_pool_size: Annotated[int, typer.Option(min=8)] = 400,
+    attempts: Annotated[int, typer.Option(min=1)] = 2,
+    ratios: str = "10,1000",
+    simulations: Annotated[int, typer.Option(min=1)] = 128,
+    action_horizon: Annotated[int, typer.Option(min=1)] = 128,
+    seed: int = 20261880,
+    workers: Annotated[int, typer.Option(min=1)] = 4,
+    device: str = "cpu",
+    resume: bool = False,
+) -> None:
+    """Collect paired post-scan evidence and build the adaptive-schedule gate."""
+    from pgx_mcts_bench.assessor_gate import collect_assessor_evidence
+
+    checkpoints: dict[str, Path] = {}
+    for value in scientist:
+        if "=" not in value:
+            raise typer.BadParameter("--scientist must be NAME=CHECKPOINT")
+        name, raw_path = value.split("=", 1)
+        path = Path(raw_path)
+        if not path.is_file():
+            raise typer.BadParameter(f"checkpoint does not exist: {path}")
+        checkpoints[name] = path
+    report = collect_assessor_evidence(
+        checkpoints,
+        output,
+        exclude_banks=tuple(exclude_bank or ()),
+        representation_count=representations,
+        frontier_pool_size=frontier_pool_size,
+        attempts=attempts,
+        ratios=tuple(float(value) for value in ratios.split(",") if value.strip()),
+        simulations=simulations,
+        action_horizon=action_horizon,
+        seed=seed,
+        workers=workers,
+        device=device,
+        resume=resume,
+    )
+    typer.echo(json.dumps({"gate_passed": report["gate_passed"]}, indent=2))
+
+
 @app.command("braid-adapter-counterfactual")
 def braid_adapter_counterfactual(
     source_checkpoint: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
@@ -1173,75 +1255,6 @@ def braid_distillation_degradation_analyze(
     typer.echo(json.dumps(report, indent=2))
 
 
-@app.command("braid-adaptive-scientists")
-def braid_adaptive_scientists(
-    output: Annotated[Path, typer.Option(file_okay=False)],
-    scientist: Annotated[
-        list[str] | None,
-        typer.Option(help="Repeat NAME=RUNG23_CHECKPOINT; defaults to the deep-ladder trio"),
-    ] = None,
-    rounds: Annotated[int, typer.Option(min=1)] = 20,
-    pool_size: Annotated[int, typer.Option(min=1)] = 200,
-    alpha: Annotated[float, typer.Option(min=0.0)] = 1.0,
-    proposal_temperature: Annotated[float, typer.Option(min=0.0)] = 1.0,
-    group_temperature: Annotated[float, typer.Option(min=0.0)] = 1.0,
-    starvation_rounds: Annotated[
-        int, typer.Option(min=0, help="0 uses the fairness guarantee 2*N")
-    ] = 0,
-    selfplay_games: Annotated[int, typer.Option(min=1)] = 2,
-    train_steps: Annotated[int, typer.Option(min=0)] = 16,
-    batch_size: Annotated[int, typer.Option(min=1)] = 32,
-    simulations: Annotated[
-        int, typer.Option(min=0, help="0 preserves each rung-23 candidate setting")
-    ] = 0,
-    seed: int = 0,
-    device: str = "cpu",
-    require_factorized: Annotated[
-        bool,
-        typer.Option("--require-factorized/--allow-legacy-proxy"),
-    ] = False,
-) -> None:
-    """Grow a shared curriculum proposed by diverse rung-23 scientists."""
-    from pgx_mcts_bench.adaptive_scientists import (
-        default_rung23_checkpoints,
-        run_adaptive_scientists,
-    )
-
-    if scientist:
-        checkpoints: dict[str, Path] = {}
-        for value in scientist:
-            if "=" not in value:
-                raise typer.BadParameter("--scientist must be NAME=CHECKPOINT")
-            name, raw_path = value.split("=", 1)
-            path = Path(raw_path)
-            if not path.is_file():
-                raise typer.BadParameter(f"checkpoint does not exist: {path}")
-            checkpoints[name] = path
-    else:
-        checkpoints = default_rung23_checkpoints(Path.cwd())
-        missing = [path for path in checkpoints.values() if not path.is_file()]
-        if missing:
-            raise typer.BadParameter(f"default checkpoint does not exist: {missing[0]}")
-    report = run_adaptive_scientists(
-        checkpoints,
-        output,
-        rounds=rounds,
-        pool_size=pool_size,
-        alpha=alpha,
-        proposal_temperature=proposal_temperature,
-        group_temperature=group_temperature,
-        starvation_rounds=starvation_rounds,
-        selfplay_games=selfplay_games,
-        train_steps=train_steps,
-        batch_size=batch_size,
-        simulations=simulations,
-        seed=seed,
-        device=device,
-        require_factorized=require_factorized,
-    )
-    typer.echo(json.dumps(report, indent=2))
-
-
 @app.command("braid-collaborative-scientists")
 def braid_collaborative_scientists(
     output: Annotated[Path, typer.Option(file_okay=False)],
@@ -1292,6 +1305,7 @@ def braid_collaborative_scientists(
     objective_budget: bool = False,
     remaining_budget_channel: bool = False,
     action_horizon: Annotated[int | None, typer.Option(min=1)] = None,
+    assessor_gate: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
     input_bank: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
     input_anchor_bank: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
     bank_seed: int = 0,
@@ -1340,6 +1354,7 @@ def braid_collaborative_scientists(
         objective_budget=objective_budget,
         remaining_budget_channel=remaining_budget_channel,
         action_horizon=action_horizon,
+        assessor_gate=assessor_gate,
         input_bank=input_bank,
         input_anchor_bank=input_anchor_bank,
         bank_seed=bank_seed,
@@ -1563,6 +1578,29 @@ def braid_collaboration_compare(
     typer.echo(json.dumps(report, indent=2))
 
 
+@app.command("braid-direct-sharing-preflight")
+def braid_direct_sharing_preflight(
+    sharing_run: Annotated[Path, typer.Option(exists=True, file_okay=False)],
+    control_run: Annotated[Path, typer.Option(exists=True, file_okay=False)],
+    sharing_evaluation: Annotated[Path, typer.Option(exists=True, file_okay=False)],
+    control_evaluation: Annotated[Path, typer.Option(exists=True, file_okay=False)],
+    output: Annotated[Path, typer.Option(dir_okay=False)],
+    minimum_donations: Annotated[int, typer.Option(min=1)] = 10,
+) -> None:
+    """Gate direct sharing on donation dose and paired portfolio quality."""
+    from pgx_mcts_bench.collaboration_eval import direct_sharing_preflight
+
+    report = direct_sharing_preflight(
+        sharing_run,
+        control_run,
+        sharing_evaluation,
+        control_evaluation,
+        output,
+        minimum_donations=minimum_donations,
+    )
+    typer.echo(json.dumps({"passed": report["passed"], "decision": report["decision"]}, indent=2))
+
+
 @app.command("braid-objective-budget-regression")
 def braid_objective_budget_regression(
     bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
@@ -1627,35 +1665,6 @@ def braid_triad_frontier(
         log=typer.echo,
     )
     typer.echo(f"Recommended first training rung: {report['recommended_training_rung']}")
-
-
-@app.command("braid-distill-u1")
-def braid_distill_u1(
-    teacher: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
-    output: Annotated[Path, typer.Option(file_okay=False)],
-    episodes: Annotated[int, typer.Option(min=1)] = 128,
-    train_steps: Annotated[int, typer.Option(min=1)] = 2_000,
-    seed: int = 0,
-    device: str = "cpu",
-    internal_horizon: Annotated[int, typer.Option(min=1)] = 5,
-    option_beam_width: Annotated[int, typer.Option(min=1)] = 8,
-    option_batch_size: Annotated[int, typer.Option(min=1)] = 4,
-) -> None:
-    """Distill the latest parallel u1 policy and factorized values into serial students."""
-    from pgx_mcts_bench.distill import run_distillation
-
-    report = run_distillation(
-        teacher,
-        output,
-        episodes=episodes,
-        train_steps=train_steps,
-        seed=seed,
-        device=device,
-        internal_horizon=internal_horizon,
-        option_beam_width=option_beam_width,
-        option_batch_size=option_batch_size,
-    )
-    typer.echo(json.dumps(asdict(report), indent=2))
 
 
 def _config(
@@ -1820,124 +1829,6 @@ def smoke(output: Path | None = None) -> None:
     )
 
 
-BRAID_TIERS: dict[str, BraidGameConfig] = {
-    "tier0": BraidGameConfig(max_len=32, max_strands=5, scramble_budget=6, simplify_budget=24),
-    "tier1": BraidGameConfig(max_len=64, max_strands=8, scramble_budget=12, simplify_budget=48),
-}
-
-
-@app.command()
-def braid(
-    tier: Annotated[str, typer.Option(help="tier0 (small) or tier1")] = "tier0",
-    scramble_budget: Annotated[
-        int, typer.Option(min=1, help="K, the difficulty dial; 0 keeps the tier default")
-    ] = 0,
-    exploration: Annotated[str, typer.Option(help="One of u1, u2, u3, u4, u5")] = "u1",
-    simulations: Annotated[int, typer.Option(min=1)] = 32,
-    iterations: Annotated[int, typer.Option(min=1)] = 10,
-    selfplay_games: Annotated[int, typer.Option(min=1)] = 8,
-    selfplay_positions: Annotated[int, typer.Option(min=0)] = 0,
-    train_steps: Annotated[int, typer.Option(min=1)] = 32,
-    batch_size: Annotated[int, typer.Option(min=1)] = 32,
-    channels: Annotated[int, typer.Option(min=4)] = 32,
-    baseline_games: Annotated[
-        int, typer.Option(min=1, help="Games per role against a uniform-random opponent")
-    ] = 20,
-    anchors: Annotated[
-        int,
-        typer.Option(min=0, help="Frozen instances evaluated after each iteration; 0 disables"),
-    ] = 16,
-    seed: Annotated[int, typer.Option()] = 0,
-    device: Annotated[str, typer.Option()] = "cpu",
-    output: Annotated[Path | None, typer.Option()] = None,
-    resume: Annotated[bool, typer.Option()] = False,
-) -> None:
-    """Train AlphaZero on Scrambler vs. Simplifier over braid words.
-
-    Reports each role's win rate against a uniform-random opponent, which is the
-    only measurement with a known baseline: an agent that learns nothing scores
-    about 0.016 as Simplifier at tier-0 K=6.
-    """
-    if tier not in BRAID_TIERS:
-        raise typer.BadParameter(f"tier must be one of {', '.join(BRAID_TIERS)}")
-    if exploration not in describe_rules():
-        raise typer.BadParameter(f"exploration must be one of {', '.join(describe_rules())}")
-    game_config = BRAID_TIERS[tier]
-    if scramble_budget:
-        game_config = replace(game_config, scramble_budget=scramble_budget)
-
-    config = ExperimentConfig(
-        game=game_config,
-        search=SearchConfig(simulations=simulations, exploration=exploration),  # type: ignore[arg-type]
-        model=ModelConfig(channels=channels, latent_channels=channels),
-        train=TrainConfig(
-            iterations=iterations,
-            selfplay_games=selfplay_games,
-            selfplay_positions_per_iteration=selfplay_positions,
-            train_steps=train_steps,
-            batch_size=batch_size,
-            seed=seed,
-            device=device,
-            checkpoint_iterations=(iterations,),
-        ),
-    )
-    typer.echo(
-        f"braid {tier}: L={game_config.max_len}, N={game_config.max_strands}, "
-        f"K={game_config.scramble_budget}, M={game_config.simplify_budget}, "
-        f"{game_config.action_size} actions, {simulations} simulations, rule={exploration}"
-    )
-    if resume and output is None:
-        raise typer.BadParameter("--resume requires --output")
-    label = datetime.now().strftime("%Y%m%d-%H%M%S")
-    out = output or artifact_dir(Path.cwd(), f"braid-{label}")
-    progress = BraidProgress(config, out, anchors=anchors, seed=seed + 10_000) if anchors else None
-
-    def hook(iteration: int, network) -> str | None:
-        if progress is None:
-            return None
-        return progress.summary_line(progress.evaluate(iteration, network))
-
-    agent = train_agent(
-        "alphazero",
-        config,
-        checkpoint_dir=out / "checkpoints",
-        resume=resume,
-        iteration_hook=hook,
-    )
-    baseline = evaluate_against_random(agent, baseline_games, seed=seed + 500_000)
-    save_braid_experiment(out, config, agent, baseline)
-    typer.echo(
-        f"vs random -- as Scrambler: {baseline['first_role_win_rate']:.3f}, "
-        f"as Simplifier: {baseline['second_role_win_rate']:.3f}"
-    )
-    typer.echo(f"Saved: {out / 'results.json'}")
-    if progress is not None:
-        typer.echo(f"Progress report: {out / 'progress.md'}")
-
-
-@app.command()
-def braid_smoke(output: Path | None = None) -> None:
-    """Fast end-to-end braid check; its numbers are not statistically meaningful."""
-    braid(
-        tier="tier0",
-        scramble_budget=3,
-        exploration="u1",
-        simulations=2,
-        iterations=1,
-        selfplay_games=2,
-        selfplay_positions=0,
-        train_steps=1,
-        batch_size=2,
-        channels=4,
-        baseline_games=2,
-        anchors=3,
-        seed=0,
-        device="cpu",
-        output=output,
-        resume=False,
-    )
-
-
 @app.command()
 def braid_ladder(
     candidates_only: Annotated[str, typer.Option("--only", help="Comma-separated names")] = "",
@@ -2039,8 +1930,8 @@ def braid_ladder(
     """Climb the complexity ladder; score is the highest stage cleared."""
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
-    from pgx_mcts_bench.braid_sweep import _worker_init, enable_jax_compilation_cache
     from pgx_mcts_bench.ladder import STAGES, _silent, candidates, run_ladder, save
+    from pgx_mcts_bench.worker_runtime import enable_jax_compilation_cache, worker_init
 
     enable_jax_compilation_cache()
     chosen = candidates()
@@ -2064,7 +1955,7 @@ def braid_ladder(
         # initializer would otherwise never run.  That left Torch/BLAS free to
         # create one thread per vCPU for every queued candidate, defeating the
         # host-level CPU queue and producing severe oversubscription.
-        _worker_init()
+        worker_init()
         for candidate in chosen:
             results.append(
                 run_ladder(
@@ -2099,7 +1990,7 @@ def braid_ladder(
             )
             save(results, out)
     else:
-        with ProcessPoolExecutor(max_workers=workers, initializer=_worker_init) as pool:
+        with ProcessPoolExecutor(max_workers=workers, initializer=worker_init) as pool:
             futures = {
                 pool.submit(
                     run_ladder,
@@ -2175,10 +2066,10 @@ def braid_joint_pretrain(
     device: str = "cpu",
 ) -> None:
     """Jointly pretrain the budget-aware window scientist on the easy ladder."""
-    from pgx_mcts_bench.braid_sweep import _worker_init
     from pgx_mcts_bench.joint_pretraining import run_joint_pretraining
+    from pgx_mcts_bench.worker_runtime import worker_init
 
-    _worker_init()
+    worker_init()
     report = run_joint_pretraining(
         source_checkpoint,
         output,
@@ -2217,8 +2108,7 @@ def strand_architecture_gate(
         str,
         typer.Option("--only", help="Comma-separated candidate names"),
     ] = (
-        "s-head-128,s-strand-graph-compact-128,s-strand-graph-128,"
-        "s-strand-graph-wide-128,s-strand-graph-local-128"
+        "window-local,raster-axial,cyclic-memory,strand-graph"
     ),
     seeds: str = "71",
     workers: Annotated[int, typer.Option(min=1)] = 1,
@@ -2233,6 +2123,10 @@ def strand_architecture_gate(
     ] = True,
     rehearsal_target: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.8,
     max_rehearsal_games_per_stage: Annotated[int, typer.Option(min=1)] = 8,
+    max_consecutive_caps: Annotated[int, typer.Option(min=1)] = 1,
+    retry_capped: Annotated[
+        bool, typer.Option("--retry-capped/--no-retry-capped")
+    ] = False,
     retro_games: Annotated[int, typer.Option(min=1)] = 24,
     promote_at: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.8,
     stage_limit: Annotated[int, typer.Option(min=1, max=6)] = 6,
@@ -2260,6 +2154,67 @@ def strand_architecture_gate(
         adaptive_rehearsal=adaptive_rehearsal,
         rehearsal_target=rehearsal_target,
         max_rehearsal_games_per_stage=max_rehearsal_games_per_stage,
+        max_consecutive_caps=max_consecutive_caps,
+        retry_capped_on_resume=retry_capped,
+        retro_games=retro_games,
+        promote_at=promote_at,
+        stage_limit=stage_limit,
+        device=device,
+    )
+    typer.echo(json.dumps({"runs": len(report["runs"]), "output": str(output)}, indent=2))
+
+
+@app.command("braid-foundation-pretrain")
+def braid_foundation_pretrain(
+    output: Path,
+    candidates_only: Annotated[
+        str,
+        typer.Option("--only", help="Comma-separated vNext scientist names"),
+    ] = "window-local,raster-axial,cyclic-memory,strand-graph",
+    seeds: str = "71,72,73",
+    workers: Annotated[int, typer.Option(min=1)] = 4,
+    native_levels: str = "5,8,12,16",
+    simulation_levels: str = "64,128,256,512",
+    initial_old_cycles: Annotated[int, typer.Option(min=1)] = 1,
+    max_old_cycles: Annotated[int, typer.Option(min=1)] = 8,
+    evaluation_target: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.70,
+    retention_target: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.80,
+    selfplay_games: Annotated[int, typer.Option(min=1)] = 2,
+    eval_games: Annotated[int, typer.Option(min=4)] = 10,
+    eval_every: Annotated[int, typer.Option(min=1)] = 2,
+    retro_games: Annotated[int, typer.Option(min=1)] = 24,
+    promote_at: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.80,
+    stage_limit: Annotated[int, typer.Option(min=1, max=6)] = 6,
+    device: str = "cpu",
+) -> None:
+    """Run resumable adaptive from-scratch pretraining for the vNext roster."""
+    from pgx_mcts_bench.foundation_pretraining import run_foundation_pretraining
+
+    names = [value.strip() for value in candidates_only.split(",") if value.strip()]
+    try:
+        seed_values = [int(value) for value in seeds.split(",") if value.strip()]
+        native_values = tuple(int(value) for value in native_levels.split(",") if value.strip())
+        simulation_values = tuple(
+            int(value) for value in simulation_levels.split(",") if value.strip()
+        )
+    except ValueError as error:
+        raise typer.BadParameter(
+            "seeds and dose levels must be comma-separated integers"
+        ) from error
+    report = run_foundation_pretraining(
+        output,
+        candidate_names=names,
+        seeds=seed_values,
+        workers=workers,
+        native_levels=native_values,
+        simulation_levels=simulation_values,
+        initial_old_cycles=initial_old_cycles,
+        max_old_cycles=max_old_cycles,
+        evaluation_target=evaluation_target,
+        retention_target=retention_target,
+        selfplay_games=selfplay_games,
+        eval_games=eval_games,
+        eval_every=eval_every,
         retro_games=retro_games,
         promote_at=promote_at,
         stage_limit=stage_limit,
@@ -2317,9 +2272,9 @@ def braid_device_benchmark(
         str,
         typer.Option(
             "--only",
-            help="Comma-separated representatives; default covers parallel, serial, tape and GRU",
+            help="Comma-separated bounded serial representatives",
         ),
-    ] = "u1-puct,s-w11-128,s-tape4,s-scan-gru",
+    ] = "s-window-128,s-w11-128,s-tape4,s-scan-gru",
     devices: Annotated[str, typer.Option(help="Comma-separated: cpu,cuda,mps")] = "cpu,cuda",
     actor_batches: Annotated[
         str,
@@ -2540,168 +2495,6 @@ def braid_serial_screen(
         log=typer.echo,
     )
     typer.echo(f"Saved: {out / 'screen.md'}")
-
-
-@app.command()
-def braid_multi(
-    tier: str = "tier0",
-    max_crossings: Annotated[int, typer.Option(min=0)] = 5,
-    max_scramble: Annotated[int, typer.Option(min=0)] = 3,
-    simulations: Annotated[int, typer.Option(min=1)] = 48,
-    iterations: Annotated[int, typer.Option(min=1)] = 12,
-    selfplay_games: Annotated[int, typer.Option(min=1)] = 8,
-    train_steps: Annotated[int, typer.Option(min=1)] = 64,
-    eval_games: Annotated[int, typer.Option(min=1)] = 12,
-    seed: Annotated[int, typer.Option()] = 0,
-    device: Annotated[str, typer.Option()] = "cpu",
-    output: Annotated[Path | None, typer.Option()] = None,
-) -> None:
-    """Train on `A*crossing_changes + B*total_moves` and score against theorems.
-
-    Instances come from the graded generator, so every source knot has a *proved*
-    unknotting number -- u(T(p,q)) = (p-1)(q-1)/2. The question is whether the
-    agent reaches it, and whether the crossing-change/move trade-off actually
-    moves with log(A/B) rather than collapsing to one compromise policy.
-    """
-    import json as _json
-    from dataclasses import replace as _replace
-
-    import numpy as np
-
-    from pgx_mcts_bench.game import BraidUnknotGame
-    from pgx_mcts_bench.search import NeuralMCTS
-
-    base = BRAID_TIERS[tier]
-    game_cfg = _replace(
-        base,
-        max_len=48,
-        simplify_budget=32,
-        allow_crossing_change=True,
-        multi_objective=True,
-        log_ratio_range=(-3.0, 3.0),
-        generator_max_crossings=max_crossings,
-        generator_max_scramble=max_scramble,
-    )
-    config = ExperimentConfig(
-        game=game_cfg,
-        search=SearchConfig(simulations=simulations),
-        model=ModelConfig(channels=32, latent_channels=32),
-        train=TrainConfig(
-            iterations=iterations,
-            selfplay_games=selfplay_games,
-            train_steps=train_steps,
-            batch_size=32,
-            seed=seed,
-            device=device,
-        ),
-    )
-    game = BraidUnknotGame(game_cfg)
-    typer.echo(
-        "sources: "
-        + ", ".join(f"{s.name}(u={s.unknotting_number})" for s in game.generator.sources)
-    )
-    agent = train_agent("alphazero", config)
-
-    # Score against the theorem, and sweep log(A/B) to see whether the trade-off
-    # actually moves.
-    search = NeuralMCTS(game, agent.network, config.search, device)
-    rows = []
-    for source in game.generator.sources:
-        for log_ratio in (-3.0, 0.0, 3.0):
-            solved = crossings = moves = 0
-            for index in range(eval_games):
-                rng = np.random.default_rng(seed + 7000 * index)
-                instance = game.generator.generate(source, max_scramble, rng)
-                state = game.env.init_from_word(
-                    list(instance.word), instance.strands, log_ratio=log_ratio
-                )
-                t = game._view(state, reward=0.0)
-                while not t.terminated:
-                    action = search.run(
-                        t.state,
-                        t.observation,
-                        t.legal_actions,
-                        rng,
-                        temperature=0.0,
-                        add_root_noise=False,
-                    ).action
-                    t = game.step(t.state, action)
-                final = game.unwrap(t.state)
-                won = bool((np.asarray(final._word) == 0).all()) and int(final._n) == 1
-                solved += won
-                if won:
-                    crossings += int(np.asarray(final._crossing_changes))
-                    moves += game.semantic_move_count(t.state)
-            row = {
-                "source": source.name,
-                "u": source.unknotting_number,
-                "log_ratio": log_ratio,
-                "solved": solved / eval_games,
-                "crossings": crossings / solved if solved else float("nan"),
-                "moves": moves / solved if solved else float("nan"),
-            }
-            rows.append(row)
-            typer.echo(
-                f"  {source.name:<8} u={source.unknotting_number}"
-                f"  log(A/B)={log_ratio:+.0f}  solved {row['solved']:.2f}"
-                f"  crossings {row['crossings']:.2f}  moves {row['moves']:.1f}"
-            )
-    out = output or artifact_dir(Path.cwd(), f"multi-{seed}")
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "pareto.json").write_text(_json.dumps(rows, indent=2) + "\n")
-    typer.echo(f"Saved: {out / 'pareto.json'}")
-
-
-@app.command()
-def braid_screen(
-    tier: Annotated[str, typer.Option(help="tier0 (small) or tier1")] = "tier0",
-    scramble_budget: Annotated[int, typer.Option(min=1, help="K, the difficulty dial")] = 3,
-    iterations: Annotated[int, typer.Option(min=1)] = 8,
-    anchors: Annotated[int, typer.Option(min=1)] = 12,
-    baseline_games: Annotated[int, typer.Option(min=1)] = 10,
-    seed: Annotated[int, typer.Option()] = 0,
-    seeds: Annotated[int, typer.Option(min=1, help="Independent runs per variant")] = 1,
-    workers: Annotated[
-        int, typer.Option(min=1, help="Parallel runs; the sweep is embarrassingly parallel")
-    ] = 1,
-    only: Annotated[str, typer.Option(help="Comma-separated variant names to run")] = "",
-    device: Annotated[str, typer.Option()] = "cpu",
-    output: Annotated[Path | None, typer.Option()] = None,
-) -> None:
-    """Screen ~10 approaches on small instances and rank them on a shared anchor set.
-
-    Includes a `no-training` control, because search alone already solves a
-    majority of small anchors -- any learning claim has to beat that, not zero.
-    """
-    if tier not in BRAID_TIERS:
-        raise typer.BadParameter(f"tier must be one of {', '.join(BRAID_TIERS)}")
-    label = datetime.now().strftime("%Y%m%d-%H%M%S")
-    out = output or artifact_dir(Path.cwd(), f"braid-screen-{label}")
-    variants = default_variants(iterations, scramble_budget)
-    if only:
-        wanted = {name.strip() for name in only.split(",") if name.strip()}
-        unknown = wanted - {v.name for v in variants}
-        if unknown:
-            raise typer.BadParameter(f"unknown variants: {', '.join(sorted(unknown))}")
-        variants = [v for v in variants if v.name in wanted]
-    typer.echo(
-        f"screening {len(variants)} variants x {seeds} seed(s), "
-        f"K={scramble_budget}, {anchors} anchors"
-    )
-    results = run_sweep(
-        variants,
-        BRAID_TIERS[tier],
-        out,
-        anchors=anchors,
-        baseline_games=baseline_games,
-        seed=seed,
-        seeds=seeds,
-        device=device,
-        workers=workers,
-        log=typer.echo,
-    )
-    typer.echo(f"Summary: {out / 'summary.md'}")
-    del results
 
 
 @app.command()

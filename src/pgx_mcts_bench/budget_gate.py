@@ -255,6 +255,7 @@ def run_budget_gate(
         metadata,
         rung_eval_games,
         seed + 900_000_000,
+        ratio,
         simulations=rung_simulations,
     )
     trained_rung = _rung_evaluation(
@@ -262,6 +263,7 @@ def run_budget_gate(
         metadata,
         rung_eval_games,
         seed + 900_000_000,
+        ratio,
         simulations=rung_simulations,
     )
     baseline_solved = {row["id"] for row in baseline_result["attempts"] if row["solved"]}

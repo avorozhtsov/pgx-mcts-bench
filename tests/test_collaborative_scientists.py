@@ -13,6 +13,7 @@ from rf_knots.actions import DESTABILIZE, REDUCE
 from pgx_mcts_bench.adaptive_scientists import FixedWordGame, KnotItem, load_scientist
 from pgx_mcts_bench.collaboration_eval import (
     compare_collaboration_evaluations,
+    direct_sharing_preflight,
     evaluate_collaboration,
     export_collaboration_scientist,
 )
@@ -88,6 +89,103 @@ def test_portfolio_guard_requires_coverage_and_capped_loss_noninferiority() -> N
     assert _portfolio_noninferior(before, {"solved": 7, "capped_objective": 99.0})
     assert not _portfolio_noninferior(before, {"solved": 6, "capped_objective": 90.0})
     assert not _portfolio_noninferior(before, {"solved": 8, "capped_objective": 101.0})
+
+
+def test_direct_sharing_preflight_requires_dose_and_paired_nonregression(
+    tmp_path: Path,
+) -> None:
+    sharing_run = tmp_path / "sharing"
+    control_run = tmp_path / "control"
+    sharing_eval = tmp_path / "sharing-eval"
+    control_eval = tmp_path / "control-eval"
+    for path in (sharing_run, control_run, sharing_eval, control_eval):
+        path.mkdir()
+    common = {
+        "schema": "collaborative-scientists-v9-direct-sharing",
+        "checkpoints": [{"name": "x", "sha256": "a" * 64}],
+        "bank_sha256": "b" * 64,
+        "anchor_sha256": "c" * 64,
+        "ratios": [10.0],
+        "qualification_simulations": 2,
+        "qualification_attempts_per_scientist": 1,
+        "simulations": 4,
+        "full_attempts_per_scientist": 1,
+        "train_every": 5,
+        "train_steps": 2,
+        "sharing_policy_adapter": {"enabled": False},
+    }
+    (sharing_run / "manifest.json").write_text(
+        json.dumps({**common, "direct_distillation": {"enabled": True}})
+    )
+    (control_run / "manifest.json").write_text(
+        json.dumps({**common, "direct_distillation": {"enabled": False}})
+    )
+    sharing_events = [
+        {
+            "round": index,
+            "selected": f"k{index}",
+            "translations": [
+                {
+                    "admitted": True,
+                    "ratio": 10.0,
+                    "author": "a",
+                    "receiver": "b",
+                    "receiver_shared_objective": float(index),
+                }
+            ],
+        }
+        for index in range(10)
+    ]
+    (sharing_run / "schedule.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in sharing_events)
+    )
+    (control_run / "schedule.jsonl").write_text(
+        "".join(
+            json.dumps({"round": index, "selected": f"k{index}", "translations": []})
+            + "\n"
+            for index in range(10)
+        )
+    )
+    treatment_summary = {
+        "portfolio_solved": 2,
+        "solved_items": ["k0", "k1"],
+        "best_by_item": {
+            "k0": {"objective": 10.0},
+            "k1": {"objective": 20.0},
+        },
+        "capped_objective_sum": 90.0,
+    }
+    control_summary = {
+        "portfolio_solved": 1,
+        "solved_items": ["k0"],
+        "best_by_item": {"k0": {"objective": 12.0}},
+        "capped_objective_sum": 100.0,
+    }
+    for path, summary in (
+        (sharing_eval, treatment_summary),
+        (control_eval, control_summary),
+    ):
+        (path / "report.json").write_text(
+            json.dumps(
+                {
+                    "split_sha256": "d" * 64,
+                    "completed_items": 2,
+                    "summary": {"10.0": summary},
+                }
+            )
+        )
+
+    report = direct_sharing_preflight(
+        sharing_run,
+        control_run,
+        sharing_eval,
+        control_eval,
+        tmp_path / "preflight.json",
+    )
+
+    assert report["passed"]
+    assert report["unique_strictly_better_donations"] == 10
+    assert report["comparison"]["comparisons"]["10.0"]["treatment_only"] == ["k1"]
 
 
 def test_pilot_banks_are_not_unknotting_number_one_only() -> None:
@@ -474,7 +572,9 @@ def test_tape4_h5_migrates_two_trailing_budget_channels_exactly(tmp_path: Path) 
         old_outputs = source_network.forward_with_auxiliary(old_tensor)
         new_outputs = scientist.network.eval().forward_with_auxiliary(new_tensor)
 
-    assert new_observation.shape[-1] == old_observation.shape[-1] + 2
+    # Every serial scientist is now bounded and already has the internal-budget
+    # plane; this migration appends only the objective-budget plane.
+    assert new_observation.shape[-1] == old_observation.shape[-1] + 1
     torch.testing.assert_close(new_outputs[0], old_outputs[0])
     torch.testing.assert_close(new_outputs[1], old_outputs[1])
     for new_head, old_head in zip(new_outputs[2], old_outputs[2], strict=True):
@@ -655,12 +755,13 @@ def test_minimal_run_resumes_from_committed_round(tmp_path: Path) -> None:
     resumed = run_collaborative_scientists(rounds=2, resume=True, **kwargs)
     assert first["completed_rounds"] == 1
     assert resumed["completed_rounds"] == 2
-    assert first["schema"] == "collaborative-scientists-v6-soft-budget-horizon"
+    assert first["schema"] == "collaborative-scientists-v9-direct-sharing"
     assert first["objective_budget_attempt_protocol"]["scientist_prediction_used"] is False
     assert first["solution_definition"]["native_action_horizon"] == 64
     assert first["solution_definition"]["moves"].startswith("verified portable semantic")
     assert "excluded from L_A:B" in first["solution_definition"]["internal_plies"]
-    assert "state gate" in first["sharing_policy_adapter"]["initialization"]
+    assert first["direct_distillation"]["enabled"] is True
+    assert first["sharing_policy_adapter"]["enabled"] is False
     assert len((output / "schedule.jsonl").read_text().splitlines()) == 2
     exported = export_collaboration_scientist(output, candidate.name, tmp_path / "exported.pt")
     evaluated = evaluate_collaboration(
@@ -714,7 +815,7 @@ def test_adaptive_rehearsal_runner_persists_dose_and_portfolio_certificate(
         seed=37,
     )
 
-    assert report["schema"] == "collaborative-scientists-v7-adaptive-rehearsal-portfolio"
+    assert report["schema"] == "collaborative-scientists-v9-direct-sharing"
     assert report["adaptive_rehearsal_result"] == {
         "final_dose": 1,
         "accepted_blocks": 1,

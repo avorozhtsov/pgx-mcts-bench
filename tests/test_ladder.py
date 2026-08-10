@@ -24,10 +24,11 @@ from pgx_mcts_bench.ladder import (
     _duration,
     _use_auxiliary_value_for_stage,
     experimental_capacity_arms,
-    parallel_arms,
     promotion_reason,
     resume_point,
     retry_last_capped_stage,
+    serial_arms,
+    should_evaluate_iteration,
     stage_mixture,
 )
 
@@ -60,11 +61,25 @@ def test_old_candidate_spec_accepts_only_known_additive_fields() -> None:
     assert not _candidate_specs_compatible({}, {**current, "new_unknown_field": 1})
 
 
+def test_resume_allows_search_dose_to_change() -> None:
+    assert _candidate_specs_compatible(
+        {"name": "window-local", "simulations": 64},
+        {"name": "window-local", "simulations": 128},
+    )
+
+
 def test_progress_duration_is_compact_and_human_readable() -> None:
     assert _duration(None) == "pending"
     assert _duration(12.4) == "12s"
     assert _duration(125) == "2m 05s"
     assert _duration(3 * 3600 + 12 * 60) == "3h 12m"
+
+
+def test_odd_training_block_is_evaluated_at_its_boundary() -> None:
+    assert not should_evaluate_iteration(1, eval_every=2, iteration_cap=5)
+    assert should_evaluate_iteration(2, eval_every=2, iteration_cap=5)
+    assert should_evaluate_iteration(4, eval_every=2, iteration_cap=5)
+    assert should_evaluate_iteration(5, eval_every=2, iteration_cap=5)
 
 
 def test_l1000_arm_trains_and_evaluates_only_the_target_objective() -> None:
@@ -99,7 +114,7 @@ def test_stages_keep_the_calibration_order_and_attach_scheduled_exact_values() -
     """
     from rf_knots.generator import UNKNOWN_UNKNOTTING
 
-    game = make_game(_config(parallel_arms()[1], STAGES[0], 0, "cpu").game)
+    game = make_game(_config(serial_arms()[0], STAGES[0], 0, "cpu").game)
     by_name = {s.name: s for s in game.generator.sources}
     calibration = STAGES[:17]
     random_tail = STAGES[17:]
@@ -162,7 +177,7 @@ def test_zero_decay_reproduces_frontier_only_training() -> None:
 
 
 def test_pick_stage_samples_the_mixture_and_pins_without_one() -> None:
-    config = _config(parallel_arms()[1], STAGES[4], 0, "cpu", frontier=4, mix_decay=0.5)
+    config = _config(serial_arms()[0], STAGES[4], 0, "cpu", frontier=4, mix_decay=0.5)
     game = make_game(config.game)
     rng = np.random.default_rng(0)
     counts: dict[tuple[str, int], int] = {}
@@ -178,7 +193,7 @@ def test_pick_stage_samples_the_mixture_and_pins_without_one() -> None:
     assert config.game.stage_source == STAGES[4][0]
     assert config.game.stage_scramble == STAGES[4][1]
 
-    pinned = _config(parallel_arms()[1], STAGES[4], 0, "cpu")
+    pinned = _config(serial_arms()[0], STAGES[4], 0, "cpu")
     assert pinned.game.stage_mix == ()
     for _ in range(20):
         source, scramble = pick_stage(pinned.game, game.generator, rng)
@@ -310,8 +325,9 @@ def test_written_registers_are_a_finite_control_state() -> None:
         budget_before = int(np.asarray(game.unwrap(transition.state)._budget))
         after = game.step(transition.state, toggle)
         assert after.state[2][k - 1] == 1.0
-        # It must reach the network, not just the state.
-        assert np.all(after.observation[0, :, -1] == 1.0)
+        # It must reach the network, not just the state. The mandatory
+        # internal-budget feature is the final channel.
+        assert np.all(after.observation[0, :, -2] == 1.0)
         # And it must cost a ply: free writes would let the agent set up an
         # arbitrary control state between two edits, which is an oracle, not a
         # machine.
@@ -704,7 +720,7 @@ def test_evaluation_batches_all_ratios_and_games(monkeypatch) -> None:
 
     import pgx_mcts_bench.ladder as ladder
 
-    candidate = parallel_arms()[1]
+    candidate = serial_arms()[0]
     config = _config(candidate, STAGES[0], 0, "cpu")
     game = make_game(config.game)
     batch_sizes: list[int] = []
@@ -750,7 +766,7 @@ def test_partial_rung_checkpoint_restores_training_state(tmp_path) -> None:
     )
     from pgx_mcts_bench.networks import make_braid_network
 
-    candidate = parallel_arms()[1]
+    candidate = serial_arms()[0]
     config = _config(candidate, STAGES[0], 0, "cpu")
     network = make_braid_network(config.game, config.model)
     optimizer = torch.optim.AdamW(network.parameters())
@@ -806,7 +822,7 @@ def test_partial_rung_checkpoint_restores_training_state(tmp_path) -> None:
 def test_sigterm_checkpoint_resumes_inside_training_step(tmp_path, monkeypatch) -> None:
     import pgx_mcts_bench.ladder as ladder
 
-    candidate = parallel_arms()[1]
+    candidate = serial_arms()[0]
     checkpoint_dir = tmp_path / "checkpoints"
     previous_handler = signal.getsignal(signal.SIGTERM)
 
@@ -901,7 +917,7 @@ def test_explicit_rehearsal_pins_each_cleared_stage(monkeypatch) -> None:
     monkeypatch.setattr(ladder, "train_alphazero_step", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(ladder, "evaluate_stage", solved_evaluation)
 
-    candidate = parallel_arms()[1]
+    candidate = serial_arms()[0]
     result = ladder.run_ladder(
         candidate,
         max_iterations_per_stage=1,
@@ -932,7 +948,7 @@ def test_adaptive_rehearsal_doubles_only_a_failing_old_rung(monkeypatch) -> None
 
     monkeypatch.setattr(ladder, "evaluate_stage", evaluation)
     result = ladder.run_ladder(
-        parallel_arms()[1],
+        serial_arms()[0],
         max_iterations_per_stage=1,
         selfplay_games=1,
         eval_every=1,

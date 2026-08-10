@@ -1,9 +1,9 @@
 # Bounded internal options
 
 Serial agents may need to move their head, update registers or colours, or write
-a tape before performing the braid edit selected by a parallel teacher. These
-operations are treated as a bounded option rather than prescribed as a single
-hand-written route.
+a tape before performing a donated semantic braid edit. These operations are
+treated as a bounded option rather than prescribed as a single hand-written
+route.
 
 For a teacher edit `X`, training maximizes the probability of every retained
 path
@@ -27,22 +27,9 @@ consecutive internal operations, all internal actions are illegal and the sixth
 action must manipulate the braid. Any external braid action resets the counter.
 This makes training, MCTS, and evaluation obey the same rule.
 
-Distillation preserves the student's head, registers, colours, and tape across
-successive teacher edits. The parallel teacher still supplies the braid
-trajectory, so all students train against the same requested external moves.
-
-Example:
-
-```bash
-.venv/bin/pgx-mcts-bench braid-distill-u1 \
-  --teacher artifacts/deep-ladder/u1-puct/checkpoints/u1-puct/stage23-after.pt \
-  --output artifacts/distill-bounded-options \
-  --internal-horizon 5 \
-  --option-beam-width 8 \
-  --option-batch-size 4
-```
-
-The distillation report records the horizon, beam width, and final option loss
-for every student. The existing shortest-route policy targets remain as a
-stabilizing control signal; the bounded option loss is the part that permits a
-student to discover a different internal computation.
+Collaboration preserves the receiver's head, registers, colours, and tape across
+successive donated edits. `train_bounded_option_step` is the reusable training
+primitive; `braid-collaborative-scientists` records its dose and route-loss
+diagnostics. The shortest-route target remains a stabilizing signal, while the
+bounded option loss permits a receiver to discover a different internal
+computation.

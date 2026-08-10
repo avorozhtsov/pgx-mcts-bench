@@ -414,6 +414,116 @@ def compare_collaboration_evaluations(
     return report
 
 
+def direct_sharing_preflight(
+    sharing_run: Path,
+    control_run: Path,
+    sharing_evaluation: Path,
+    control_evaluation: Path,
+    output: Path,
+    *,
+    minimum_donations: int = 10,
+) -> dict[str, Any]:
+    """Certify a paired ordinary-policy sharing run before paper-scale arms."""
+    sharing_manifest = json.loads((sharing_run / "manifest.json").read_text())
+    control_manifest = json.loads((control_run / "manifest.json").read_text())
+    sharing_events = [
+        json.loads(line)
+        for line in (sharing_run / "schedule.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    control_events = [
+        json.loads(line)
+        for line in (control_run / "schedule.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    admitted = [
+        {
+            "round": int(event["round"]),
+            "representation": str(event["selected"]),
+            **translation,
+        }
+        for event in sharing_events
+        for translation in event.get("translations", [])
+        if bool(translation.get("admitted", False))
+    ]
+    unique_donations = {
+        (
+            row["representation"],
+            float(row["ratio"]),
+            str(row["author"]),
+            str(row["receiver"]),
+            float(row["receiver_shared_objective"]),
+        )
+        for row in admitted
+    }
+    comparison = compare_collaboration_evaluations(
+        sharing_evaluation,
+        control_evaluation,
+    )
+    protocol_checks = {
+        "direct_sharing_schema": (
+            sharing_manifest.get("schema") == "collaborative-scientists-v9-direct-sharing"
+        ),
+        "ordinary_policy_distillation": bool(
+            sharing_manifest.get("direct_distillation", {}).get("enabled", False)
+        ),
+        "no_sharing_adapter": not bool(
+            sharing_manifest.get("sharing_policy_adapter", {}).get("enabled", True)
+        ),
+        "paired_checkpoints": (
+            sharing_manifest.get("checkpoints") == control_manifest.get("checkpoints")
+        ),
+        "paired_bank": (
+            sharing_manifest.get("bank_sha256") == control_manifest.get("bank_sha256")
+            and sharing_manifest.get("anchor_sha256") == control_manifest.get("anchor_sha256")
+        ),
+        "paired_search_and_training": all(
+            sharing_manifest.get(field) == control_manifest.get(field)
+            for field in (
+                "ratios",
+                "qualification_simulations",
+                "qualification_attempts_per_scientist",
+                "simulations",
+                "full_attempts_per_scientist",
+                "train_every",
+                "train_steps",
+            )
+        ),
+        "paired_round_count": len(sharing_events) == len(control_events),
+        "minimum_strictly_better_donations": len(unique_donations) >= minimum_donations,
+    }
+    objective_checks = {
+        ratio: {
+            "solve_set_nondecreasing": int(row["solve_delta"]) >= 0,
+            "capped_objective_nonincreasing": float(row["capped_objective_delta"]) <= 0.0,
+        }
+        for ratio, row in comparison["comparisons"].items()
+    }
+    passed = all(protocol_checks.values()) and bool(objective_checks) and all(
+        all(checks.values()) for checks in objective_checks.values()
+    )
+    report = {
+        "schema": "semantic-v1-direct-sharing-preflight-v1",
+        "sharing_run": str(sharing_run.resolve()),
+        "control_run": str(control_run.resolve()),
+        "minimum_donations": minimum_donations,
+        "admitted_donation_events": len(admitted),
+        "unique_strictly_better_donations": len(unique_donations),
+        "donated_receivers": sorted({str(row["receiver"]) for row in admitted}),
+        "protocol_checks": protocol_checks,
+        "objective_checks": objective_checks,
+        "comparison": comparison,
+        "passed": passed,
+        "decision": (
+            "open the sharing arms for the 100-200 representation pilot"
+            if passed
+            else "keep the sharing arms closed and inspect donations or paired regression"
+        ),
+    }
+    _atomic_json(output, report)
+    return report
+
+
 def benchmark_objective_budget(
     checkpoints: dict[str, Path],
     bank_path: Path,

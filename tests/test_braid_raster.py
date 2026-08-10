@@ -11,6 +11,7 @@ from pgx_mcts_bench.game import make_game
 from pgx_mcts_bench.networks import (
     RasterSerialBraidNet,
     RasterWindowRepresentation,
+    RoutedRasterResidualBlock,
     ScalableRasterSerialBraidNet,
     make_braid_network,
 )
@@ -56,7 +57,7 @@ def test_serial_observation_appends_the_head_centred_raster() -> None:
     game = make_game(config)
     transition = game.from_word([1, -2, 3, -1, 2], strands=4)
     observation = transition.observation[0]
-    end = config.observation_channels
+    end = config.observation_channels - 1  # mandatory internal-budget plane
     start = end - 4 * config.max_strands
     raster = observation[:, start:end].reshape(config.serial_window, 5, 4)
 
@@ -78,8 +79,8 @@ def test_scalable_raster_uses_full_canvas_with_optional_identity_columns(
     word = np.asarray([1, -2, 3, -1, 2], dtype=np.int32)
     observation = make_game(config).from_word(word.tolist(), strands=4).observation[0]
     assert observation.shape[0] == config.max_len
-    start = config.observation_channels - 4 * config.max_strands
-    raster = observation[:, start:].reshape(config.max_len, config.max_strands, 4)
+    start = config.observation_channels - 1 - 4 * config.max_strands
+    raster = observation[:, start:-1].reshape(config.max_len, config.max_strands, 4)
 
     np.testing.assert_array_equal(
         SerialBraidGame.word_from_braid_raster(
@@ -276,6 +277,109 @@ def test_scalable_raster_reuses_its_block_for_every_recurrent_step() -> None:
         handle.remove()
 
     assert calls == 4  # max(4, residual_blocks)
+
+
+def test_routed_raster_uses_dilations_and_starts_as_an_exact_residual() -> None:
+    config = replace(
+        _config(),
+        serial_raster="scalable",
+        serial_raster_wrap_strands=True,
+        serial_raster_masked_norm=True,
+        serial_raster_identity_padding=True,
+        cyclic_band_generators=True,
+        objective_budget_channel=True,
+    )
+    trunk = RasterWindowRepresentation(
+        config, ModelConfig(channels=8, residual_blocks=4, latent_channels=8)
+    )
+    block = trunk.blocks[0]
+    assert isinstance(block, RoutedRasterResidualBlock)
+    assert block.residual_gate.item() == 0.0
+
+    dilations: list[int] = []
+    original = block._horizontal_convolve
+
+    def record_dilation(x: torch.Tensor, dilation: int) -> torch.Tensor:
+        dilations.append(dilation)
+        return original(x, dilation)
+
+    block._horizontal_convolve = record_dilation  # type: ignore[method-assign]
+    observation = make_game(config).from_word([1, -2, 3, 2, -1], strands=4).observation
+    raster = _tensor(observation)
+    with torch.no_grad():
+        initial = torch.relu(
+            trunk.input(
+                raster[:, trunk.raster_start : trunk.raster_end, 0]
+                .reshape(1, config.max_strands, 4, config.max_len)
+                .permute(0, 2, 1, 3)
+            )
+        )
+        spatial, active, _ = trunk.encode_spatial(raster)
+    assert dilations == [1, 2, 4, 8]
+    torch.testing.assert_close(spatial, initial * active)
+
+
+def test_routed_raster_has_distinct_content_and_identity_workspace_masks() -> None:
+    config = replace(
+        _config(max_strands=6),
+        serial_raster="scalable",
+        serial_raster_wrap_strands=True,
+        serial_raster_masked_norm=True,
+        serial_raster_identity_padding=True,
+        cyclic_band_generators=True,
+        objective_budget_channel=True,
+    )
+    trunk = RasterWindowRepresentation(
+        config, ModelConfig(channels=8, residual_blocks=1, latent_channels=8)
+    )
+    block = trunk.blocks[0]
+    assert isinstance(block, RoutedRasterResidualBlock)
+    seen: list[tuple[torch.Tensor, torch.Tensor]] = []
+
+    def capture(_module, args, _kwargs, _output):
+        seen.append((args[1].detach().clone(), args[2].detach().clone()))
+
+    handle = block.register_forward_hook(capture, with_kwargs=True)
+    try:
+        word = [1, -2, 3, 2, -1]
+        observation = make_game(config).from_word(word, strands=4).observation
+        trunk.encode_spatial(_tensor(observation))
+    finally:
+        handle.remove()
+
+    workspace, content = seen[0]
+    assert torch.all(workspace[:, :, :4, len(word) :] == 1)
+    assert torch.count_nonzero(content[:, :, :, len(word) :]) == 0
+    assert torch.all(content[:, :, :4, : len(word)] == 1)
+
+
+def test_routed_critic_changes_when_only_remote_braid_content_changes() -> None:
+    torch.manual_seed(17)
+    config = replace(
+        _config(max_strands=6),
+        serial_raster="scalable",
+        serial_raster_wrap_strands=True,
+        serial_raster_masked_norm=True,
+        serial_raster_identity_padding=True,
+        cyclic_band_generators=True,
+        objective_budget_channel=True,
+    )
+    network = make_braid_network(
+        config, ModelConfig(channels=16, residual_blocks=4, latent_channels=16)
+    )
+    assert isinstance(network, ScalableRasterSerialBraidNet)
+    with torch.no_grad():
+        network.representation.blocks[0].residual_gate.fill_(1.0)
+    prefix = [1, -2, 3, 1, -2, 3, 1]
+    first = make_game(config).from_word(prefix + [2, -3], strands=4).observation
+    second = make_game(config).from_word(prefix + [-3, 2], strands=4).observation
+    # The head-local seven letters are identical. Only the full-raster path can
+    # make the task-level critic features differ.
+    np.testing.assert_array_equal(first[:, :7], second[:, :7])
+    with torch.no_grad():
+        _, _, first_features = network._forward_core(_tensor(first))
+        _, _, second_features = network._forward_core(_tensor(second))
+    assert not torch.allclose(first_features, second_features)
 
 
 def test_scalable_bstar_scores_the_active_seam_not_the_capacity_seam() -> None:

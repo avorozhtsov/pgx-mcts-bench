@@ -69,6 +69,8 @@ def test_run_row_records_its_seed(monkeypatch, tmp_path) -> None:
             "adaptive_rehearsal": True,
             "rehearsal_target": 0.8,
             "max_rehearsal_games_per_stage": 8,
+            "max_consecutive_caps": 1,
+            "retry_capped_on_resume": False,
             "retro_games": 1,
         }
     )
@@ -94,3 +96,27 @@ def test_adaptive_gate_rejects_zero_initial_rehearsal(tmp_path) -> None:
             seeds=[1],
             rehearsal_games_per_cleared_stage=0,
         )
+
+
+def test_gate_rejects_zero_consecutive_cap_allowance(tmp_path) -> None:
+    with pytest.raises(ValueError, match="consecutive caps"):
+        run_strand_architecture_gate(
+            tmp_path,
+            candidate_names=["window-local"],
+            seeds=[1],
+            max_consecutive_caps=0,
+        )
+
+
+def test_gate_records_explicit_capped_stage_retry_policy(monkeypatch, tmp_path) -> None:
+    from pgx_mcts_bench import strand_architecture_gate as gate
+
+    monkeypatch.setattr(gate, "_run_one", lambda payload: payload)
+    report = gate.run_strand_architecture_gate(
+        tmp_path,
+        candidate_names=["window-local"],
+        seeds=[71],
+        retry_capped_on_resume=True,
+    )
+    assert report["settings"]["retry_capped_on_resume"] is True
+    assert report["runs"][0]["retry_capped_on_resume"] is True

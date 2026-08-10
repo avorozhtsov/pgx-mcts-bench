@@ -528,106 +528,6 @@ class OptionPolicyGate(nn.Module):
         return self.readout(summary).sigmoid()
 
 
-class BraidPolicyHead(nn.Module):
-    """Positional policy head matching the braid action-space layout exactly.
-
-    The action space is blocked as::
-
-        [REDUCE L][COMMUTE L][BRAID L][INSERT 2(N-1)L][singletons][CROSSING L]
-
-    and a `Conv2d(channels, k, 1)` on a `1 x L` latent, flattened channel-major,
-    reproduces `k` consecutive per-position blocks in exactly that order. So the
-    head is three pieces: one convolution for the blocks that come before the
-    singletons, a pooled linear for the six singleton actions, and one more
-    convolution for the crossing-change block that comes after them.
-
-    The convolutions carry no dependence on `L`, so widening the word length is a
-    data change rather than an architecture change -- which is the property the
-    curriculum needs.
-    """
-
-    def __init__(self, channels: int, game: BraidGameConfig):
-        super().__init__()
-        self.action_size = game.action_size
-        self.leading_blocks = 3 + 2 * game.generator_capacity
-        # Derived, never assumed: the singleton block shrank from 6 to 4 when the
-        # word became cyclic and the two rotation moves were deleted.
-        self.singleton_actions = game.action_size - (self.leading_blocks + 1) * game.max_len
-        if self.singleton_actions < 1:
-            raise ValueError(f"action space {game.action_size} too small for the head")
-        self.positional = nn.Conv2d(channels, self.leading_blocks, 1)
-        self.singletons = nn.Linear(channels, self.singleton_actions)
-        self.crossing = nn.Conv2d(channels, 1, 1)
-
-    def forward(self, hidden: Tensor) -> Tensor:
-        positional = self.positional(hidden).flatten(1)
-        singletons = self.singletons(hidden.mean(dim=(2, 3)))
-        crossing = self.crossing(hidden).flatten(1)
-        logits = torch.cat([positional, singletons, crossing], dim=1)
-        assert logits.shape[1] == self.action_size
-        return logits
-
-
-class BraidAlphaZeroNet(BraidPolicyValueNet):
-    """AlphaZero network for the braid environment.
-
-    The observation is a `1 x L` one-row image, so the shared residual stack
-    applies unchanged; only the policy head differs.
-    """
-
-    def __init__(self, game: BraidGameConfig, model: ModelConfig):
-        super().__init__()
-        self.representation = Representation(game, model, model.channels)
-        # log(A/B) is the 7th scalar plane; it is constant across positions, so
-        # one value per batch element suffices.
-        self.ratio_channel = 2 * game.generator_capacity + 1 + 1 + 6
-        self.film = FiLM(model.channels) if model.film_on_ratio else None
-        self.policy_head = BraidPolicyHead(model.channels, game)
-        # Pooled, not flattened. `Flatten -> Linear(L, ...)` would tie the value
-        # head to one word capacity, defeating the point: every other parameter
-        # here depends on the receptive field (11 letters), not on L, so weights
-        # trained at one capacity load and run at any other. Mean pooling keeps
-        # the scalar planes exact -- they are constant along the word -- and max
-        # pooling preserves "does any position have this feature", which mean
-        # alone washes out on a mostly padded array.
-        # The padding plane is the last of the letter one-hots.
-        self.padding_channel = 2 * game.generator_capacity
-        self.value_project = nn.Conv2d(model.channels, model.channels, 1)
-        self.value_head = nn.Sequential(
-            nn.Linear(2 * model.channels, 32),
-            nn.ReLU(),
-            nn.Linear(32, 1),
-            nn.Tanh(),
-        )
-        self._init_auxiliary(2 * model.channels, game, model)
-
-    def _forward_core(self, observation: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        hidden = self.representation(observation)
-        if self.film is not None:
-            log_ratio = observation[:, self.ratio_channel, 0, 0]
-            hidden = self.film(hidden, log_ratio)
-        projected = torch.relu(self.value_project(hidden))
-        # Pool over occupied positions only. Averaging over all L slots dilutes a
-        # 5-letter word by ~6x at tier 0, and an A/B over 6 seeds showed that
-        # dilution is enough to make runs collapse (0.778 against 0.944).
-        occupied = 1.0 - observation[:, self.padding_channel : self.padding_channel + 1]
-        count = occupied.sum(dim=(2, 3), keepdim=True).clamp(min=1.0)
-        masked_mean = (projected * occupied).sum(dim=(2, 3), keepdim=True) / count
-        masked_max = (projected + (occupied - 1.0) * 1e4).amax(dim=(2, 3))
-        summary = torch.cat([masked_mean.flatten(1), masked_max], dim=1)
-        return self.policy_head(hidden), self.value_head(summary).squeeze(-1), summary
-
-    def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
-        policy, legacy, features = self._forward_core(observation)
-        return policy, self._search_value(observation, legacy, features)
-
-    def forward_with_auxiliary(
-        self, observation: Tensor
-    ) -> tuple[Tensor, Tensor, tuple[Tensor, Tensor, Tensor]]:
-        policy, value, features = self._forward_core(observation)
-        return policy, value, self._auxiliary(features)
-
-
 class SerialBraidNet(BraidPolicyValueNet):
     """Network for the moving-window formulation.
 
@@ -889,6 +789,47 @@ class MaskedAxialCylinderResidualBlock(AxialCylinderResidualBlock):
         return output if active is None else output * active
 
 
+class RoutedRasterResidualBlock(AxialCylinderResidualBlock):
+    """Shared dilated axial block for the full routed raster scientist.
+
+    ``active`` describes the spatial workspace: active strands may extend through
+    inserted identity columns so messages can cross that workspace.  ``content``
+    describes actual Artin-word columns and is used only for normalisation.  The
+    distinction prevents free identity padding from changing the statistics of
+    the real braid while retaining it as a geometric scratch canvas.
+    """
+
+    def __init__(self, channels: int, *, wrap_strands: bool = False):
+        super().__init__(channels, wrap_strands=wrap_strands)
+        groups = min(8, channels)
+        while channels % groups:
+            groups -= 1
+        self.norm = MaskedGroupNorm(groups, channels)
+        self.residual_gate = nn.Parameter(torch.zeros(()))
+
+    def _horizontal_convolve(self, x: Tensor, dilation: int) -> Tensor:
+        padded = F.pad(x, (dilation, dilation, 0, 0), mode="circular")
+        return F.conv2d(padded, self.horizontal.weight, dilation=(1, dilation))
+
+    def forward(
+        self,
+        x: Tensor,
+        active: Tensor | None = None,
+        content: Tensor | None = None,
+        *,
+        word_dilation: int = 1,
+    ) -> Tensor:
+        if active is None:
+            raise ValueError("active workspace mask is required for routed raster")
+        horizontal = self._horizontal_convolve(x, word_dilation)
+        vertical = self._vertical_convolve(x, active)
+        hidden = self.norm(
+            self.mix(torch.cat([horizontal, vertical], dim=1)),
+            content if content is not None else active,
+        )
+        return (x + self.residual_gate * F.silu(hidden)) * active
+
+
 class RasterWindowRepresentation(nn.Module):
     """Turn a ``k x window`` braid raster back into serial per-column features.
 
@@ -917,9 +858,11 @@ class RasterWindowRepresentation(nn.Module):
                 block_type = MaskedCylinderResidualBlock
             elif self.variant == "axial":
                 block_type = MaskedAxialCylinderResidualBlock
+            elif self.variant == "scalable":
+                block_type = RoutedRasterResidualBlock
             else:
                 raise ValueError(
-                    "masked normalisation requires a joint or axial raster block"
+                    "masked normalisation requires a joint, axial, or scalable raster block"
                 )
         if self.variant not in {"joint", "axial", "recurrent", "scalable"}:
             raise ValueError(f"unknown serial_raster variant {self.variant!r}")
@@ -945,7 +888,45 @@ class RasterWindowRepresentation(nn.Module):
             # visual controller: the added scalar is learned deliberately
             # instead of perturbing the encoder through a random input weight.
             nn.init.zeros_(self.metadata.weight[:, -1:])
-        self.output_norm = nn.GroupNorm(1, width)
+        # Full canvases may contain arbitrary identity workspace.  Normalize
+        # each column across channels so changing that workspace cannot alter a
+        # real column merely by changing a global GroupNorm denominator.
+        self.output_norm: nn.Module = (
+            nn.LayerNorm(width) if self.variant == "scalable" else nn.GroupNorm(1, width)
+        )
+        self.routed_conditioning: nn.Module | None = None
+        if self.variant == "scalable" and model.film_on_ratio:
+            self.ratio_channel = 2 * game.generator_capacity + 1 + 1 + 6
+            self.internal_budget_channel = (
+                game.observation_channels - int(game.objective_budget_channel) - 1
+            )
+            self.objective_budget_channel = (
+                game.observation_channels - 1 if game.objective_budget_channel else None
+            )
+            self.routed_conditioning = nn.Sequential(
+                nn.Linear(3, 32),
+                nn.SiLU(),
+                nn.Linear(32, 2 * width),
+            )
+            # A freshly constructed scientist begins as the unconditioned trunk;
+            # objective and budget specialization is learned from the curriculum.
+            nn.init.zeros_(self.routed_conditioning[-1].weight)
+            nn.init.zeros_(self.routed_conditioning[-1].bias)
+
+    def _condition_routed(self, hidden: Tensor, observation: Tensor, active: Tensor) -> Tensor:
+        if self.routed_conditioning is None:
+            return hidden
+        ratio = observation[:, self.ratio_channel, 0, 0]
+        internal = observation[:, self.internal_budget_channel, 0, 0]
+        objective = (
+            observation[:, self.objective_budget_channel, 0, 0]
+            if self.objective_budget_channel is not None
+            else torch.ones_like(ratio)
+        )
+        gamma, beta = self.routed_conditioning(
+            torch.stack([ratio, internal, objective], dim=1)
+        ).chunk(2, dim=1)
+        return ((1.0 + gamma[:, :, None, None]) * hidden + beta[:, :, None, None]) * active
 
     def encode_spatial(self, observation: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         """Return shared row/column features, active mask, and column metadata."""
@@ -953,10 +934,23 @@ class RasterWindowRepresentation(nn.Module):
         raster = observation[:, self.raster_start : self.raster_end, 0, :]
         raster = raster.reshape(batch, self.max_strands, 4, columns).permute(0, 2, 1, 3)
         active = raster[:, 3:4]
+        occupied = observation[:, : self.letter_channels - 2, 0].sum(dim=1, keepdim=True).gt(0)
+        content = active * occupied[:, :, None, :].to(active.dtype)
         hidden = torch.relu(self.input(raster))
         if self.variant in {"recurrent", "scalable"}:
-            for _ in range(self.recurrent_steps):
-                hidden = self.blocks[0](hidden, active)
+            for step in range(self.recurrent_steps):
+                if self.variant == "scalable" and isinstance(
+                    self.blocks[0], RoutedRasterResidualBlock
+                ):
+                    hidden = self.blocks[0](
+                        hidden,
+                        active,
+                        content,
+                        word_dilation=2 ** (step % 4),
+                    )
+                    hidden = self._condition_routed(hidden, observation, active)
+                else:
+                    hidden = self.blocks[0](hidden, active)
         else:
             for block in self.blocks:
                 hidden = block(hidden, active)
@@ -974,7 +968,12 @@ class RasterWindowRepresentation(nn.Module):
         mean = (hidden * active).sum(dim=2) / count
         maximum = (hidden + (active - 1.0) * 1e4).amax(dim=2)
         row_features = self.row_project(torch.cat([mean, maximum], dim=1))
-        return torch.relu(self.output_norm(row_features + metadata))
+        combined = row_features + metadata
+        if isinstance(self.output_norm, nn.LayerNorm):
+            combined = self.output_norm(combined.transpose(1, 2)).transpose(1, 2)
+        else:
+            combined = self.output_norm(combined)
+        return torch.relu(combined)
 
     def forward(self, observation: Tensor) -> Tensor:
         hidden, active, metadata = self.encode_spatial(observation)
@@ -1093,7 +1092,9 @@ class ScalableRasterSerialBraidNet(BraidPolicyValueNet):
         inserts = inserts.permute(0, 3, 2, 1).flatten(2)
         positional = torch.cat([generic[:, :, :3], inserts, generic[:, :, 3:4]], dim=2).flatten(1)
 
-        valid_columns = active.amax(dim=2)
+        # Pool only real Artin-word columns.  Identity padding is workspace for
+        # message passing, not additional evidence that the braid is longer.
+        valid_columns = occupied.gt(0)[:, None, :].to(columns.dtype)
         valid_count = valid_columns.sum(dim=2).clamp(min=1.0)
         pooled_mean = (columns * valid_columns).sum(dim=2) / valid_count
         pooled_max = (columns + (valid_columns - 1.0) * 1e4).amax(dim=2)
@@ -2222,9 +2223,7 @@ def make_braid_network(game: BraidGameConfig, model: ModelConfig) -> PolicyValue
         return ScalableRasterSerialBraidNet(game, model)
     if game.serial_raster:
         return RasterSerialBraidNet(game, model)
-    if game.serial_window:
-        return SerialBraidNet(game, model)
-    return BraidAlphaZeroNet(game, model)
+    return SerialBraidNet(game, model)
 
 
 class Dynamics(nn.Module):

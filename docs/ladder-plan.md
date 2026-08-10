@@ -50,19 +50,15 @@ is intended.
 
 | name | what it tests |
 |---|---|
-| `no-training` | control — MCTS alone, weights never updated |
-| `u1-puct` | AlphaZero PUCT, parallel positional head |
-| `u3-uct` | prior-free UCT; never collapsed in earlier screens |
-| `search-heavy` | 128 simulations — is depth the constraint? |
-| `search-light` | 16 simulations — the network must carry the policy |
-| `wide-net` | 96 channels — is capacity the constraint? |
-| `serial-w7-head` | moving window, acting **only at the head** |
-| `serial-w7-window` | moving window, acting **anywhere it can see** |
-| `serial-w11` | window at the parallel net's receptive field (11 letters) |
+| `s-head-128` | moving window, acting **only at the head** |
+| `s-window-128` | moving window, acting **anywhere it can see** |
+| `s-w11-128` | wider local window |
+| `s-tape4` | aligned writable four-symbol memory tape |
+| `s-scan-gru` | compulsory scan followed by recurrent full-word memory |
 
-The three serial candidates are the point of the exercise — they are the
-Turing-machine formulation, with an action space independent of `L`. The rest
-are references.
+All supported candidates use the bounded serial formulation, whose action space
+is independent of `L`. Every candidate must make a semantic braid edit after at
+most five consecutive internal controller actions.
 
 ## Continuing tomorrow
 
@@ -80,7 +76,7 @@ uv run pgx-mcts-bench braid-ladder --max-iterations 25 --eval-games 12 \
 To push a specific candidate further, give it a larger cap:
 
 ```bash
-uv run pgx-mcts-bench braid-ladder --only serial-w7-window \
+uv run pgx-mcts-bench braid-ladder --only s-window-128 \
     --max-iterations 80 --output artifacts/ladder-run
 ```
 

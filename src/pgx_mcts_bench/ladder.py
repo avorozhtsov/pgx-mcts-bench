@@ -24,7 +24,7 @@ import json
 import signal
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -151,10 +151,9 @@ class Candidate:
     batch_size: int = 32
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4
-    serial_window: int = 0
+    serial_window: int = 7
     serial_act_width: int = 1
-    # 0 takes the default rule: 32 plies for parallel candidates, 64 for serial
-    # ones, which pay plies to move the head.
+    # 0 takes the bounded serial default of 64 native plies.
     simplify_budget: int = 0
     # () takes the default power-of-two stride set. `(w // 2,)` is the original
     # single-stride tape, kept screenable so the change can be ablated.
@@ -178,12 +177,13 @@ class Candidate:
     serial_initial_markov_sign: int = 1
     cyclic_band_generators: bool = False
     serial_ensemble: str = ""
-    serial_internal_horizon: int = 0
-    serial_internal_budget_remaining: bool = False
+    serial_internal_horizon: int = 5
+    serial_internal_budget_remaining: bool = True
     # Opt-in joint-curriculum controls.  They are deliberately absent from the
     # historical arms so old checkpoints and published ladder measurements keep
     # their exact meaning.
     objective_budget_channel: bool = False
+    certified_value_floor: bool = False
     residual_blocks: int = 2
     auxiliary_value_loss_weight: float = 0.1
     auxiliary_backprop_to_encoder: bool = False
@@ -224,8 +224,8 @@ def serial_arms() -> list[Candidate]:
     grid measures speed and objective quality rather than whether it works:
 
     * `act_width`  -- head-only against acting anywhere visible.
-    * `simulations` -- 128 against 256; the serial formulation spends plies on
-      repositioning, so it may need depth the parallel one does not.
+    * `simulations` -- 128 against 256; repositioning spends native plies and may
+      require additional search depth.
     * `budget`     -- 64 plies against 96, since head motion is charged.
     * `strides`    -- the power-of-two set against the original single stride,
       the ablation for the reachability change.
@@ -662,21 +662,23 @@ def vnext_arms() -> list[Candidate]:
         auxiliary_value_start_stage=1,
         auxiliary_encoder_start_stage=0,
         objective_ratios=(1000.0, 10.0),
-        objective_ratio_weights=(3.0, 1.0),
+        # Foundation pretraining must not privilege the paper's final objective.
+        # L10 and L1000 are sampled equally; later arms decide how to specialize.
+        objective_ratio_weights=(1.0, 1.0),
         serial_internal_horizon=5,
         serial_internal_budget_remaining=True,
     )
     return [
         Candidate(
             "window-local",
-            "local seven-letter window with a scanning controller",
+            "local seven-letter window with a movable memoryless head",
             serial_act_width=7,
             residual_blocks=4,
             **common,
         ),
         Candidate(
             "raster-axial",
-            "masked braid raster with shared word/strand axial blocks",
+            "local seven-column raster with shared masked axial blocks",
             serial_act_width=7,
             serial_raster="axial",
             serial_raster_masked_norm=True,
@@ -704,6 +706,45 @@ def vnext_arms() -> list[Candidate]:
             residual_blocks=3,
             **common,
         ),
+    ]
+
+
+def certified_development_arms() -> list[Candidate]:
+    """Raster baseline with theorem-bounded search values, pending admission."""
+    raster = next(candidate for candidate in vnext_arms() if candidate.name == "raster-axial")
+    return [
+        replace(
+            raster,
+            name="raster-bounded",
+            rationale=(
+                "masked axial raster with a certified lower bound on remaining "
+                "crossing changes"
+            ),
+            certified_value_floor=True,
+        )
+    ]
+
+
+def foundation_arms() -> list[Candidate]:
+    """Stable roster plus explicitly named candidates eligible for pretraining."""
+    return vnext_arms() + certified_development_arms()
+
+
+def raster_development_arms() -> list[Candidate]:
+    """Unadmitted full-raster capacity candidate, selectable for development."""
+    local = vnext_arms()[0]
+    return [
+        replace(
+            local,
+            name="raster-routed",
+            rationale="full torus raster with shared dilated blocks and routed actions",
+            serial_raster="scalable",
+            serial_raster_wrap_strands=True,
+            serial_raster_masked_norm=True,
+            serial_raster_identity_padding=True,
+            cyclic_band_generators=True,
+            residual_blocks=4,
+        )
     ]
 
 
@@ -791,30 +832,16 @@ def central_benchmark_arms() -> list[Candidate]:
     ]
 
 
-def parallel_arms() -> list[Candidate]:
-    return [
-        Candidate("no-training", "control: search only, weights never updated", train=False),
-        Candidate("u1-puct", "AlphaZero PUCT, parallel head", exploration="u1"),
-        Candidate("u3-uct", "prior-free UCT; never collapsed in earlier screens", exploration="u3"),
-        Candidate("search-heavy", "128 simulations: is depth the constraint?", simulations=128),
-        Candidate(
-            "search-light", "16 simulations: the network must carry the policy", simulations=16
-        ),
-        Candidate(
-            "wide-net", "96 channels: is capacity the constraint?", channels=96, train_steps=160
-        ),
-    ]
-
-
 def candidates() -> list[Candidate]:
     return (
-        parallel_arms()
-        + serial_arms()
+        serial_arms()
         + memory_arms()
         + colour_arms()
         + invariant_learning_arms()
         + tape_scan_arms()
         + experimental_capacity_arms()
+        + raster_development_arms()
+        + certified_development_arms()
         + vnext_arms()
         + distilled_arms()
         + ensemble_arms()
@@ -843,6 +870,10 @@ class StageResult:
     # can be compared against, and evaluating one ratio instead of three keeps it
     # affordable at every promotion.
     retrospective: dict = field(default_factory=dict)
+    # Search-side certificate activity for the frontier game. These counts cover
+    # self-play and held-out frontier evaluation; retrospective games have their
+    # own game objects and are deliberately excluded.
+    certified_value_stats: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -977,6 +1008,21 @@ def promotion_reason(
     return None
 
 
+def should_evaluate_iteration(
+    current_iteration: int,
+    *,
+    eval_every: int,
+    iteration_cap: int,
+) -> bool:
+    """Evaluate on cadence and after the final optimizer block.
+
+    Adaptive foundation training starts with an odd five-iteration dose.  A
+    cadence of two must not leave the fifth update unmeasured and then escalate
+    compute from the stale iteration-four result.
+    """
+    return current_iteration % eval_every == 0 or current_iteration == iteration_cap
+
+
 def _config(
     candidate: Candidate,
     stage: tuple[str, int],
@@ -991,7 +1037,7 @@ def _config(
         max_len=48,
         max_strands=5,
         scramble_budget=1,
-        simplify_budget=(candidate.simplify_budget or (32 if not candidate.serial_window else 64)),
+        simplify_budget=(candidate.simplify_budget or 64),
         allow_crossing_change=True,
         multi_objective=True,
         log_ratio_range=(
@@ -1032,6 +1078,7 @@ def _config(
         serial_internal_horizon=candidate.serial_internal_horizon,
         serial_internal_budget_remaining=candidate.serial_internal_budget_remaining,
         objective_budget_channel=candidate.objective_budget_channel,
+        certified_value_floor=candidate.certified_value_floor,
         cyclic_band_generators=candidate.cyclic_band_generators,
     )
     return ExperimentConfig(
@@ -1390,6 +1437,7 @@ _COMPATIBLE_NEW_CANDIDATE_FIELDS = {
     "auxiliary_value_loss_weight",
     "auxiliary_value_start_stage",
     "batch_size",
+    "certified_value_floor",
     "learning_rate",
     "objective_budget_channel",
     "objective_ratios",
@@ -1416,7 +1464,11 @@ def _candidate_specs_compatible(saved: object, current: dict) -> bool:
         return False
     if set(saved) - set(current):
         return False
-    return all(saved[key] == current[key] for key in saved)
+    # Search dose is deliberately runtime state rather than model identity.  An
+    # adaptive foundation run must be able to resume the same weights at 128
+    # simulations after a 64-simulation block failed its evaluation gate.
+    runtime_fields = {"simulations"}
+    return all(saved[key] == current[key] for key in saved if key not in runtime_fields)
 
 
 def run_ladder(
@@ -1930,7 +1982,11 @@ def run_ladder(
                     iteration_durations=iteration_durations,
                 )
                 iterations += 1
-            if not candidate.train or (iteration + 1) % eval_every == 0:
+            if not candidate.train or should_evaluate_iteration(
+                current_iteration,
+                eval_every=eval_every,
+                iteration_cap=max_iterations_per_stage,
+            ):
                 retention_gate_passed = True
                 _publish_ladder_status(
                     **status_context,
@@ -2168,6 +2224,7 @@ def run_ladder(
             promoted=promoted,
             reason=reason,
             retrospective=retrospective,
+            certified_value_stats=dict(getattr(game, "certified_value_stats", {})),
             seconds=time.perf_counter() - stage_started,
         )
         result.stages.append(stage_result)

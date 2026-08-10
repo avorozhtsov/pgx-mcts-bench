@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import torch
 
 from pgx_mcts_bench.game import make_game, sample_log_ratio
-from pgx_mcts_bench.ladder import STAGES, _config, vnext_arms
+from pgx_mcts_bench.ladder import (
+    STAGES,
+    _config,
+    certified_development_arms,
+    foundation_arms,
+    vnext_arms,
+)
 from pgx_mcts_bench.networks import make_braid_network
 from pgx_mcts_bench.vnext import (
     AdaptiveState,
@@ -28,7 +35,7 @@ def test_vnext_names_are_stable_and_compute_free() -> None:
     ]
     assert all("64" not in arm.name and "128" not in arm.name for arm in arms)
     assert all(arm.objective_ratios == (1000.0, 10.0) for arm in arms)
-    assert all(arm.objective_ratio_weights == (3.0, 1.0) for arm in arms)
+    assert all(arm.objective_ratio_weights == (1.0, 1.0) for arm in arms)
     assert all(arm.objective_budget_channel for arm in arms)
     assert all(arm.serial_internal_budget_remaining for arm in arms)
     assert all(arm.serial_internal_horizon == 5 for arm in arms)
@@ -57,17 +64,69 @@ def test_manifest_forbids_checkpoint_inheritance() -> None:
         "simulations_per_move": 64,
         "donation_fraction": 0.0,
     }
+    assert manifest["objective"]["sampling_weights"] == [1.0, 1.0]
     assert not any("checkpoint" in scientist for scientist in manifest["scientists"])
 
 
-def test_vnext_samples_only_registered_objectives_with_l1000_bias() -> None:
+def test_vnext_samples_only_registered_objectives_without_foundation_bias() -> None:
     arm = vnext_arms()[0]
     config = _config(arm, STAGES[0], 0, "cpu").game
     sampled = np.exp(
         [sample_log_ratio(config, np.random.default_rng(seed)) for seed in range(200)]
     )
     assert set(np.round(sampled)) == {10.0, 1000.0}
-    assert np.count_nonzero(sampled > 100) > 2 * np.count_nonzero(sampled < 100)
+    high = np.count_nonzero(sampled > 100)
+    low = np.count_nonzero(sampled < 100)
+    assert abs(high - low) < 40
+
+
+def test_vnext_raster_is_the_admitted_local_axial_candidate() -> None:
+    arm = next(arm for arm in vnext_arms() if arm.name == "raster-axial")
+    assert arm.serial_raster == "axial"
+    assert not arm.serial_raster_wrap_strands
+    assert arm.serial_raster_masked_norm
+    assert arm.serial_raster_identity_padding
+    assert not arm.cyclic_band_generators
+
+    config = _config(arm, STAGES[2], 71, "cpu", selfplay_games=1)
+    assert config.game.width == config.game.serial_window
+    network = make_braid_network(config.game, config.model)
+    from pgx_mcts_bench.networks import RasterSerialBraidNet
+
+    assert isinstance(network, RasterSerialBraidNet)
+
+
+def test_raster_bounded_is_a_matched_pretraining_candidate() -> None:
+    baseline = next(arm for arm in vnext_arms() if arm.name == "raster-axial")
+    bounded = certified_development_arms()[0]
+    assert bounded.name == "raster-bounded"
+    assert bounded.certified_value_floor
+    assert not baseline.certified_value_floor
+    assert bounded.serial_raster == baseline.serial_raster == "axial"
+    assert bounded.channels == baseline.channels
+    assert bounded.residual_blocks == baseline.residual_blocks
+    assert "raster-bounded" in {arm.name for arm in foundation_arms()}
+
+
+def test_raster_bounded_clamps_an_optimistic_trefoil_value() -> None:
+    arm = certified_development_arms()[0]
+    game = make_game(_config(arm, STAGES[1], 71, "cpu", selfplay_games=1).game)
+    transition = game.from_word([1, 1, 1], strands=2, log_ratio=float(np.log(10.0)))
+    clamped = game.certified_value(transition.state, 0.999)
+    # floor=10, cap=(10+1)*64, so the solver payoff cannot exceed 1-20/704.
+    assert clamped == pytest.approx(1.0 - 20.0 / 704.0)
+    assert game.certified_value_stats["evaluations"] == 1
+    assert game.certified_value_stats["informative"] == 1
+    assert game.certified_value_stats["binding"] == 1
+
+
+def test_failed_routed_raster_remains_selectable_outside_vnext() -> None:
+    from pgx_mcts_bench.ladder import candidates
+
+    arm = next(arm for arm in candidates() if arm.name == "raster-routed")
+    assert arm.serial_raster == "scalable"
+    assert arm.serial_raster_wrap_strands
+    assert arm.cyclic_band_generators
 
 
 def test_strict_donation_filter() -> None:

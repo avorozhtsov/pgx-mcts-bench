@@ -84,7 +84,8 @@ def test_tape_is_visible_as_one_hot_and_increases_only_shift_family() -> None:
     transition = tape.from_word([1, 2, 1], 3)
     assert tape.num_actions == plain.num_actions + 2 * len(tape.strides) * 3
     assert transition.observation.shape[-1] == tape.config.observation_channels
-    assert np.allclose(transition.observation[0, :, -4:].sum(axis=1), 1.0)
+    # Tape one-hot channels precede the mandatory internal-budget plane.
+    assert np.allclose(transition.observation[0, :, -5:-1].sum(axis=1), 1.0)
 
 
 def test_scan_gru_uses_local_window_sequence_and_advanced_heads() -> None:

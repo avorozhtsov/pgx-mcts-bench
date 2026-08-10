@@ -1045,64 +1045,6 @@ def compare_pair(
     }
 
 
-def play_baseline_game(
-    agent: TrainedAgent,
-    seed: int,
-    *,
-    agent_takes_first_role: bool,
-) -> float:
-    """Agent against a uniform-random opponent. Returns +1 if the agent wins.
-
-    This is the measurement the braid game actually needs. An arena between two
-    trained agents says which is stronger; it does not say whether either has
-    learned anything, because a Scrambler that produces trivial instances and a
-    Simplifier that cannot solve them look the same as a hard pairing. Playing
-    each role against random gives an absolute number with a known baseline:
-    a uniform-random Simplifier undoes ~1.6% of K=6 tier-0 scrambles.
-    """
-    game = make_game(agent.config.game)
-    rng = np.random.default_rng(seed)
-    transition = game.reset(seed)
-    role_player = game.first_role_player(transition.state)
-    agent_player = role_player if agent_takes_first_role else 1 - role_player
-    search = NeuralMCTS(game, agent.network, agent.config.search, agent.config.train.device)
-    while not transition.terminated:
-        if transition.player == agent_player:
-            result = search.run(
-                transition.state,
-                transition.observation,
-                transition.legal_actions,
-                rng,
-                temperature=0.0,
-                add_root_noise=False,
-            )
-            action = result.action
-        else:
-            action = int(rng.choice(np.flatnonzero(transition.legal_actions)))
-        transition = game.step(transition.state, action)
-    return float(game.final_rewards(transition.state)[agent_player])
-
-
-def evaluate_against_random(
-    agent: TrainedAgent,
-    games: int,
-    *,
-    seed: int,
-) -> dict[str, float | int]:
-    """Win rate of the agent in each role against a uniform-random opponent."""
-    scores: dict[bool, list[float]] = {True: [], False: []}
-    for role in (True, False):
-        for index in range(games):
-            scores[role].append(
-                play_baseline_game(agent, seed + index, agent_takes_first_role=role)
-            )
-    return {
-        "games_per_role": games,
-        "first_role_win_rate": float(np.mean([s > 0 for s in scores[True]])),
-        "second_role_win_rate": float(np.mean([s > 0 for s in scores[False]])),
-    }
-
-
 def compare_agents(
     alphazero: TrainedAgent,
     muzero: TrainedAgent,
@@ -1199,27 +1141,6 @@ def evaluate_learning_curve(
 
 def parameter_count(network: nn.Module) -> int:
     return sum(parameter.numel() for parameter in network.parameters())
-
-
-def save_braid_experiment(
-    out: Path,
-    config: ExperimentConfig,
-    agent: TrainedAgent,
-    baseline: dict[str, float | int],
-    selfplay_arena: dict[str, float | int] | None = None,
-) -> None:
-    """Single-agent results file for the braid game (no MuZero counterpart yet)."""
-    out.mkdir(parents=True, exist_ok=True)
-    torch.save(agent.network.state_dict(), out / "alphazero.pt")
-    payload = {
-        "config": config.to_dict(),
-        "parameters": {"alphazero": parameter_count(agent.network)},
-        "history": {"alphazero": agent.history},
-        "baseline_vs_random": baseline,
-    }
-    if selfplay_arena is not None:
-        payload["selfplay_arena"] = selfplay_arena
-    (out / "results.json").write_text(json.dumps(payload, indent=2) + "\n")
 
 
 def save_experiment(

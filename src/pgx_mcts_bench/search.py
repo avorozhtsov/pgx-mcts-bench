@@ -276,7 +276,17 @@ class NeuralMCTS:
                 logits_np[index],
                 legal_actions[index].copy(),
             )
-        return [float(value) for value in values.cpu().numpy()]
+        return [
+            self._certified_value(node, float(value))
+            for node, value in zip(nodes, values.cpu().numpy(), strict=True)
+        ]
+
+    def _certified_value(self, node: Node, predicted: float) -> float:
+        """Apply an optional exact-state value bound supplied by the game."""
+        bound = getattr(self.game, "certified_value", None)
+        if bound is None:
+            return predicted
+        return float(bound(node.state, predicted))
 
     def _expand_muzero_roots_batch(
         self,

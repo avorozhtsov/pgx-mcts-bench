@@ -12,7 +12,12 @@ from typing import Any
 import numpy as np
 import torch
 
-from pgx_mcts_bench.adaptive_scientists import load_scientist
+from pgx_mcts_bench.adaptive_scientists import (
+    FixedWordGame,
+    _observation_tensor,
+    calibrated_solve_probability,
+    load_scientist,
+)
 from pgx_mcts_bench.budget_gate import calibration
 from pgx_mcts_bench.collaborative_scientists import (
     _atomic_json,
@@ -116,10 +121,8 @@ def _evaluate_worker(payload: dict[str, Any]) -> dict[str, Any]:
     )
     items = _bank_from_payload(payload["panel"])
     configured = _evaluation_scientist(scientist, int(payload["action_horizon"]))
-    probabilities = {
-        item.id: float(
-            prediction_details(configured, item, (float(payload["ratio"]),))[0]["p_solve"]
-        )
+    predictions = {
+        item.id: prediction_details(configured, item, (float(payload["ratio"]),))[0]
         for item in items
     }
     evaluation = panel_evaluation(
@@ -134,13 +137,51 @@ def _evaluate_worker(payload: dict[str, Any]) -> dict[str, Any]:
         objective_cap=None,
         root_noise=True,
     )
+    ratio = float(payload["ratio"])
+    failure = ratio * 20.0 + int(payload["action_horizon"])
+    budget_fractions = (0.25, 0.5, 1.0)
+    observations = [
+        FixedWordGame(
+            configured.game,
+            item.knot,
+            ratio,
+            objective_cap=failure * fraction,
+        ).reset(0).observation
+        for fraction in budget_fractions
+        for item in items
+    ]
+    tensor = _observation_tensor(observations, torch.device(payload["device"]))
+    scientist.network.eval()
+    with torch.inference_mode():
+        _policy, _legacy, auxiliary = scientist.network.forward_with_auxiliary(tensor)
+        if auxiliary is None:
+            raise ValueError(f"{payload['scientist']} has no factorized solve head")
+        probabilities = calibrated_solve_probability(scientist, auxiliary[0]).cpu().numpy()
+    budget_means = {
+        str(fraction): float(
+            probabilities[index * len(items) : (index + 1) * len(items)].mean()
+        )
+        for index, fraction in enumerate(budget_fractions)
+    }
+    monotone = all(
+        budget_means[str(left)] <= budget_means[str(right)] + 1e-6
+        for left, right in zip(budget_fractions[:-1], budget_fractions[1:], strict=True)
+    )
+    clipped_quarter = float(np.clip(budget_means["0.25"], 1e-6, 1.0 - 1e-6))
+    clipped_full = float(np.clip(budget_means["1.0"], 1e-6, 1.0 - 1e-6))
+    log_odds_response = float(
+        np.log(clipped_full / (1.0 - clipped_full))
+        - np.log(clipped_quarter / (1.0 - clipped_quarter))
+    )
+    nonconstant = log_odds_response >= 0.05
     scores = []
     labels = []
     for identity, row in evaluation["rows"].items():
-        row["p_solve"] = probabilities[identity]
+        prediction = predictions[identity]
+        row["prediction"] = prediction
         for attempt in row["attempts"]:
-            attempt["p_solve"] = probabilities[identity]
-            scores.append(probabilities[identity])
+            attempt["p_solve"] = prediction["p_solve"]
+            scores.append(prediction["p_solve"])
             labels.append(int(attempt["solved"]))
     return {
         "scientist": payload["scientist"],
@@ -149,6 +190,14 @@ def _evaluate_worker(payload: dict[str, Any]) -> dict[str, Any]:
         "simulations": int(payload["simulations"]),
         "evaluation": evaluation,
         "calibration": calibration(scores, labels),
+        "budget_monotonicity": {
+            "fractions": list(budget_fractions),
+            "mean_p_solve": budget_means,
+            "aggregate_monotone": monotone,
+            "full_minus_quarter": budget_means["1.0"] - budget_means["0.25"],
+            "full_minus_quarter_log_odds": log_odds_response,
+            "nonconstant_log_odds_at_least_0_05": nonconstant,
+        },
     }
 
 
@@ -259,9 +308,12 @@ def build_frontier_banks(
         excluded=excluded,
         frontier_pool_size=frontier_pool_size,
     )
+    from pgx_mcts_bench.foundation_pretraining import source_provenance
+
     protocol = {
         "schema": "frontier-arm-banks-v1",
         "git_revision": _git_revision(),
+        "source_provenance": source_provenance(),
         "training_size": training_size,
         "evaluation_size": evaluation_size,
         "frontier_pool_size": frontier_pool_size,
@@ -315,9 +367,12 @@ def run_roster_readiness(
         excluded=excluded,
         frontier_pool_size=frontier_pool_size,
     )
+    from pgx_mcts_bench.foundation_pretraining import source_provenance
+
     protocol = {
         "schema": "frontier-roster-readiness-v2-stochastic-attempts",
         "git_revision": _git_revision(),
+        "source_provenance": source_provenance(),
         "checkpoints": {
             name: {"path": str(path.resolve()), "sha256": _sha256(path)}
             for name, path in checkpoints.items()
@@ -455,12 +510,19 @@ def run_roster_readiness(
                 row["evaluation"]["representation_solve_rate"] >= minimum_coverage
             ),
             **_critic_checks(row["calibration"]),
+            "aggregate_budget_monotone": row["budget_monotonicity"][
+                "aggregate_monotone"
+            ],
+            "budget_signal_nonconstant": row["budget_monotonicity"][
+                "nonconstant_log_odds_at_least_0_05"
+            ],
         }
         roster_checks[row["scientist"]] = {
             "passed": all(checks.values()),
             "checks": checks,
             "coverage": row["evaluation"]["representation_solve_rate"],
             "calibration": row["calibration"],
+            "budget_monotonicity": row["budget_monotonicity"],
         }
         solved_sets[row["scientist"]] = set(row["evaluation"]["solved"])
     names = sorted(solved_sets)

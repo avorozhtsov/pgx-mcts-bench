@@ -147,7 +147,7 @@ def registered_manifest(seed: int = 0) -> dict:
             "semantic_moves": "charged",
             "controller_internal_actions": "not-charged",
             "ratios": [1000.0, 10.0],
-            "sampling_weights": [3.0, 1.0],
+            "sampling_weights": [1.0, 1.0],
             "internal_horizon_between_semantic_actions": 5,
         },
         "block_rounds": 10,

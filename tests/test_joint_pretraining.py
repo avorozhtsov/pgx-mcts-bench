@@ -35,8 +35,8 @@ def test_joint_candidates_keep_capacity_fixed_and_separate_h5() -> None:
         assert candidate.simulations == 16
         assert candidate.train_steps == 3
         assert not candidate.use_auxiliary_value
-    assert candidates["warm"].serial_internal_horizon == 0
-    assert candidates["scratch"].serial_internal_horizon == 0
+    assert candidates["warm"].serial_internal_horizon == 5
+    assert candidates["scratch"].serial_internal_horizon == 5
     assert candidates["h5"].serial_internal_horizon == 5
     assert candidates["h5"].serial_internal_budget_remaining
 
@@ -69,7 +69,7 @@ def test_appended_budget_channels_are_bit_exact_at_migration(tmp_path: Path) -> 
     assert warm["bit_exact"]
     assert h5["bit_exact"]
     assert warm["target_observation_channels"] == warm["source_observation_channels"] + 1
-    assert h5["target_observation_channels"] == h5["source_observation_channels"] + 2
+    assert h5["target_observation_channels"] == h5["source_observation_channels"] + 1
 
 
 def test_warm_checkpoint_cannot_silently_rewind_to_easy_rungs(tmp_path: Path) -> None:

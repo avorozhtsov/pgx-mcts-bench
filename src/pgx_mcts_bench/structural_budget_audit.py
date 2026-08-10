@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,7 @@ from pgx_mcts_bench.collaborative_scientists import (
 from pgx_mcts_bench.game import make_game
 from pgx_mcts_bench.invariant_pretrain import _variant
 from pgx_mcts_bench.ladder import STAGES, _config, candidates
+from pgx_mcts_bench.semantic_verifier import SemanticBraidVerifier
 
 
 def _candidate(name: str):
@@ -57,25 +58,8 @@ def ladder_representation_panel(
         for index in stage_indices
     }
     games = {index: make_game(configs[index].game) for index in stage_indices}
-    base_games = {
-        index: make_game(
-            replace(
-                configs[index].game,
-                serial_window=0,
-                serial_act_width=1,
-                serial_shift_strides=(),
-                serial_registers=0,
-                serial_colours=0,
-                serial_tape_symbols=0,
-                serial_tape_preserve_shift=False,
-                serial_encoder="",
-                serial_encoder_states=0,
-                serial_ensemble="",
-                serial_internal_horizon=0,
-                serial_internal_budget_remaining=False,
-                objective_budget_channel=False,
-            )
-        )
+    verifiers = {
+        index: SemanticBraidVerifier.from_config(configs[index].game)
         for index in stage_indices
     }
     seen = set(excluded or set())
@@ -99,7 +83,7 @@ def ladder_representation_panel(
                 strands=int(np.asarray(raw._n)),
             )
             view = _variant(
-                base_games[stage_index],
+                verifiers[stage_index],
                 generated,
                 depth=1 + (sample_index + retry) % 16,
                 seed=episode_seed + 700_000_001,

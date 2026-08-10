@@ -1,7 +1,6 @@
 """Resumable heterogeneous scientist collaboration over a frozen task bank.
 
-The legacy adaptive runner copies replay records between identical parallel
-agents.  This runner instead extracts the underlying semantic braid edits from a
+This runner extracts the underlying semantic braid edits from a
 solved serial trajectory and routes each edit through the receiver's own head and
 memory action space.  A translated record is admitted only when exact replay
 still reaches the unknot within the receiver's budget.
@@ -55,6 +54,14 @@ Arm = Literal[
     "static-no-sharing",
     "solo-compute-matched",
 ]
+
+DIRECT_SHARING_ARMS = frozenset(
+    {"adaptive-sharing", "adaptive-sharing-direct", "static-sharing"}
+)
+SHARING_ARMS = frozenset({*DIRECT_SHARING_ARMS, "adaptive-sharing-aux-only"})
+
+ASSESSOR_SCAN_STEPS = 5
+ASSESSOR_SCORING_RULE = "mean-head-sweep-v1"
 
 _WORKER_SCIENTISTS: dict[tuple[str, str, str, bool, int], Scientist] = {}
 
@@ -254,12 +261,20 @@ def expected_capped_scores(
     *,
     failure_crossings: float = 20.0,
 ) -> np.ndarray:
-    """Mean normalized expected capped loss across the requested objectives."""
-    observations = [
-        FixedWordGame(scientist.game, item.knot, ratio).reset(0).observation
+    """Post-scan mean normalized expected loss used by adaptive scheduling."""
+    if not isinstance(scientist.game, SerialBraidGame):
+        raise TypeError("adaptive assessor requires a bounded serial game")
+    scanned = [
+        scientist.game.assessment_scan(
+            list(item.knot.word),
+            item.knot.strands,
+            math.log(ratio),
+            steps=ASSESSOR_SCAN_STEPS,
+        )
         for item in items
         for ratio in ratios
     ]
+    observations = [view for views, _coverage in scanned for view in views]
     tensor = _observation_tensor(observations, torch.device(scientist.config.train.device))
     scientist.network.eval()
     _, legacy, auxiliary = scientist.network.forward_with_auxiliary(tensor)
@@ -273,10 +288,14 @@ def expected_capped_scores(
         probability = calibrated_solve_probability(scientist, solve_logits)
         crossings = predicted_crossings.mean(dim=1)
         moves = predicted_moves.mean(dim=1)
-    ratio_tensor = torch.tensor([ratio for _ in items for ratio in ratios], device=tensor.device)
+    shape = (len(items), len(ratios), ASSESSOR_SCAN_STEPS)
+    probability = probability.reshape(shape).mean(dim=2)
+    crossings = crossings.reshape(shape).mean(dim=2)
+    moves = moves.reshape(shape).mean(dim=2)
+    ratio_tensor = torch.tensor(ratios, device=tensor.device)[None, :]
     failure = ratio_tensor * failure_crossings + budget
     expected = probability * (ratio_tensor * crossings + moves) + (1.0 - probability) * failure
-    normalized = (expected / failure).reshape(len(items), len(ratios)).mean(dim=1)
+    normalized = (expected / failure).mean(dim=1)
     return normalized.cpu().numpy()
 
 
@@ -287,10 +306,19 @@ def prediction_details(
     ratios: tuple[float, ...],
     *,
     failure_crossings: float = 20.0,
-) -> list[dict[str, float]]:
-    observations = [
-        FixedWordGame(scientist.game, item.knot, ratio).reset(0).observation for ratio in ratios
+) -> list[dict[str, Any]]:
+    if not isinstance(scientist.game, SerialBraidGame):
+        raise TypeError("adaptive assessor requires a bounded serial game")
+    scanned = [
+        scientist.game.assessment_scan(
+            list(item.knot.word),
+            item.knot.strands,
+            math.log(ratio),
+            steps=ASSESSOR_SCAN_STEPS,
+        )
+        for ratio in ratios
     ]
+    observations = [view for views, _coverage in scanned for view in views]
     tensor = _observation_tensor(observations, torch.device(scientist.config.train.device))
     scientist.network.eval()
     _, legacy, auxiliary = scientist.network.forward_with_auxiliary(tensor)
@@ -304,6 +332,10 @@ def prediction_details(
         probability = calibrated_solve_probability(scientist, solve_logits)
         crossings = predicted_crossings.mean(dim=1)
         moves = predicted_moves.mean(dim=1)
+    shape = (len(ratios), ASSESSOR_SCAN_STEPS)
+    probability = probability.reshape(shape).mean(dim=1)
+    crossings = crossings.reshape(shape).mean(dim=1)
+    moves = moves.reshape(shape).mean(dim=1)
     rows = []
     for index, ratio in enumerate(ratios):
         failure = ratio * failure_crossings + budget
@@ -319,6 +351,9 @@ def prediction_details(
                 "predicted_moves": float(moves[index]),
                 "expected_capped_loss": expected,
                 "normalized_expected_capped_loss": expected / failure,
+                "assessment_scan_steps": ASSESSOR_SCAN_STEPS,
+                "assessment_scan_coverage": float(scanned[index][1]),
+                "assessment_scoring_rule": ASSESSOR_SCORING_RULE,
             }
         )
     return rows
@@ -792,7 +827,7 @@ def verified_record_cost(
 ) -> tuple[int, int, list[int]] | None:
     """Verify a native solution and return its portable semantic objective cost.
 
-    ``UnknotWitness`` deliberately removes controller-only states so the proof
+    The semantic verifier deliberately removes controller-only states so the proof
     can be replayed by another architecture. Head, tape, and memory operations
     consume native search clocks but do not enter ``L_A:B``. The returned action
     list is reconstructed from the verified compact witness so its length is
@@ -802,7 +837,7 @@ def verified_record_cost(
     if replayed is None:
         return None
     semantic, raw_states = replayed
-    from rf_knots.evidence import BraidState, UnknotWitness
+    from rf_knots.evidence import BraidState
 
     states = [
         BraidState(
@@ -812,7 +847,9 @@ def verified_record_cost(
         )
         for state in raw_states
     ]
-    witness = UnknotWitness.from_states(states, game.config._spec)
+    from pgx_mcts_bench.semantic_verifier import SemanticBraidVerifier
+
+    witness = SemanticBraidVerifier.from_config(game.config).verify_states(states)
     witness.verify()
     semantic = [int(step.action.to_flat(game.config._spec)) for step in witness.steps]
     return witness.crossing_changes, witness.moves, semantic
@@ -1192,23 +1229,35 @@ def _manifest(
     objective_budget: bool,
     remaining_budget_channel: bool,
     native_action_horizon: int,
+    assessor_gate: Path | None,
     input_bank: Path | None,
     input_anchor_bank: Path | None,
     bank_seed: int,
     seed: int,
 ) -> dict[str, Any]:
+    from pgx_mcts_bench.foundation_pretraining import source_provenance
+
     protocol = {
-        "schema": (
-            "collaborative-scientists-v7-adaptive-rehearsal-portfolio"
-            if adaptive_rehearsal
-            else "collaborative-scientists-v6-soft-budget-horizon"
-        ),
+        "schema": "collaborative-scientists-v9-direct-sharing",
+        "source_provenance": source_provenance(),
         "arm": arm,
         "schedule": (
             "adaptive-neural-priority"
             if arm.startswith("adaptive") or arm == "solo-compute-matched"
             else "static-cheap-score"
         ),
+        "assessor_gate": (
+            {"path": str(assessor_gate.resolve()), "sha256": _sha256(assessor_gate)}
+            if assessor_gate is not None
+            else None
+        ),
+        "adaptive_assessor": {
+            "scoring_rule": ASSESSOR_SCORING_RULE,
+            "read_only_head_sweep_steps": ASSESSOR_SCAN_STEPS,
+            "aggregation": "mean predictions across deterministic cyclic head views",
+            "semantic_actions": 0,
+            "solver_episode_budget_charged": False,
+        },
         "ratios": list(ratios),
         "frontier": frontier,
         "qualification_simulations": qualification_simulations,
@@ -1277,30 +1326,20 @@ def _manifest(
         "collaboration_replay_similarity": "cheap-braid-structure-cosine-v1",
         "collaboration_replay_positions_per_episode": 4,
         "collaboration_replay_outcome_mix": "native-success-failure-50-50-when-available",
-        "policy_value_update": "success-only-native-plus-gated-option-policy-adapter-v4",
+        "policy_value_update": "success-only-native-plus-strictly-better-direct-sharing-v5",
         "direct_distillation": {
-            "enabled": arm == "adaptive-sharing-direct",
+            "enabled": arm in DIRECT_SHARING_ARMS,
             "shared_success_fraction": direct_shared_fraction,
             "target": "strictly-better-receiver-native-semantic-witness",
             "optimizer": "native-policy-value",
             "admission": "transactional-complete-portfolio-guard",
         },
         "sharing_policy_adapter": {
-            "initialization": "zero-logit residual with 0.1-probability state gate",
-            "width": 32,
-            "residual_blocks": 2,
-            "optimizer_scope": "adapter-and-gate-only",
-            "native_optimizer_isolation": (
-                "adapter-bypassed, all-gradients-cleared, owned-only-clipping"
+            "enabled": False,
+            "reason": (
+                "paper arms train eligible receiver-native trajectories through the ordinary "
+                "policy; there is no permanent sharing-only policy path"
             ),
-            "conditioning": (
-                "full observation plus explicit head-cell summary and remaining internal budget"
-            ),
-            "updates_per_training_event": "ceil(train_steps / 4)",
-            "route_gate_weight": 0.1,
-            "off_route_kl_weight": 1.0,
-            "off_route_gate_weight": 0.1,
-            "control_matching": "equal extra optimizer-step count",
         },
         "policy_value_preservation": "frozen-starting-scientist-when-weight-positive-v1",
         "shared_witness_internal_action_cap_per_edit": 5,
@@ -1391,6 +1430,7 @@ def run_collaborative_scientists(
     objective_budget: bool = False,
     remaining_budget_channel: bool = False,
     action_horizon: int | None = None,
+    assessor_gate: Path | None = None,
     input_bank: Path | None = None,
     input_anchor_bank: Path | None = None,
     bank_seed: int = 0,
@@ -1428,6 +1468,11 @@ def run_collaborative_scientists(
         raise ValueError("direct shared fraction must be in 0..0.5")
     if (input_bank is None) != (input_anchor_bank is None):
         raise ValueError("input_bank and input_anchor_bank must be supplied together")
+    adaptive_schedule = arm.startswith("adaptive") or arm == "solo-compute-matched"
+    if adaptive_schedule:
+        from pgx_mcts_bench.assessor_gate import validate_assessor_gate
+
+        validate_assessor_gate(assessor_gate, checkpoints)
     # A hard objective cap necessarily needs the remaining-L observation.  The
     # converse is intentionally false: new experiments expose the feature while
     # treating the action horizon, rather than a predicted L, as the only cap.
@@ -1494,6 +1539,7 @@ def run_collaborative_scientists(
             objective_budget=objective_budget,
             remaining_budget_channel=remaining_budget_channel,
             native_action_horizon=native_action_horizon,
+            assessor_gate=assessor_gate,
             input_bank=input_bank,
             input_anchor_bank=input_anchor_bank,
             bank_seed=bank_seed,
@@ -1538,6 +1584,7 @@ def run_collaborative_scientists(
             objective_budget=objective_budget,
             remaining_budget_channel=remaining_budget_channel,
             native_action_horizon=native_action_horizon,
+            assessor_gate=assessor_gate,
             input_bank=input_bank,
             input_anchor_bank=input_anchor_bank,
             bank_seed=bank_seed,
@@ -1548,22 +1595,9 @@ def run_collaborative_scientists(
         _atomic_json(manifest_path, manifest)
 
     for scientist in scientists:
-        scientist.network.shared_auxiliary_only = arm in {
-            "adaptive-sharing",
-            "adaptive-sharing-aux-only",
-            "static-sharing",
-        }
+        scientist.network.shared_auxiliary_only = arm == "adaptive-sharing-aux-only"
         attach_policy_value_preservation_teacher(scientist.network)
     option_optimizers: dict[str, torch.optim.Optimizer] = {}
-    if arm in {"adaptive-sharing", "static-sharing"}:
-        for scientist in scientists:
-            adapter = scientist.network.attach_option_policy_adapter()
-            gate = scientist.network.attach_option_policy_gate(initial_probability=0.1)
-            option_optimizers[scientist.name] = torch.optim.AdamW(
-                [*adapter.parameters(), *gate.parameters()],
-                lr=scientist.config.train.learning_rate,
-                weight_decay=scientist.config.train.weight_decay,
-            )
     completed = _round_dirs(output)
     if completed:
         saved = load_round_state(completed[-1], map_location=device)
@@ -1756,12 +1790,7 @@ def run_collaborative_scientists(
                         winners[ratio] = (scientist_index, record, verified)
 
         translations: list[dict[str, Any]] = []
-        if arm in {
-            "adaptive-sharing",
-            "adaptive-sharing-direct",
-            "adaptive-sharing-aux-only",
-            "static-sharing",
-        }:
+        if arm in SHARING_ARMS:
             for ratio_index, ratio in enumerate(ratios):
                 winner = winners.get(ratio)
                 if winner is None:
@@ -1933,14 +1962,9 @@ def run_collaborative_scientists(
                             collaboration_replay=True,
                             shared_fraction=(
                                 direct_shared_fraction
-                                if arm == "adaptive-sharing-direct"
+                                if arm in DIRECT_SHARING_ARMS
                                 else 0.1
-                                if arm
-                                in {
-                                    "adaptive-sharing",
-                                    "adaptive-sharing-aux-only",
-                                    "static-sharing",
-                                }
+                                if arm == "adaptive-sharing-aux-only"
                                 else 0.0
                             ),
                             policy_value_success_only=True,
@@ -1957,7 +1981,7 @@ def run_collaborative_scientists(
                     if position.option_state is not None and position.target_external_action >= 0
                 ]
                 if (
-                    arm in {"adaptive-sharing", "static-sharing"}
+                    scientist.name in option_optimizers
                     and isinstance(scientist.game, SerialBraidGame)
                     and option_positions
                     and matched_update_steps

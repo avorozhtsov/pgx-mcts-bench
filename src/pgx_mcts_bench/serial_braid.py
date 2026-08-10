@@ -1,11 +1,6 @@
-"""Serial (moving-window) view of the braid environment.
+"""Bounded moving-window view of the braid environment.
 
-The parallel formulation scores every position at once: the policy head emits a
-logit per (position, move-type), so the action space is `O(L)` and a decision
-costs one forward pass over the whole word. That is the right trade while a
-full-length pass is affordable.
-
-This is the other formulation. A **head** points at one position; the agent sees
+A **head** points at one position; the agent sees
 only a window of width `w` *centred* on it and may either act inside that window
 or shift the head. The window is centred rather than forward-looking so that the
 two shift directions are equally informed -- with `[head, head+w)` a left shift
@@ -198,7 +193,6 @@ class SerialBraidGame:
         )
         self.env = BraidUnknot(config.to_braid_config())
         self.spec = self.env.spec
-        self._init = jax.jit(self.env.init)
         self._step = jax.jit(self.env.step)
         self.generator = None
         if config.generator_max_crossings or config.generator_max_scramble:
@@ -250,6 +244,12 @@ class SerialBraidGame:
         # head itself.
         self._act_origin = self.act_width // 2
         self._window_origin = self.window // 2
+        self.certified_value_stats = {
+            "evaluations": 0,
+            "informative": 0,
+            "binding": 0,
+            "by_method": {},
+        }
 
     # -- action translation ---------------------------------------------------
 
@@ -378,15 +378,9 @@ class SerialBraidGame:
 
     def reset(self, seed: int) -> Transition:
         if self.generator is None:
-            state = self._init(jax.random.PRNGKey(seed))
-            return self._view(
-                state,
-                0,
-                self._no_registers(),
-                self._no_colours(),
-                0,
-                self._no_tape(),
-                reward=0.0,
+            raise RuntimeError(
+                "SerialBraidGame.reset requires a configured graded generator; "
+                "use from_word() for an externally supplied representation"
             )
         return self._view(
             self._generated(seed),
@@ -437,6 +431,56 @@ class SerialBraidGame:
             self._no_tape(),
             reward=0.0,
         )
+
+    def assessment_scan(
+        self,
+        word: list[int],
+        strands: int,
+        log_ratio: float = 0.0,
+        *,
+        steps: int = 5,
+    ) -> tuple[list[np.ndarray], float]:
+        """Deterministic read-only head sweep used only by task assessment.
+
+        It performs no semantic edit and consumes no solver episode budget. Each
+        view starts with a full internal budget, so the scheduling assessor is
+        invariant to an arbitrary controller route. Local windows are spaced
+        evenly around the cyclic word; full-scan encoders receive the same
+        rotations through this common interface.
+        """
+        if steps < 1:
+            raise ValueError("assessment scan steps must be positive")
+        word, strands = self._initial_representation(word, strands)
+        pgx_state = self.env.init_from_word(word, strands, log_ratio=log_ratio)
+        length = max(int(np.count_nonzero(np.asarray(pgx_state._word))), 1)
+        heads = (np.arange(steps, dtype=np.int64) * length // steps).tolist()
+        views = [
+            self._view(
+                pgx_state,
+                int(head),
+                self._no_registers(),
+                self._no_colours(),
+                0,
+                self._no_tape(),
+                reward=0.0,
+            ).observation
+            for head in heads
+        ]
+        if (
+            self.config.serial_encoder
+            or self.config.serial_ensemble
+            or self.config.serial_raster == "scalable"
+        ):
+            coverage = 1.0
+        else:
+            radius = self.window // 2
+            covered = {
+                (int(head) + offset) % length
+                for head in heads
+                for offset in range(-radius, radius + 1)
+            }
+            coverage = min(len(covered) / length, 1.0)
+        return views, coverage
 
     def step(self, state: Any, action: int) -> Transition:
         pgx_state = state.pgx
@@ -654,6 +698,42 @@ class SerialBraidGame:
         simplifier = 1 - int(np.asarray(pgx_state._scrambler))
         return simplifier_potential if player == simplifier else -simplifier_potential
 
+    def certified_value(self, state: Any, predicted: float) -> float:
+        """Clamp a search value to the optional theorem-certified cost floor."""
+        if not self.config.certified_value_floor:
+            return float(predicted)
+        from rf_knots.certified_value import certified_floor, clamp_value
+
+        pgx_state = state.pgx
+        if bool(np.asarray(pgx_state.terminated)):
+            return float(predicted)
+        word = tuple(int(value) for value in np.asarray(pgx_state._word) if int(value))
+        strands = int(np.asarray(pgx_state._n))
+        ratio = float(np.exp(float(np.asarray(pgx_state._log_ratio))))
+        floor = certified_floor(word, strands, ratio=ratio)
+        crossings = int(np.asarray(pgx_state._crossing_changes))
+        semantic_moves = int(getattr(state, "semantic_moves", 0))
+        spent = ratio * crossings + semantic_moves
+        cap = (ratio + 1.0) * self.config.simplify_budget
+        simplifier = 1 - int(np.asarray(pgx_state._scrambler))
+        solver_to_move = int(np.asarray(pgx_state.current_player)) == simplifier
+        clamped = clamp_value(
+            predicted,
+            floor,
+            cap,
+            spent_cost=spent,
+            solver_to_move=solver_to_move,
+        )
+        stats = self.certified_value_stats
+        stats["evaluations"] += 1
+        if floor.informative:
+            stats["informative"] += 1
+            methods = stats["by_method"]
+            methods[floor.method] = methods.get(floor.method, 0) + 1
+        if clamped != float(predicted):
+            stats["binding"] += 1
+        return clamped
+
     def state_info(self, state: Any) -> dict[str, int]:
         pgx_state = state[0]
         return {
@@ -690,9 +770,7 @@ class SerialBraidGame:
             mask[action] = full[self.underlying_action(action, head, length)]
         # Toggles are always available while the episode runs: the control state is
         # the agent's own, not a function of the word.
-        internal_allowed = not self.config.serial_internal_horizon or (
-            internal_steps < self.config.serial_internal_horizon
-        )
+        internal_allowed = internal_steps < self.config.serial_internal_horizon
         if not bool(np.asarray(pgx_state.terminated)) and internal_allowed:
             mask[self._register_base : self._colour_base] = True
             if self.colours:
@@ -955,12 +1033,11 @@ class SerialBraidGame:
                     self.config.cyclic_band_generators,
                 )
             window = np.concatenate([window, raster.reshape(observed_width, -1)], axis=1)
-        if self.config.serial_internal_horizon:
-            fraction = min(internal_steps / self.config.serial_internal_horizon, 1.0)
-            if self.config.serial_internal_budget_remaining:
-                fraction = 1.0 - fraction
-            plane = np.full((observed_width, 1), fraction, dtype=np.float32)
-            window = np.concatenate([window, plane], axis=1)
+        fraction = min(internal_steps / self.config.serial_internal_horizon, 1.0)
+        if self.config.serial_internal_budget_remaining:
+            fraction = 1.0 - fraction
+        plane = np.full((observed_width, 1), fraction, dtype=np.float32)
+        window = np.concatenate([window, plane], axis=1)
         if objective_remaining is not None:
             # Append after registers, colours and tape so every historical
             # channel keeps its index. Checkpoint migration then only has to

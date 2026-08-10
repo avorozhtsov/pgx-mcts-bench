@@ -55,11 +55,7 @@ class GameConfig:
 
 @dataclass(frozen=True)
 class BraidGameConfig:
-    """Scrambler vs. Simplifier on braid words (the `rf_knots` environment).
-
-    Mirrors `rf_knots.BraidConfig`; kept as a separate dataclass so that
-    `ExperimentConfig` stays serialisable and checkpoint comparison keeps working.
-    """
+    """Bounded serial unknotting on braid words (the `rf_knots` environment)."""
 
     kind: GameKind = "braid"
     max_len: int = 32
@@ -109,10 +105,9 @@ class BraidGameConfig:
     # cleared stages in the training distribution so that gap closes.
     # Evaluation never uses this; it always pins to the frontier.
     stage_mix: tuple[tuple[str, int, float], ...] = ()
-    # > 0 selects the serial (moving-window) formulation: the agent sees a window
-    # of this width around a head it must move, and the action space stops
-    # depending on L. See serial_braid.py.
-    serial_window: int = 0
+    # The agent sees a window of this width around a moving head.  The retired
+    # position-indexed formulation is intentionally not selectable here.
+    serial_window: int = 7
     # How many window offsets the agent may act at. 1 = only at the head
     # (position lives in the state); serial_window = act anywhere it can see.
     serial_act_width: int = 1
@@ -189,20 +184,31 @@ class BraidGameConfig:
     # complete head-relative word from which all three parent views are derived.
     serial_ensemble: str = ""
     # Maximum consecutive head/memory/tape operations before an external braid
-    # action is required. 0 preserves the historical unbounded serial game.
-    serial_internal_horizon: int = 0
+    # action is required.  This bound is mandatory: an unbounded controller can
+    # create non-terminating search paths consisting only of native actions.
+    serial_internal_horizon: int = 5
     # Historical distilled checkpoints encode the fraction of internal steps
     # already spent.  New budget-aware arms can instead expose the equivalent
     # fraction remaining without changing those old checkpoint semantics.
-    serial_internal_budget_remaining: bool = False
+    serial_internal_budget_remaining: bool = True
     # Append a broadcast remaining-objective-budget plane. The collaboration
     # wrapper supplies a task-specific cap; ordinary games expose the equivalent
     # global move-derived cap. Kept opt-in so historical checkpoint schemas stay
     # exact unless an experiment explicitly migrates them.
     objective_budget_channel: bool = False
+    # Clamp search values to a theorem-certified lower bound on the remaining
+    # number of crossing changes. This changes search, not the observation or
+    # trainable network, and requires the rf-knots ``bounds`` extra.
+    certified_value_floor: bool = False
     # Extend the Artin alphabet with the verified cyclic seam band a_{1,n}.
     # Witnesses compile back to ordinary B_n; see rf_knots.reference.
     cyclic_band_generators: bool = False
+
+    def __post_init__(self) -> None:
+        if self.serial_window < 3:
+            raise ValueError("serial_window must be at least 3")
+        if self.serial_internal_horizon < 1:
+            raise ValueError("serial_internal_horizon must be positive")
 
     def to_braid_config(self):
         from rf_knots.config import BraidConfig
@@ -244,20 +250,18 @@ class BraidGameConfig:
 
     @property
     def action_size(self) -> int:
-        if self.serial_window:
-            from pgx_mcts_bench.serial_braid import serial_action_size
+        from pgx_mcts_bench.serial_braid import serial_action_size
 
-            return serial_action_size(
-                self.max_strands,
-                self.serial_width,
-                len(self.serial_strides),
-                self.serial_registers,
-                self.serial_colours,
-                self.serial_tape_symbols,
-                self.serial_tape_preserve_shift,
-                self.cyclic_band_generators,
-            )
-        return self._spec.num_actions
+        return serial_action_size(
+            self.max_strands,
+            self.serial_width,
+            len(self.serial_strides),
+            self.serial_registers,
+            self.serial_colours,
+            self.serial_tape_symbols,
+            self.serial_tape_preserve_shift,
+            self.cyclic_band_generators,
+        )
 
     @property
     def observation_channels(self) -> int:
@@ -286,7 +290,7 @@ class BraidGameConfig:
             + tape
             + strand_graph
             + raster
-            + int(self.serial_internal_horizon > 0)
+            + 1
             + int(self.objective_budget_channel)
         )
 
@@ -296,11 +300,11 @@ class BraidGameConfig:
 
     @property
     def width(self) -> int:
-        if self.serial_window and (
+        if (
             self.serial_encoder or self.serial_ensemble or self.serial_raster == "scalable"
         ):
             return self.max_len
-        return self.serial_window or self.max_len
+        return self.serial_window
 
     @property
     def cells(self) -> int:
@@ -312,11 +316,7 @@ class BraidGameConfig:
 
     @property
     def terminal_action(self) -> int:
-        from rf_knots.actions import PASS
-
-        if self.serial_window:
-            return self.serial_width * (3 + 2 * self.generator_capacity + 1) + 3  # PASS
-        return self._spec.start_of(PASS)
+        return self.serial_width * (3 + 2 * self.generator_capacity + 1) + 3  # PASS
 
     @property
     def opening_moves(self) -> int:
@@ -332,10 +332,7 @@ def pick_stage(config: BraidGameConfig, generator: Any, rng: Any):
     """`(source, scramble)` for one training instance.
 
     Three regimes, in precedence order: an explicit mixture over cleared stages,
-    a single pinned stage, or the generator's own full grading. Both adapters call
-    this so the two formulations cannot drift apart on which instances they train
-    against -- the sort of difference that would silently invalidate every
-    serial-against-parallel comparison in the ladder.
+    a single pinned stage, or the generator's own full grading.
     """
     if config.stage_mix:
         import numpy as np

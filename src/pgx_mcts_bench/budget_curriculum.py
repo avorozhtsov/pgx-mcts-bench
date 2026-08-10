@@ -63,6 +63,7 @@ def _rung_evaluation(
     metadata: dict[str, Any],
     games: int,
     seed: int,
+    ratio: float,
     simulations: int | None = None,
 ) -> dict[str, Any]:
     candidate = next(candidate for candidate in candidates() if candidate.name == scientist.name)
@@ -86,8 +87,8 @@ def _rung_evaluation(
         config,
         games,
         seed,
-        ratios=(10.0,),
-    )[10.0]
+        ratios=(ratio,),
+    )[ratio]
     return {
         "games": games,
         "solve_rate": float(measured["solved"]),
@@ -194,6 +195,7 @@ def train_budget_curriculum(
     curriculum_source: str = "early-rungs",
     monotonic_weight: float | None = None,
     retention_stage: tuple[str, int] | None = None,
+    minimum_mean_budget_spread: float = 0.01,
 ) -> dict[str, Any]:
     if scientist_name not in BUDGET_PROTOTYPES:
         raise ValueError(
@@ -259,7 +261,13 @@ def train_budget_curriculum(
     caps = tuple(max(1.0, round(global_cap * fraction)) for fraction in cap_fractions)
     before_state = copy.deepcopy(scientist.network.state_dict())
     before_curve = _budget_curve(scientist, simple, ratio, caps)
-    before_rung = _rung_evaluation(scientist, metadata, rung_eval_games, seed + 800_000_000)
+    before_rung = _rung_evaluation(
+        scientist,
+        metadata,
+        rung_eval_games,
+        seed + 800_000_000,
+        ratio,
+    )
     rehearsal = _promoted_rung_rehearsal(
         scientist,
         metadata,
@@ -314,7 +322,13 @@ def train_budget_curriculum(
 
     trained_state = copy.deepcopy(scientist.network.state_dict())
     after_curve = _budget_curve(scientist, simple, ratio, caps)
-    after_rung = _rung_evaluation(scientist, metadata, rung_eval_games, seed + 800_000_000)
+    after_rung = _rung_evaluation(
+        scientist,
+        metadata,
+        rung_eval_games,
+        seed + 800_000_000,
+        ratio,
+    )
     outcomes_by_item = {
         row["item"]: [cap["solved"] > 0 for cap in row["caps"]]
         for row in rows
@@ -330,11 +344,13 @@ def train_budget_curriculum(
     )
     sensitive = sum(row["spread"] > 1e-4 for row in after_curve)
     monotone = sum(row["monotone"] for row in after_curve)
+    mean_spread = float(np.mean([row["spread"] for row in after_curve]))
     accepted = (
         after_rung["solve_rate"] >= before_rung["solve_rate"]
         and bool(informative)
         and informative_sensitive == len(informative)
         and monotone == len(simple)
+        and mean_spread >= minimum_mean_budget_spread
     )
     if not accepted:
         scientist.network.load_state_dict(before_state)
@@ -387,6 +403,7 @@ def train_budget_curriculum(
             "monotonic_weight": float(
                 scientist.network.auxiliary_budget_monotonic_weight
             ),
+            "minimum_mean_budget_spread": minimum_mean_budget_spread,
             "retention_anchor": {
                 "kind": retention_anchor,
                 "source": metadata["source"],
@@ -403,6 +420,7 @@ def train_budget_curriculum(
             "informative_items": sorted(informative),
             "informative_sensitive": informative_sensitive,
             "monotone_items": monotone,
+            "mean_budget_spread": mean_spread,
             "rollback_applied": not accepted,
             "next": (
                 "expand the easy curriculum" if accepted else "restart from the earliest rung"

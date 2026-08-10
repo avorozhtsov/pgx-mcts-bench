@@ -1,117 +1,120 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-mode=${1:-local}
-artifact_root=${2:-artifacts/collaboration-pilot-200}
-bank_seed=${BANK_SEED:-20260802}
-ratios=${RATIOS:-10}
-# The common structural first cap stays opt-in until the paired compute gate.
-# It is representation-derived and never uses one scientist's predicted cost.
+mode=${1:-smoke}
+artifact_root=${2:-artifacts/current/semantic-moves-v1/collaboration-smoke-k3}
+foundation_root=${FOUNDATION_ROOT:-artifacts/current/semantic-moves-v1/foundation-pretrain-semantic-v1-20260809}
+assessor_gate=${ASSESSOR_GATE:-}
+bank_seed=${BANK_SEED:-20260810}
+ratios=${RATIOS:-10,1000}
 objective_budget=${OBJECTIVE_BUDGET:-0}
+remaining_budget_channel=${REMAINING_BUDGET_CHANNEL:-1}
+input_bank=${INPUT_BANK:-}
+input_anchor_bank=${INPUT_ANCHOR_BANK:-}
 
-window_checkpoint=${WINDOW_CHECKPOINT:-artifacts/nebius-rung18-20260801-current/runs/s-window-128/checkpoints/s-window-128/stage21-after.pt}
-tape_checkpoint=${TAPE_CHECKPOINT:-artifacts/local-rung18-backfill-20260802/runs/s-tape4/checkpoints/s-tape4/stage18-after.pt}
-w11_checkpoint=${W11_CHECKPOINT:-artifacts/nebius-rung18-20260801-current/runs/s-w11-128/checkpoints/s-w11-128/stage18-after.pt}
-cyclic_checkpoint=${CYCLIC_CHECKPOINT:-}
-roster=${ROSTER:-k3}
+strand_checkpoint=${STRAND_CHECKPOINT:-$foundation_root/strand-graph/seed-71/checkpoint.pt}
+raster_checkpoint=${RASTER_CHECKPOINT:-$foundation_root/raster-axial/seed-71/checkpoint.pt}
+cyclic_checkpoint=${CYCLIC_CHECKPOINT:-$foundation_root/cyclic-memory/seed-73/checkpoint.pt}
 
 case "$mode" in
   smoke)
-    seeds=(20260805)
-    rounds=3
-    threads=1
-    attempt_workers=2
-    qualification_simulations=2
-    simulations=4
-    train_every=1
-    train_steps=2
-    ;;
-  schedule-smoke)
-    seeds=(20260960)
-    rounds=20
-    threads=1
-    attempt_workers=2
-    qualification_simulations=16
-    simulations=64
-    train_every=5
-    train_steps=16
-    ;;
-  schedule-pilot)
-    seeds=(20260961)
-    rounds=50
-    threads=1
-    attempt_workers=2
-    qualification_simulations=16
-    simulations=64
-    train_every=5
-    train_steps=16
-    ;;
-  local)
     seeds=(20260810)
-    rounds=200
-    threads=1
-    attempt_workers=2
-    qualification_simulations=4
-    simulations=16
-    train_every=10
-    train_steps=8
+    rounds=${ROUNDS:-3}
+    pool_size=${POOL_SIZE:-8}
+    anchor_size=${ANCHOR_SIZE:-4}
+    frontier=${FRONTIER:-4}
+    threads=${THREADS:-1}
+    attempt_workers=${ATTEMPT_WORKERS:-2}
+    qualification_simulations=${QUALIFICATION_SIMULATIONS:-2}
+    simulations=${SIMULATIONS:-4}
+    train_every=${TRAIN_EVERY:-1}
+    train_steps=${TRAIN_STEPS:-2}
+    retention_attempts=${RETENTION_ATTEMPTS:-3}
+    retention_simulations=${RETENTION_SIMULATIONS:-2}
     ;;
-  local-high)
-    seeds=(20260830)
-    rounds=75
-    threads=1
-    attempt_workers=2
-    qualification_simulations=16
-    simulations=128
-    train_every=10
-    train_steps=32
+  pilot)
+    seeds=(${SEEDS:-20260810})
+    rounds=${ROUNDS:-200}
+    pool_size=${POOL_SIZE:-200}
+    anchor_size=${ANCHOR_SIZE:-70}
+    frontier=${FRONTIER:-100}
+    threads=${THREADS:-1}
+    attempt_workers=${ATTEMPT_WORKERS:-2}
+    qualification_simulations=${QUALIFICATION_SIMULATIONS:-32}
+    simulations=${SIMULATIONS:-128}
+    train_every=${TRAIN_EVERY:-10}
+    train_steps=${TRAIN_STEPS:-32}
+    retention_attempts=${RETENTION_ATTEMPTS:-24}
+    retention_simulations=${RETENTION_SIMULATIONS:-64}
     ;;
   cpu32)
-    seeds=(20260810 20260811 20260812)
-    rounds=200
-    threads=1
-    attempt_workers=2
-    qualification_simulations=16
-    simulations=128
-    train_every=10
-    train_steps=32
+    seeds=(${SEEDS:-20260810 20260811 20260812})
+    rounds=${ROUNDS:-200}
+    pool_size=${POOL_SIZE:-200}
+    anchor_size=${ANCHOR_SIZE:-70}
+    frontier=${FRONTIER:-100}
+    threads=${THREADS:-1}
+    attempt_workers=${ATTEMPT_WORKERS:-2}
+    qualification_simulations=${QUALIFICATION_SIMULATIONS:-32}
+    simulations=${SIMULATIONS:-128}
+    train_every=${TRAIN_EVERY:-10}
+    train_steps=${TRAIN_STEPS:-32}
+    retention_attempts=${RETENTION_ATTEMPTS:-24}
+    retention_simulations=${RETENTION_SIMULATIONS:-64}
+    ;;
+  big)
+    seeds=(${SEEDS:-20260820 20260821 20260822})
+    rounds=${ROUNDS:-1000}
+    pool_size=${POOL_SIZE:-1200}
+    anchor_size=${ANCHOR_SIZE:-200}
+    frontier=${FRONTIER:-100}
+    threads=${THREADS:-1}
+    attempt_workers=${ATTEMPT_WORKERS:-2}
+    qualification_simulations=${QUALIFICATION_SIMULATIONS:-32}
+    simulations=${SIMULATIONS:-128}
+    train_every=${TRAIN_EVERY:-10}
+    train_steps=${TRAIN_STEPS:-32}
+    retention_attempts=${RETENTION_ATTEMPTS:-24}
+    retention_simulations=${RETENTION_SIMULATIONS:-64}
     ;;
   *)
-    echo "usage: $0 {smoke|schedule-smoke|schedule-pilot|local|local-high|cpu32} [artifact-root]" >&2
+    echo "usage: $0 {smoke|pilot|cpu32|big} [artifact-root]" >&2
     exit 2
     ;;
 esac
 
-scientist_names=(s-window-128 s-tape4 s-w11-128)
-scientist_checkpoints=("$window_checkpoint" "$tape_checkpoint" "$w11_checkpoint")
-case "$roster" in
-  k3) ;;
-  k4)
-    if [[ -z "$cyclic_checkpoint" || ! -f "$cyclic_checkpoint" ]]; then
-      echo "ROSTER=k4 requires an existing CYCLIC_CHECKPOINT" >&2
-      exit 2
-    fi
-    scientist_names+=(s-cyclic-tape8-192)
-    scientist_checkpoints+=("$cyclic_checkpoint")
-    ;;
-  *)
-    echo "ROSTER must be k3 or k4" >&2
-    exit 2
-    ;;
-esac
+scientist_names=(strand-graph raster-axial cyclic-memory)
+scientist_checkpoints=("$strand_checkpoint" "$raster_checkpoint" "$cyclic_checkpoint")
+
 for index in "${!scientist_names[@]}"; do
+  name=${scientist_names[$index]}
   checkpoint=${scientist_checkpoints[$index]}
   if [[ ! -f "$checkpoint" ]]; then
     echo "missing checkpoint: $checkpoint" >&2
     exit 2
   fi
-  .venv/bin/python - "${scientist_names[$index]}" "$checkpoint" <<'PY'
+  .venv/bin/python - "$name" "$checkpoint" <<'PY'
 import sys
 from pathlib import Path
 
-from pgx_mcts_bench.rapid_adaptation import promoted_checkpoint_metadata
+import torch
 
-promoted_checkpoint_metadata(Path(sys.argv[2]), sys.argv[1])
+from pgx_mcts_bench.adaptive_scientists import load_scientist
+
+name, raw = sys.argv[1:]
+checkpoint = Path(raw)
+payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+if payload.get("candidate") != name:
+    raise SystemExit(f"checkpoint candidate mismatch: expected {name}, got {payload.get('candidate')}")
+load_scientist(
+    name,
+    checkpoint,
+    seed=0,
+    device="cpu",
+    simulations=1,
+    require_factorized=True,
+    objective_budget_channel=True,
+)
 PY
 done
 
@@ -122,11 +125,18 @@ for arm in "${arms[@]}"; do
   case "$arm" in
     adaptive-sharing|adaptive-no-sharing|static-sharing|static-no-sharing|solo-compute-matched) ;;
     *)
-      echo "unknown arm in ARMS: $arm" >&2
+      echo "unknown paper arm in ARMS: $arm" >&2
       exit 2
       ;;
   esac
 done
+if printf '%s\n' "${arms[@]}" | grep -Eq '^(adaptive-|solo-compute-matched$)'; then
+  if [[ -z "$assessor_gate" || ! -f "$assessor_gate" ]]; then
+    echo "adaptive and solo scheduling require ASSESSOR_GATE" >&2
+    exit 2
+  fi
+fi
+
 pids=()
 labels=()
 
@@ -148,29 +158,37 @@ launch_one() {
     resume=(--resume)
   fi
   local scientists=(
-    --scientist "s-window-128=$window_checkpoint"
-    --scientist "s-tape4=$tape_checkpoint"
-    --scientist "s-w11-128=$w11_checkpoint"
+    --scientist "strand-graph=$strand_checkpoint"
+    --scientist "raster-axial=$raster_checkpoint"
+    --scientist "cyclic-memory=$cyclic_checkpoint"
   )
-  if [[ "$roster" == k4 ]]; then
-    scientists+=(--scientist "s-cyclic-tape8-192=$cyclic_checkpoint")
-  fi
   local arm_qualification_simulations=$qualification_simulations
   local arm_simulations=$simulations
   local arm_train_steps=$train_steps
   if [[ "$arm" == solo-compute-matched ]]; then
-    local scientist_count=${#scientist_names[@]}
-    if [[ "$roster" == k4 ]]; then
-      scientist_count=4
-    fi
-    scientists=(--scientist "s-window-128=$window_checkpoint")
-    arm_qualification_simulations=$((qualification_simulations * scientist_count))
-    arm_simulations=$((simulations * scientist_count))
-    arm_train_steps=$((train_steps * scientist_count))
+    scientists=(--scientist "strand-graph=$strand_checkpoint")
+    arm_qualification_simulations=$((qualification_simulations * 3))
+    arm_simulations=$((simulations * 3))
+    arm_train_steps=$((train_steps * 3))
   fi
   local budget_args=()
   if [[ "$objective_budget" == 1 ]]; then
-    budget_args=(--objective-budget)
+    budget_args+=(--objective-budget)
+  fi
+  if [[ "$remaining_budget_channel" == 1 ]]; then
+    budget_args+=(--remaining-budget-channel)
+  fi
+  local assessor_args=()
+  if [[ "$arm" == adaptive-* || "$arm" == solo-compute-matched ]]; then
+    assessor_args=(--assessor-gate "$assessor_gate")
+  fi
+  local bank_args=()
+  if [[ -n "$input_bank" || -n "$input_anchor_bank" ]]; then
+    if [[ ! -f "$input_bank" || ! -f "$input_anchor_bank" ]]; then
+      echo "INPUT_BANK and INPUT_ANCHOR_BANK must both name existing files" >&2
+      exit 2
+    fi
+    bank_args=(--input-bank "$input_bank" --input-anchor-bank "$input_anchor_bank")
   fi
   OMP_NUM_THREADS=$threads \
   MKL_NUM_THREADS=$threads \
@@ -182,9 +200,9 @@ launch_one() {
       "${scientists[@]}" \
       --arm "$arm" \
       --rounds "$rounds" \
-      --pool-size 200 \
-      --anchor-size 70 \
-      --frontier 100 \
+      --pool-size "$pool_size" \
+      --anchor-size "$anchor_size" \
+      --frontier "$frontier" \
       --ratios "$ratios" \
       --qualification-simulations "$arm_qualification_simulations" \
       --simulations "$arm_simulations" \
@@ -192,16 +210,23 @@ launch_one() {
       --train-steps "$arm_train_steps" \
       --batch-size 32 \
       --attempt-workers "$attempt_workers" \
+      --adaptive-rehearsal \
+      --rehearsal-games-per-block 8 \
+      --max-rehearsal-games-per-block 32 \
+      --retention-attempts "$retention_attempts" \
+      --retention-simulations "$retention_simulations" \
+      --direct-shared-fraction 0.05 \
       "${budget_args[@]}" \
+      "${assessor_args[@]}" \
+      "${bank_args[@]}" \
       --bank-seed "$bank_seed" \
       --seed "$seed" \
       --device cpu \
       "${resume[@]}" >"$log" 2>&1 &
   local pid=$!
-  local label="seed-$seed/$arm"
   pids+=("$pid")
-  labels+=("$label")
-  echo "started $label pid=$pid log=$log"
+  labels+=("seed-$seed/$arm")
+  echo "started seed-$seed/$arm pid=$pid log=$log"
 }
 
 for seed in "${seeds[@]}"; do

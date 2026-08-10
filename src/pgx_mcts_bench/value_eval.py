@@ -66,7 +66,7 @@ def auxiliary_statistics(
 
 def _held_out_instances(seed: int) -> list[dict[str, Any]]:
     """Generate each held-out word once so every critic sees identical states."""
-    reference = next(candidate for candidate in candidates() if candidate.name == "u1-puct")
+    reference = next(candidate for candidate in candidates() if candidate.name == "s-window-128")
     config = _config(reference, VALUE_EVAL_STAGES[0], seed, "cpu")
     game = make_game(config.game)
     instances = []

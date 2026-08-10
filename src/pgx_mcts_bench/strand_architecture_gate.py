@@ -23,9 +23,9 @@ EARLY_MIXED_STRAND_STAGES: tuple[tuple[str, int], ...] = (
 
 def _run_one(payload: dict[str, Any]) -> dict[str, Any]:
     from pgx_mcts_bench import ladder
-    from pgx_mcts_bench.braid_sweep import _worker_init
+    from pgx_mcts_bench.worker_runtime import worker_init
 
-    _worker_init()
+    worker_init()
     by_name = {candidate.name: candidate for candidate in ladder.candidates()}
     candidate = replace(
         by_name[payload["candidate"]], simulations=int(payload["simulations"])
@@ -48,7 +48,7 @@ def _run_one(payload: dict[str, Any]) -> dict[str, Any]:
             eval_games=int(payload["eval_games"]),
             promote_at=float(payload["promote_at"]),
             mix_decay=0.5,
-            max_consecutive_caps=1,
+            max_consecutive_caps=int(payload["max_consecutive_caps"]),
             plateau_on_known_objective=False,
             rehearsal_games_per_cleared_stage=int(
                 payload["rehearsal_games_per_cleared_stage"]
@@ -60,6 +60,7 @@ def _run_one(payload: dict[str, Any]) -> dict[str, Any]:
             retro_games=int(payload["retro_games"]),
             balanced_replay=True,
             policy_value_success_only=True,
+            retry_capped_on_resume=bool(payload["retry_capped_on_resume"]),
             log=lambda *args, **kwargs: None,
         )
     finally:
@@ -94,6 +95,8 @@ def run_strand_architecture_gate(
     adaptive_rehearsal: bool = True,
     rehearsal_target: float = 0.8,
     max_rehearsal_games_per_stage: int = 8,
+    max_consecutive_caps: int = 1,
+    retry_capped_on_resume: bool = False,
     retro_games: int = 24,
     promote_at: float = 0.8,
     stage_limit: int = len(EARLY_MIXED_STRAND_STAGES),
@@ -122,6 +125,8 @@ def run_strand_architecture_gate(
         raise ValueError("rehearsal_target must be in 0..1")
     if max_rehearsal_games_per_stage < max(1, rehearsal_games_per_cleared_stage):
         raise ValueError("maximum rehearsal dose is smaller than its initial dose")
+    if max_consecutive_caps < 1:
+        raise ValueError("maximum consecutive caps must be positive")
     if retro_games < 1:
         raise ValueError("retro_games must be positive")
     output.mkdir(parents=True, exist_ok=True)
@@ -141,6 +146,8 @@ def run_strand_architecture_gate(
             "adaptive_rehearsal": adaptive_rehearsal,
             "rehearsal_target": rehearsal_target,
             "max_rehearsal_games_per_stage": max_rehearsal_games_per_stage,
+            "max_consecutive_caps": max_consecutive_caps,
+            "retry_capped_on_resume": retry_capped_on_resume,
             "retro_games": retro_games,
             "policy_value_success_only": True,
             "promote_at": promote_at,
@@ -170,6 +177,8 @@ def run_strand_architecture_gate(
             "adaptive_rehearsal": adaptive_rehearsal,
             "rehearsal_target": rehearsal_target,
             "max_rehearsal_games_per_stage": max_rehearsal_games_per_stage,
+            "max_consecutive_caps": max_consecutive_caps,
+            "retry_capped_on_resume": retry_capped_on_resume,
             "retro_games": retro_games,
             "policy_value_success_only": True,
             "promote_at": promote_at,

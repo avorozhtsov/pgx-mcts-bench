@@ -1,0 +1,45 @@
+{
+  "schema": "semantic-v1-k3-checkpoint-selection-v1",
+  "selected_on": "2026-08-10",
+  "foundation_run": "artifacts/current/semantic-moves-v1/foundation-pretrain-semantic-v1-20260809",
+  "selection_rule": {
+    "architecture_diversity": true,
+    "rule": "For strand-graph and raster-axial select the lowest fully promoted seed. For cyclic-memory select the only completed fully promoted seed. Do not use the paper evaluation bank for selection.",
+    "unfinished_jobs_are_not_reported_as_completed": true
+  },
+  "scientists": [
+    {
+      "name": "strand-graph",
+      "seed": 71,
+      "checkpoint": "artifacts/current/semantic-moves-v1/foundation-pretrain-semantic-v1-20260809/strand-graph/seed-71/checkpoint.pt",
+      "sha256": "c04dcd676d1e37c5ad19a7b2e5f4369c4ad71011884a6c6e99470d35f20ca5a5",
+      "role": "strongest-solo-and-portfolio-scientist"
+    },
+    {
+      "name": "raster-axial",
+      "seed": 71,
+      "checkpoint": "artifacts/current/semantic-moves-v1/foundation-pretrain-semantic-v1-20260809/raster-axial/seed-71/checkpoint.pt",
+      "sha256": "96af039ca683777e857f82f726090edb9f17edfad758cae949d1bb5955fff515",
+      "role": "geometric-raster-scientist"
+    },
+    {
+      "name": "cyclic-memory",
+      "seed": 73,
+      "checkpoint": "artifacts/current/semantic-moves-v1/foundation-pretrain-semantic-v1-20260809/cyclic-memory/seed-73/checkpoint.pt",
+      "sha256": "bc6a7d7afbb8de7f686826dc0b74ec6e20f51c5c000d7286559f88a1129af0b1",
+      "role": "persistent-memory-diversity-scientist"
+    }
+  ],
+  "solo_arm": "strand-graph",
+  "foundation_completion": {
+    "primary_jobs_finished": 11,
+    "primary_jobs_planned": 12,
+    "unfinished": [
+      {
+        "name": "cyclic-memory",
+        "seed": 72,
+        "stopped_before_stage": 3
+      }
+    ]
+  }
+}

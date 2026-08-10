@@ -21,9 +21,8 @@ from pathlib import Path
 
 from pgx_mcts_bench.ladder import run_ladder, serial_arms
 
-# The grid itself lives in `ladder.py` as `serial_arms()`, so the extended ladder
-# can race the serial and parallel formulations against each other on one stage
-# list rather than keeping two divergent copies of the settings.
+# The grid itself lives in `ladder.py` as `serial_arms()`, so every bounded
+# serial screen uses the same stage list and settings.
 arms = serial_arms
 
 
@@ -73,7 +72,7 @@ def run_screen(
     only: list[str] | None = None,
     log=print,
 ) -> list[dict]:
-    from pgx_mcts_bench.braid_sweep import _worker_init, enable_jax_compilation_cache
+    from pgx_mcts_bench.worker_runtime import enable_jax_compilation_cache, worker_init
 
     enable_jax_compilation_cache()
     output.mkdir(parents=True, exist_ok=True)
@@ -82,7 +81,7 @@ def run_screen(
         f"{workers} workers")
     jobs = [(a, str(output), max_iterations, eval_games, promote_at, seed) for a in grid]
     rows: list[dict] = []
-    with ProcessPoolExecutor(max_workers=workers, initializer=_worker_init) as pool:
+    with ProcessPoolExecutor(max_workers=workers, initializer=worker_init) as pool:
         for row in pool.map(_run, jobs):
             stage = row["highest_stage"]
             top = next(

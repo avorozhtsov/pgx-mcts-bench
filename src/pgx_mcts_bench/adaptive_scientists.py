@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import copy
-import hashlib
-import json
 import math
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -14,41 +11,57 @@ import numpy as np
 import torch
 
 from pgx_mcts_bench.config import ExperimentConfig
-from pgx_mcts_bench.data import GameRecord, ReplayBuffer
+from pgx_mcts_bench.data import ReplayBuffer
 from pgx_mcts_bench.game import GameAdapter, Transition, make_game
 from pgx_mcts_bench.ladder import Candidate, _config, candidates
 from pgx_mcts_bench.networks import load_policy_value_state_dict, make_braid_network
-from pgx_mcts_bench.search import NeuralMCTS
-from pgx_mcts_bench.training import play_selfplay_games, train_alphazero_step
 
 # The preregistered K=3 collaboration roster.  Budget-aware training is admitted
 # per architecture, but keeping the list here prevents the launcher, loader, and
 # admission tools from silently disagreeing about which scientists are repaired.
 COLLABORATION_K3 = ("s-window-128", "s-tape4", "s-w11-128")
-BUDGET_PROTOTYPES = (*COLLABORATION_K3, "s-cyclic-tape8-192")
+BUDGET_PROTOTYPES = (
+    *COLLABORATION_K3,
+    "s-cyclic-tape8-192",
+    "strand-graph",
+    "raster-axial",
+    "cyclic-memory",
+)
 BUDGET_LEARNING_RATES = {
     "s-window-128": 2.5e-4,
     "s-tape4": 5.0e-5,
     "s-w11-128": 2.5e-4,
     "s-cyclic-tape8-192": 1.0e-4,
+    "strand-graph": 1.0e-4,
+    "raster-axial": 1.0e-4,
+    "cyclic-memory": 1.0e-4,
 }
 BUDGET_AUXILIARY_LEARNING_RATES = {
     "s-window-128": 2.5e-4,
     "s-tape4": 1.0e-3,
     "s-w11-128": 2.5e-4,
     "s-cyclic-tape8-192": 5.0e-4,
+    "strand-graph": 5.0e-4,
+    "raster-axial": 5.0e-4,
+    "cyclic-memory": 5.0e-4,
 }
 BUDGET_PRESERVATION_WEIGHTS = {
     "s-window-128": 1.0,
     "s-tape4": 20.0,
     "s-w11-128": 5.0,
     "s-cyclic-tape8-192": 5.0,
+    "strand-graph": 5.0,
+    "raster-axial": 5.0,
+    "cyclic-memory": 5.0,
 }
 BUDGET_MONOTONIC_WEIGHTS = {
     "s-window-128": 0.25,
     "s-tape4": 1.0,
     "s-w11-128": 1.0,
     "s-cyclic-tape8-192": 0.25,
+    "strand-graph": 1.0,
+    "raster-axial": 1.0,
+    "cyclic-memory": 1.0,
 }
 
 
@@ -242,7 +255,7 @@ class FixedWordGame:
 
 
 def smallest_crossing_pool(size: int = 200) -> list[KnotItem]:
-    """Frozen table slice compatible with the parallel rung-23 networks."""
+    """Frozen table slice compatible with the bounded serial scientist envelope."""
     from rf_knots.knot_table import load_table
 
     items = []
@@ -436,240 +449,3 @@ def load_scientist(
         solve_calibration_scale=float(solve_calibration.get("scale", 1.0)),
         solve_calibration_bias=float(solve_calibration.get("bias", 0.0)),
     )
-
-
-def _verified_witness(knot: KnotItem, record: GameRecord, config: ExperimentConfig):
-    from rf_knots.evidence import UnknotWitness
-
-    if not record or record[0].solved < 0.5:
-        return None
-    witness = UnknotWitness.from_actions(
-        knot.word, knot.strands, config.game._spec, (position.action for position in record)
-    )
-    witness.verify()
-    return witness
-
-
-def _write_jsonl(path: Path, row: dict[str, Any]) -> None:
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(row, sort_keys=True) + "\n")
-
-
-def run_adaptive_scientists(
-    checkpoints: dict[str, Path],
-    output: Path,
-    *,
-    rounds: int = 20,
-    pool_size: int = 200,
-    alpha: float = 1.0,
-    proposal_temperature: float = 1.0,
-    group_temperature: float = 1.0,
-    starvation_rounds: int = 0,
-    selfplay_games: int = 2,
-    train_steps: int = 16,
-    batch_size: int = 32,
-    simulations: int = 0,
-    seed: int = 0,
-    device: str = "cpu",
-    require_factorized: bool = False,
-) -> dict[str, Any]:
-    if not checkpoints:
-        raise ValueError("at least one scientist checkpoint is required")
-    output.mkdir(parents=True, exist_ok=True)
-    schedule_path = output / "schedule.jsonl"
-    if schedule_path.exists():
-        raise FileExistsError(f"{schedule_path} already exists; choose a fresh output directory")
-    pool = smallest_crossing_pool(pool_size)
-    scientists = [
-        load_scientist(
-            name,
-            path,
-            seed=seed + i * 10_000,
-            device=device,
-            simulations=simulations,
-            require_factorized=require_factorized,
-        )
-        for i, (name, path) in enumerate(checkpoints.items())
-    ]
-    starvation = starvation_rounds or 2 * len(scientists)
-    rng = np.random.default_rng(seed)
-    remaining = list(pool)
-    pool_payload = [asdict(knot) for knot in pool]
-    pool_json = json.dumps(pool_payload, sort_keys=True)
-    (output / "pool.json").write_text(pool_json + "\n", encoding="utf-8")
-    selected: list[str] = []
-    for round_index in range(min(rounds, len(remaining))):
-        remaining_names = [knot.name for knot in remaining]
-        round_sources = [scientist.prediction_source for scientist in scientists]
-        predictions = []
-        score_rows = []
-        for scientist in scientists:
-            probability, crossings = score_pool(scientist, remaining)
-            scores = simplicity(probability, crossings)
-            predictions.append((probability, crossings))
-            score_rows.append(scores)
-        proposals = choose_proposals(score_rows, rng, proposal_temperature)
-        proposal_names = [remaining[index].name for index in proposals]
-        selected_scientist, selected_index, reason = choose_group_proposal(
-            score_rows,
-            proposals,
-            [s.ignored_rounds for s in scientists],
-            rng,
-            alpha=alpha,
-            temperature=group_temperature,
-            starvation_rounds=starvation,
-        )
-        knot = remaining.pop(selected_index)
-        matching = {i for i, proposal in enumerate(proposals) if proposal == selected_index}
-        matching.add(selected_scientist)
-        for i, scientist in enumerate(scientists):
-            if i in matching:
-                scientist.last_accepted_round = round_index
-                scientist.ignored_rounds = 0
-            else:
-                scientist.ignored_rounds += 1
-
-        solved_records: list[tuple[int, GameRecord, Any]] = []
-        losses: dict[str, list[dict[str, float]]] = {}
-        for scientist_index, scientist in enumerate(scientists):
-            fixed = FixedWordGame(scientist.game, knot)
-            search = NeuralMCTS(fixed, scientist.network, scientist.config.search, device)
-            game_seeds = [
-                seed + round_index * 100_000 + scientist_index * 1_000 + i
-                for i in range(selfplay_games)
-            ]
-            records = play_selfplay_games(
-                fixed,
-                search,
-                [np.random.default_rng(game_seed) for game_seed in game_seeds],
-                game_seeds,
-                scientist.config.train.temperature_moves,
-            )
-            for record in records:
-                scientist.replay.add(record)
-                witness = _verified_witness(knot, record, scientist.config)
-                if witness is not None:
-                    solved_records.append((scientist_index, record, witness))
-
-        shared = None
-        if solved_records:
-            source, best_record, witness = min(
-                solved_records,
-                key=lambda item: (item[2].crossing_changes, item[2].moves, item[0]),
-            )
-            for scientist_index, scientist in enumerate(scientists):
-                if scientist_index == source:
-                    continue
-                shared_record = copy.deepcopy(best_record)
-                for position in shared_record:
-                    position.shared_witness = True
-                scientist.replay.add(shared_record)
-            shared = {
-                "source": scientists[source].name,
-                "crossing_changes": witness.crossing_changes,
-                "moves": witness.moves,
-                "instance_id": witness.instance_id,
-            }
-
-        for scientist in scientists:
-            losses[scientist.name] = []
-            if scientist.replay.position_count:
-                for _ in range(train_steps):
-                    losses[scientist.name].append(
-                        train_alphazero_step(
-                            scientist.network,
-                            scientist.optimizer,
-                            scientist.replay,
-                            batch_size,
-                            torch.device(device),
-                        )
-                    )
-            checkpoint_dir = output / "checkpoints" / scientist.name
-            checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            torch.save(
-                {
-                    "network": scientist.network.state_dict(),
-                    "optimizer": scientist.optimizer.state_dict(),
-                    "adaptive_round": round_index,
-                    "selected": knot.name,
-                },
-                checkpoint_dir / f"round{round_index:03d}.pt",
-            )
-
-        # Legacy rung-23 snapshots need one real adaptive batch before their
-        # newly introduced factorized towers are allowed to schedule knots.
-        if train_steps and solved_records:
-            for scientist in scientists:
-                if scientist.prediction_source == "legacy_proxy":
-                    scientist.prediction_source = "factorized_adaptive"
-
-        row = {
-            "round": round_index,
-            "knot": asdict(knot),
-            "selected_scientist": scientists[selected_scientist].name,
-            "reason": reason,
-            "proposals": [
-                {
-                    "scientist": scientist.name,
-                    "knot": proposal_names[i],
-                    "proposal_score": float(score_rows[i][proposal]),
-                    "prediction_source": round_sources[i],
-                    "ignored_after": scientist.ignored_rounds,
-                }
-                for i, (scientist, proposal) in enumerate(zip(scientists, proposals, strict=True))
-            ],
-            "selected_predictions": {
-                scientist.name: {
-                    "p_solve": float(predictions[i][0][selected_index]),
-                    "predicted_crossings": float(predictions[i][1][selected_index]),
-                    "simplicity": float(score_rows[i][selected_index]),
-                }
-                for i, scientist in enumerate(scientists)
-            },
-            "all_predictions": {
-                scientist.name: [
-                    {
-                        "knot": remaining_names[knot_index],
-                        "p_solve": float(predictions[i][0][knot_index]),
-                        "predicted_crossings": float(predictions[i][1][knot_index]),
-                        "simplicity": float(score_rows[i][knot_index]),
-                    }
-                    for knot_index in range(len(remaining_names))
-                ]
-                for i, scientist in enumerate(scientists)
-            },
-            "shared_witness": shared,
-            "last_losses": {
-                name: values[-1] if values else None for name, values in losses.items()
-            },
-        }
-        _write_jsonl(schedule_path, row)
-        selected.append(knot.name)
-
-    report = {
-        "scientists": [
-            {
-                "name": s.name,
-                "checkpoint": str(s.checkpoint),
-                "prediction_source": s.prediction_source,
-            }
-            for s in scientists
-        ],
-        "pool_size": len(pool),
-        "pool_sha256": hashlib.sha256(pool_json.encode()).hexdigest(),
-        "rounds": len(selected),
-        "selected": selected,
-        "starvation_rounds": starvation,
-        "score": "p_solve * (20 - predicted_crossing_changes)",
-        "shared_cost_semantics": "verified upper bound (one-sided hinge)",
-    }
-    (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    return report
-
-
-def default_rung23_checkpoints(root: Path) -> dict[str, Path]:
-    names = ("u1-puct", "search-heavy", "wide-net")
-    return {
-        name: root / "artifacts" / "deep-ladder" / name / "checkpoints" / name / "stage23-after.pt"
-        for name in names
-    }

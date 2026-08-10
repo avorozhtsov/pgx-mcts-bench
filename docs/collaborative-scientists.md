@@ -1,9 +1,13 @@
 # Resumable heterogeneous scientist collaboration
 
-The legacy `braid-adaptive-scientists` command remains a regression fixture. It
-shares raw replay records and therefore supports only scientists with the same
-action space. The corrected experiment is
-`braid-collaborative-scientists`.
+The supported experiment is `braid-collaborative-scientists`. Scientists share
+verified semantic witnesses, which are translated into each receiver's bounded
+serial action space; raw replay records are never copied between architectures.
+
+The paper roster is `strand-graph` seed 71, `raster-axial` seed 71, and
+`cyclic-memory` seed 73. The ordinary-policy sharing protocol is schema
+`collaborative-scientists-v9-direct-sharing`; paper sharing arms do not attach a
+permanent sharing-only adapter.
 
 ## Frozen experiment
 
@@ -28,6 +32,33 @@ representation. Adaptive and static arms spend the same number of qualification
 and full-search attempts. Qualification games select a task but never enter
 training replay, avoiding an unpaired adaptive-data advantage.
 
+## Assessor prerequisite for adaptive scheduling
+
+An adaptive arm cannot start without `--assessor-gate`. The certificate is tied
+to the exact checkpoint hash of every scientist in the roster and is frozen in
+the run manifest. Static arms do not require it because they do not use neural
+predictions to choose the next representation.
+
+Build the certificate from identity-disjoint post-scan evidence with:
+
+```bash
+uv run pgx-mcts-bench braid-assessor-gate \
+  --evidence artifacts/assessor/evidence.json \
+  --output artifacts/assessor/gate.json
+```
+
+The default gate requires at least 100 representations, two attempts per
+representation, five native-only scan steps with at least 90% coverage, both
+positive and negative outcomes, solve AUC at least 0.70, positive Brier skill,
+at least 70% solve rate in the predicted-easiest quartile, and Spearman
+correlation at least 0.20 between predicted and actual capped objective. Attempts
+are aggregated by representation before metrics are computed. This prevents one
+task with many repeated attempts from dominating the certificate.
+
+Set `ASSESSOR_GATE=/path/to/gate.json` when using
+`scripts/run_collaboration_pilot.sh`; the script passes it only to adaptive and
+solo scheduling arms.
+
 ## Heterogeneous witness translation
 
 A solved native trajectory is replayed exactly and reduced to global semantic
@@ -39,11 +70,11 @@ receiver's own full attempt, or rescues a failure. Its crossing changes and
 receiver-native moves are stored as a one-sided upper-bound training record.
 Translation success and replay admission are logged separately.
 
-Every receiver action is a charged move.  The portable `UnknotWitness` omits
-states that change only the serial head, tape, register, or colour memory; that
-compaction is correct for proof exchange but not for the experimental objective.
-The runner therefore verifies the compact witness while computing `moves` from
-the complete receiver-native record.
+Only portable semantic braid edits are charged as `moves` in `L=A*cc+B*moves`.
+Head shifts, tape/register writes, colour-memory changes, and other
+architecture-specific controller operations consume the declared internal
+action horizon but are reported outside `L`. The receiver-native trajectory is
+still replayed in full before its compact semantic witness is admitted.
 
 The 2026-08-02 heterogeneous smoke completed 13 rounds. Six selected tasks had a
 verified winner and all 22 attempted sender/receiver translations succeeded. A
@@ -52,15 +83,19 @@ by a successful resume test.
 
 ## Pilot arms
 
-The first causal pilot runs the same three checkpoints in:
+The causal pilot runs the same three checkpoints in five arms:
 
 1. `adaptive-sharing`;
-2. `adaptive-no-sharing`; and
-3. `static-sharing`.
+2. `static-sharing`;
+3. `adaptive-no-sharing`;
+4. `static-no-sharing`; and
+5. `solo-compute-matched`, using `strand-graph` with three-scientist-equivalent
+   search and training allocation.
 
-This isolates sharing at fixed adaptive scheduling and scheduling at fixed
-sharing. The primary final score is capped portfolio loss on `new-70.json`; solve
-rate and conditional costs are always reported beside it.
+This isolates sharing and ordering while retaining both controls. The primary
+final score is capped L1000 on the frozen held-out bank; solve rate, L10,
+solved-set intersections/differences, compute, and wall time are reported beside
+it.
 
 Run one local paired seed with:
 
