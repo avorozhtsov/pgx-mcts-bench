@@ -29,6 +29,180 @@ from pgx_mcts_bench.training import (
 app = typer.Typer(no_args_is_help=True)
 
 
+@app.command("braid-sv2-prefix24")
+def braid_sv2_prefix24(
+    output: Annotated[Path, typer.Option(dir_okay=False)],
+    seed: int = 20262000,
+) -> None:
+    """Freeze the 6+6+3+3+3+3 reception-class SV2 representation prefix."""
+    from pgx_mcts_bench.sv2_curriculum import write_prefix24
+
+    payload = write_prefix24(output, seed=seed)
+    typer.echo(
+        json.dumps(
+            {"output": str(output), "representations": len(payload["rows"])},
+            indent=2,
+        )
+    )
+
+
+@app.command("braid-sv2-static-no-sharing")
+def braid_sv2_static_no_sharing(
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    scientist: Annotated[
+        list[str], typer.Option(help="Repeat NAME=CHECKPOINT for independent scientists")
+    ],
+    ratios: str = "10,1000",
+    simulations: Annotated[int, typer.Option(min=1)] = 64,
+    f_native: Annotated[int, typer.Option(min=1)] = 10,
+    selfplay_games: Annotated[int, typer.Option(min=1)] = 8,
+    train_steps: Annotated[int, typer.Option(min=1)] = 96,
+    batch_size: Annotated[int, typer.Option(min=1)] = 64,
+    evaluation_attempts: Annotated[int, typer.Option(min=1)] = 4,
+    block_size: Annotated[int, typer.Option(min=1)] = 10,
+    retention_target: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.80,
+    action_horizon: Annotated[int, typer.Option(min=1)] = 128,
+    seed: int = 20262020,
+    workers: Annotated[int, typer.Option(min=1)] = 3,
+    torch_threads_per_worker: Annotated[int, typer.Option(min=1)] = 2,
+    device: str = "cpu",
+    resume: bool = False,
+) -> None:
+    """Run SV2 R24 static ordering with no sharing and adaptive F_old only."""
+    from pgx_mcts_bench.sv2_curriculum import run_static_no_sharing
+
+    checkpoints: dict[str, Path] = {}
+    for value in scientist:
+        if "=" not in value:
+            raise typer.BadParameter("--scientist must be NAME=CHECKPOINT")
+        name, raw_path = value.split("=", 1)
+        path = Path(raw_path)
+        if not path.is_file():
+            raise typer.BadParameter(f"checkpoint does not exist: {path}")
+        checkpoints[name] = path
+    if not checkpoints:
+        raise typer.BadParameter("repeat --scientist NAME=CHECKPOINT at least once")
+    report = run_static_no_sharing(
+        checkpoints,
+        bank,
+        output,
+        ratios=tuple(float(value) for value in ratios.split(",") if value.strip()),
+        simulations=simulations,
+        f_native=f_native,
+        selfplay_games=selfplay_games,
+        train_steps=train_steps,
+        batch_size=batch_size,
+        evaluation_attempts=evaluation_attempts,
+        block_size=block_size,
+        retention_target=retention_target,
+        action_horizon=action_horizon,
+        seed=seed,
+        workers=workers,
+        torch_threads_per_worker=torch_threads_per_worker,
+        device=device,
+        resume=resume,
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "name": report["name"],
+                "representations": report["representations"],
+                "scientists": [row["scientist"] for row in report["scientists"]],
+            },
+            indent=2,
+        )
+    )
+
+
+@app.command("braid-sv2-coordinated")
+def braid_sv2_coordinated(
+    output: Annotated[Path, typer.Option(file_okay=False)],
+    bank: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    scientist: Annotated[
+        list[str], typer.Option(help="Repeat NAME=CHECKPOINT for the frozen roster")
+    ],
+    arm: Annotated[
+        str,
+        typer.Option(
+            help="adaptive-no-sharing, static-sharing, or adaptive-sharing"
+        ),
+    ],
+    ratios: str = "10,1000",
+    simulations: Annotated[int, typer.Option(min=1)] = 64,
+    qualification_simulations: Annotated[int, typer.Option(min=1)] = 64,
+    qualification_attempts: Annotated[int, typer.Option(min=1)] = 1,
+    f_native: Annotated[int, typer.Option(min=1)] = 10,
+    selfplay_games: Annotated[int, typer.Option(min=1)] = 8,
+    train_steps: Annotated[int, typer.Option(min=1)] = 96,
+    batch_size: Annotated[int, typer.Option(min=1)] = 64,
+    evaluation_attempts: Annotated[int, typer.Option(min=1)] = 4,
+    block_size: Annotated[int, typer.Option(min=1)] = 10,
+    retention_target: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.80,
+    action_horizon: Annotated[int, typer.Option(min=1)] = 128,
+    rungs: Annotated[int, typer.Option(min=0, help="0 means the complete bank")] = 0,
+    seed: int = 20262020,
+    torch_threads: Annotated[int, typer.Option(min=1)] = 2,
+    parallel_scientists: bool = True,
+    device: str = "cpu",
+    resume: bool = False,
+) -> None:
+    """Run one synchronized Semantic-v2 adaptive and/or sharing arm."""
+    from pgx_mcts_bench.sv2_curriculum import COORDINATED_ARMS, run_coordinated_arm
+
+    if arm not in COORDINATED_ARMS:
+        raise typer.BadParameter(
+            f"--arm must be one of {', '.join(COORDINATED_ARMS)}"
+        )
+    checkpoints: dict[str, Path] = {}
+    for value in scientist:
+        if "=" not in value:
+            raise typer.BadParameter("--scientist must be NAME=CHECKPOINT")
+        name, raw_path = value.split("=", 1)
+        path = Path(raw_path)
+        if not path.is_file():
+            raise typer.BadParameter(f"checkpoint does not exist: {path}")
+        checkpoints[name] = path
+    if not checkpoints:
+        raise typer.BadParameter("repeat --scientist NAME=CHECKPOINT at least once")
+    report = run_coordinated_arm(
+        checkpoints,
+        bank,
+        output,
+        arm=arm,
+        ratios=tuple(float(value) for value in ratios.split(",") if value.strip()),
+        simulations=simulations,
+        qualification_simulations=qualification_simulations,
+        qualification_attempts=qualification_attempts,
+        f_native=f_native,
+        selfplay_games=selfplay_games,
+        train_steps=train_steps,
+        batch_size=batch_size,
+        evaluation_attempts=evaluation_attempts,
+        block_size=block_size,
+        retention_target=retention_target,
+        action_horizon=action_horizon,
+        rungs=rungs,
+        seed=seed,
+        torch_threads=torch_threads,
+        parallel_scientists=parallel_scientists,
+        device=device,
+        resume=resume,
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "name": report["name"],
+                "arm": report["arm"],
+                "completed_rungs": report["completed_rungs"],
+                "final_F_old": report["final_F_old"],
+                "final_donation_dose": report["final_donation_dose"],
+            },
+            indent=2,
+        )
+    )
+
+
 @app.command("braid-vnext-manifest")
 def braid_vnext_manifest(
     output: Annotated[Path, typer.Option(dir_okay=False)],
