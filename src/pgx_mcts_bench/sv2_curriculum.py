@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import io
 import json
 import multiprocessing
 import os
@@ -707,6 +708,17 @@ def _distill_active_donations(
 _SV2_PHASE_SCIENTISTS: dict[str, Any] = {}
 
 
+def _state_blob(state: dict[str, Any]) -> bytes:
+    """Serialize tensor-rich state without multiprocessing FD-per-storage sharing."""
+    buffer = io.BytesIO()
+    torch.save(state, buffer)
+    return buffer.getvalue()
+
+
+def _state_from_blob(blob: bytes) -> dict[str, Any]:
+    return torch.load(io.BytesIO(blob), map_location="cpu", weights_only=False)
+
+
 def _phase_scientist(initial: dict[str, Any]) -> Any:
     name = str(initial["name"])
     scientist = _SV2_PHASE_SCIENTISTS.get(name)
@@ -959,10 +971,10 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
 def _sv2_phase_worker(job: dict[str, Any]) -> dict[str, Any]:
     torch.set_num_threads(int(job["initial"]["torch_threads"]))
     scientist = _phase_scientist(job["initial"])
-    if job.get("restore_state") is not None:
-        _restore_scientist(scientist, job["restore_state"])
+    if job.get("restore_state_blob") is not None:
+        _restore_scientist(scientist, _state_from_blob(job["restore_state_blob"]))
     result = _sv2_phase_operation(scientist, str(job["operation"]), job["payload"])
-    return {"result": result, "state": _scientist_state(scientist)}
+    return {"result": result, "state_blob": _state_blob(_scientist_state(scientist))}
 
 
 class _ScientistPhaseCoordinator:
@@ -1038,8 +1050,10 @@ class _ScientistPhaseCoordinator:
                     _sv2_phase_worker,
                     {
                         "initial": self.initial[name],
-                        "restore_state": (
-                            self.states[name] if self._restore_next[name] else None
+                        "restore_state_blob": (
+                            _state_blob(self.states[name])
+                            if self._restore_next[name]
+                            else None
                         ),
                         "operation": operation,
                         "payload": payloads[name],
@@ -1047,7 +1061,7 @@ class _ScientistPhaseCoordinator:
                 )
             rows = {name: future.result() for name, future in futures.items()}
             for name, row in rows.items():
-                self.states[name] = row["state"]
+                self.states[name] = _state_from_blob(row["state_blob"])
                 self._restore_next[name] = False
             return {name: row["result"] for name, row in rows.items()}
 
