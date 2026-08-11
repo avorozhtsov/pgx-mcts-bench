@@ -10,6 +10,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import multiprocessing
 import os
 import tempfile
 import time
@@ -997,7 +998,13 @@ class _ScientistPhaseCoordinator:
         self.parallel = parallel
         self.executors = (
             {
-                name: ProcessPoolExecutor(max_workers=1)
+                # JAX starts helper threads during module initialization.  A
+                # forked child can inherit their locks and deadlock on Linux;
+                # spawn gives every persistent scientist a clean interpreter.
+                name: ProcessPoolExecutor(
+                    max_workers=1,
+                    mp_context=multiprocessing.get_context("spawn"),
+                )
                 for name in self.names
             }
             if parallel
