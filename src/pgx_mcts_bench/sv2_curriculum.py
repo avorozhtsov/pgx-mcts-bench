@@ -25,7 +25,7 @@ import numpy as np
 import torch
 
 from pgx_mcts_bench.adaptive_scientists import FixedWordGame, KnotItem, load_scientist
-from pgx_mcts_bench.collaboration_eval import _evaluation_records
+from pgx_mcts_bench.collaboration_eval import _evaluation_records, _evaluation_tasks
 from pgx_mcts_bench.collaborative_scientists import (
     _bank_from_payload,
     _json_hash,
@@ -505,6 +505,37 @@ def _evaluate(
     return cells
 
 
+def _single_evaluation_cell(
+    ratio: float, verified: Any, measured: dict[str, Any]
+) -> dict[str, Any]:
+    witness = None
+    if verified is not None:
+        crossing_changes, semantic_moves, semantic_actions = verified
+        witness = {
+            "objective": float(ratio * crossing_changes + semantic_moves),
+            "crossing_changes": int(crossing_changes),
+            "semantic_moves": int(semantic_moves),
+            "semantic_actions": [int(action) for action in semantic_actions],
+        }
+    return {
+        "solve_rate": float(verified is not None),
+        "best_objective": witness["objective"] if witness is not None else None,
+        "best_witness": witness,
+        "attempts": [
+            {
+                "attempt": 0,
+                "solved": verified is not None,
+                "crossing_changes": verified[0] if verified is not None else None,
+                "semantic_moves": verified[1] if verified is not None else None,
+                "objective": witness["objective"] if witness is not None else None,
+                "scheduled_network_evaluations": measured[
+                    "scheduled_network_evaluations"
+                ],
+            }
+        ],
+    }
+
+
 def _retention_summary(
     scientist: Any,
     knots: list[KnotItem],
@@ -518,25 +549,37 @@ def _retention_summary(
     cells = {}
     solved = 0
     capped = 0.0
-    for item_index, knot in enumerate(knots):
-        evaluation = _evaluate(
-            scientist,
-            knot,
-            ratios=ratios,
-            attempts=1,
-            simulations=simulations,
-            seed=seed
-            + (
-                identity_indices[knot.name]
-                if identity_indices is not None
-                else item_index
+    cells = {knot.name: {} for knot in knots}
+    retention_batch_size = 16
+    for ratio_index, ratio in enumerate(ratios):
+        for start in range(0, len(knots), retention_batch_size):
+            batch = knots[start : start + retention_batch_size]
+            batch_seeds = [
+                seed
+                + ratio_index * 10_000
+                + (
+                    identity_indices[knot.name]
+                    if identity_indices is not None
+                    else start + offset
+                )
+                * 100_000
+                for offset, knot in enumerate(batch)
+            ]
+            evaluated = _evaluation_tasks(
+                scientist,
+                batch,
+                ratio,
+                simulations,
+                batch_seeds,
+                add_root_noise=add_root_noise,
             )
-            * 100_000,
-            add_root_noise=add_root_noise,
-        )
-        cells[knot.name] = evaluation
+            for knot, (verified, measured) in zip(batch, evaluated, strict=True):
+                cells[knot.name][str(ratio)] = _single_evaluation_cell(
+                    ratio, verified, measured
+                )
+    for knot in knots:
         for ratio in ratios:
-            row = evaluation[str(ratio)]
+            row = cells[knot.name][str(ratio)]
             solved += int(row["best_objective"] is not None)
             failure = ratio * 20.0 + int(scientist.config.game.simplify_budget)
             capped += min(

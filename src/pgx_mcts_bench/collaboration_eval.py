@@ -108,20 +108,49 @@ def _evaluation_records(
     four real paired attempts instead of four identical deterministic reruns,
     while allowing the network to evaluate their search leaves as a batch.
     """
+    return _evaluation_tasks(
+        scientist,
+        [knot] * len(seeds),
+        ratio,
+        simulations,
+        seeds,
+        objective_cap=objective_cap,
+        add_root_noise=add_root_noise,
+    )
+
+
+def _evaluation_tasks(
+    scientist,
+    knots: list,
+    ratio: float,
+    simulations: int,
+    seeds: list[int],
+    *,
+    objective_cap: float | None = None,
+    add_root_noise: bool = False,
+):
+    """Evaluate different fixed knots together under one shared objective."""
+    if len(knots) != len(seeds):
+        raise ValueError("knots and seeds must have equal length")
     if not seeds:
         return []
-    fixed = FixedWordGame(
-        scientist.game,
-        knot,
-        ratio,
-        objective_cap=objective_cap,
-        cap_type="empirical-global" if objective_cap is not None else "global",
-    )
+    fixed_games = [
+        FixedWordGame(
+            scientist.game,
+            knot,
+            ratio,
+            objective_cap=objective_cap,
+            cap_type="empirical-global" if objective_cap is not None else "global",
+        )
+        for knot in knots
+    ]
     search_config = replace(scientist.config.search, simulations=simulations)
     search = NeuralMCTS(
-        fixed, scientist.network, search_config, scientist.config.train.device
+        fixed_games[0], scientist.network, search_config, scientist.config.train.device
     )
-    transitions = [fixed.reset(seed) for seed in seeds]
+    transitions = [
+        fixed.reset(seed) for fixed, seed in zip(fixed_games, seeds, strict=True)
+    ]
     records: list[GameRecord] = [[] for _ in seeds]
     rngs = [np.random.default_rng(seed) for seed in seeds]
     started = time.perf_counter()
@@ -153,8 +182,13 @@ def _evaluation_records(
                     episode_seed=seeds[index],
                 )
             )
-            transitions[index] = fixed.step(transition.state, result.action)
+            transitions[index] = fixed_games[index].step(
+                transition.state, result.action
+            )
     wall_seconds = time.perf_counter() - started
+    cache_stats = getattr(search, "inference_cache_stats", {})
+    cache_hits = int(cache_stats.get("hits", 0))
+    cache_misses = int(cache_stats.get("misses", 0))
     return [
         (
             verified_record_cost(scientist.game, knot, ratio, record),
@@ -168,9 +202,16 @@ def _evaluation_records(
                 "wall_seconds": wall_seconds / len(seeds),
                 "batch_wall_seconds": wall_seconds,
                 "evaluation_batch_size": len(seeds),
+                "inference_cache_hits": cache_hits,
+                "inference_cache_misses": cache_misses,
+                "inference_cache_hit_rate": (
+                    cache_hits / (cache_hits + cache_misses)
+                    if cache_hits + cache_misses
+                    else 0.0
+                ),
             },
         )
-        for record in records
+        for knot, record in zip(knots, records, strict=True)
     ]
 
 

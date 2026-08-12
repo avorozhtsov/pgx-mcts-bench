@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -43,6 +45,8 @@ class Node:
     visit_count: int = 0
     value_sum: float = 0.0
     children: dict[int, Node] = field(default_factory=dict)
+    child_actions: np.ndarray | None = None
+    child_nodes: list[Node] | None = None
     state: Any = None
     hidden: Tensor | None = None
     terminated: bool = False
@@ -77,6 +81,26 @@ class NeuralMCTS:
         self.network = network
         self.config = config
         self.device = torch.device(device)
+        self._inference_cache: OrderedDict[
+            bytes, tuple[np.ndarray, float]
+        ] = OrderedDict()
+        self._inference_cache_version: tuple[int, ...] | None = None
+        self.inference_cache_stats = {"hits": 0, "misses": 0, "evictions": 0}
+        self._inference_cache_limit = 32_768
+
+    def _network_version(self) -> tuple[int, ...]:
+        return tuple(parameter._version for parameter in self.network.parameters())
+
+    def _ensure_inference_cache_fresh(self) -> None:
+        version = self._network_version()
+        if version != self._inference_cache_version:
+            self._inference_cache.clear()
+            self._inference_cache_version = version
+
+    @staticmethod
+    def _observation_key(observation: np.ndarray) -> bytes:
+        contiguous = np.ascontiguousarray(observation)
+        return hashlib.blake2b(contiguous.view(np.uint8), digest_size=16).digest()
 
     def edge_reward(self, parent_state: Any, actor: int, transition: Any) -> float:
         """Reward used by search and replay for one exact transition."""
@@ -130,6 +154,7 @@ class NeuralMCTS:
         if batch_size == 0:
             return []
 
+        self._ensure_inference_cache_fresh()
         self.network.eval()
         roots = [
             Node(prior=1.0, state=state, **self.game.state_info(state)) for state in states
@@ -237,8 +262,13 @@ class NeuralMCTS:
         return -1.0 if parent.player != child.player else 1.0
 
     def _select_child(self, parent: Node) -> tuple[int, Node]:
-        actions = np.fromiter(parent.children.keys(), dtype=np.int64)
-        children = [parent.children[int(a)] for a in actions]
+        actions = parent.child_actions
+        children = parent.child_nodes
+        if actions is None or children is None:
+            actions = np.fromiter(parent.children.keys(), dtype=np.int64)
+            children = [parent.children[int(action)] for action in actions]
+            parent.child_actions = actions
+            parent.child_nodes = children
         priors = np.array([child.prior for child in children], dtype=np.float64)
         visits = np.array([child.visit_count for child in children], dtype=np.float64)
         q = np.array(
@@ -260,6 +290,8 @@ class NeuralMCTS:
         priors = _masked_softmax(logits, legal, self.game.config.terminal_action)
         actions = np.flatnonzero(legal)
         node.children = {int(action): Node(prior=float(priors[action])) for action in actions}
+        node.child_actions = actions.astype(np.int64, copy=False)
+        node.child_nodes = [node.children[int(action)] for action in actions]
 
     def _expand_alphazero_batch(
         self,
@@ -268,8 +300,42 @@ class NeuralMCTS:
         legal_actions: list[np.ndarray],
     ) -> list[float]:
         assert isinstance(self.network, PolicyValueNet)
-        logits, values = self.network(_observation_batch(observations, self.device))
-        logits_np = logits.cpu().numpy()
+        keys = [self._observation_key(observation) for observation in observations]
+        resolved: dict[bytes, tuple[np.ndarray, float]] = {}
+        missing_keys: list[bytes] = []
+        missing_observations: list[np.ndarray] = []
+        for key, observation in zip(keys, observations, strict=True):
+            if key in resolved:
+                self.inference_cache_stats["hits"] += 1
+                continue
+            cached = self._inference_cache.get(key)
+            if cached is not None:
+                self._inference_cache.move_to_end(key)
+                resolved[key] = cached
+                self.inference_cache_stats["hits"] += 1
+                continue
+            resolved[key] = None  # type: ignore[assignment]
+            missing_keys.append(key)
+            missing_observations.append(observation)
+            self.inference_cache_stats["misses"] += 1
+        if missing_observations:
+            logits, values = self.network(
+                _observation_batch(missing_observations, self.device)
+            )
+            for key, logits_row, value in zip(
+                missing_keys,
+                logits.detach().cpu().numpy(),
+                values.detach().cpu().numpy(),
+                strict=True,
+            ):
+                result = (logits_row.copy(), float(value))
+                resolved[key] = result
+                self._inference_cache[key] = result
+                if len(self._inference_cache) > self._inference_cache_limit:
+                    self._inference_cache.popitem(last=False)
+                    self.inference_cache_stats["evictions"] += 1
+        logits_np = [resolved[key][0] for key in keys]
+        predicted_values = [resolved[key][1] for key in keys]
         for index, node in enumerate(nodes):
             self._expand_children(
                 node,
@@ -278,7 +344,7 @@ class NeuralMCTS:
             )
         return [
             self._certified_value(node, float(value))
-            for node, value in zip(nodes, values.cpu().numpy(), strict=True)
+            for node, value in zip(nodes, predicted_values, strict=True)
         ]
 
     def _certified_value(self, node: Node, predicted: float) -> float:

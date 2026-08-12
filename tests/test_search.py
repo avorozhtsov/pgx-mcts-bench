@@ -1,9 +1,10 @@
 import numpy as np
+import torch
 
 from pgx_mcts_bench.config import GameConfig, ModelConfig, SearchConfig
 from pgx_mcts_bench.game import Go6x6
 from pgx_mcts_bench.networks import AlphaZeroNet, MuZeroNet
-from pgx_mcts_bench.search import NeuralMCTS, _masked_softmax
+from pgx_mcts_bench.search import NeuralMCTS, Node, _masked_softmax
 
 
 def _assert_search_returns_legal(network) -> None:
@@ -81,6 +82,42 @@ def test_batched_search_returns_one_result_per_root() -> None:
     for root, result in zip(roots, results, strict=True):
         assert root.legal_actions[result.action]
         assert result.visits.sum() == 3
+
+
+def test_alphazero_inference_cache_deduplicates_and_invalidates() -> None:
+    game = Go6x6(GameConfig())
+    root = game.reset(0)
+    network = AlphaZeroNet(
+        GameConfig(), ModelConfig(channels=4, residual_blocks=1)
+    )
+    search = NeuralMCTS(game, network, SearchConfig(simulations=1))
+    original = network.forward
+    inferred_batch_sizes = []
+
+    def counted(observation):
+        inferred_batch_sizes.append(len(observation))
+        return original(observation)
+
+    network.forward = counted
+    search._ensure_inference_cache_fresh()
+    for _ in range(2):
+        search._expand_alphazero_batch(
+            [Node(1.0, state=root.state) for _ in range(3)],
+            [root.observation] * 3,
+            [root.legal_actions] * 3,
+        )
+    assert inferred_batch_sizes == [1]
+    assert search.inference_cache_stats == {"hits": 5, "misses": 1, "evictions": 0}
+
+    with torch.no_grad():
+        next(network.parameters()).add_(1.0)
+    search._ensure_inference_cache_fresh()
+    search._expand_alphazero_batch(
+        [Node(1.0, state=root.state)],
+        [root.observation],
+        [root.legal_actions],
+    )
+    assert inferred_batch_sizes == [1, 1]
 
 
 def test_masked_softmax_does_not_exponentiate_illegal_logits() -> None:
