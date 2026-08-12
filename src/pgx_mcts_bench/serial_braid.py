@@ -194,6 +194,7 @@ class SerialBraidGame:
         self.env = BraidUnknot(config.to_braid_config())
         self.spec = self.env.spec
         self._step = jax.jit(self.env.step)
+        self._charge_budget_step = jax.jit(self._charge_budget_impl)
         self.generator = None
         if config.generator_max_crossings or config.generator_max_scramble:
             from rf_knots.generator import GradedGenerator
@@ -244,6 +245,11 @@ class SerialBraidGame:
         # head itself.
         self._act_origin = self.act_width // 2
         self._window_origin = self.window // 2
+        # Legal masks are requested for every expanded MCTS leaf.  The mapping
+        # from local serial actions to the wrapped braid action space depends
+        # only on (head, current word length), so cache the integer gather map
+        # instead of decoding every action in Python at every leaf.
+        self._underlying_action_cache: dict[tuple[int, int], np.ndarray] = {}
         self.certified_value_stats = {
             "evaluations": 0,
             "informative": 0,
@@ -642,6 +648,9 @@ class SerialBraidGame:
         A shift has to consume the native episode clock or the game never ends.
         This clock is deliberately separate from the semantic solution cost.
         """
+        return self._charge_budget_step(pgx_state)
+
+    def _charge_budget_impl(self, pgx_state: Any):
         import jax.numpy as jnp
 
         budget = pgx_state._budget - 1
@@ -766,8 +775,19 @@ class SerialBraidGame:
         full = np.asarray(pgx_state.legal_action_mask, dtype=bool)
         mask = np.zeros(self.num_actions, dtype=bool)
         length = int(np.asarray(pgx_state._word).astype(bool).sum())
-        for action in range(self._shift_base):
-            mask[action] = full[self.underlying_action(action, head, length)]
+        cache_key = (head % max(length, 1), length)
+        action_map = self._underlying_action_cache.get(cache_key)
+        if action_map is None:
+            action_map = np.fromiter(
+                (
+                    int(self.underlying_action(action, head, length))
+                    for action in range(self._shift_base)
+                ),
+                dtype=np.int64,
+                count=self._shift_base,
+            )
+            self._underlying_action_cache[cache_key] = action_map
+        mask[: self._shift_base] = full[action_map]
         # Toggles are always available while the episode runs: the control state is
         # the agent's own, not a function of the word.
         internal_allowed = internal_steps < self.config.serial_internal_horizon

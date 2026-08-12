@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import multiprocessing
 import subprocess
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, replace
@@ -322,7 +323,14 @@ def run_foundation_pretraining(
     if workers == 1:
         rows = [_run_one(job) for job in jobs]
     else:
-        with ProcessPoolExecutor(max_workers=workers) as pool:
+        # Linux defaults to ``fork``. JAX has already initialized background
+        # threads by the time the CLI enters here, so forked PyTorch/JAX workers
+        # can deadlock before their first MCTS step. Spawn is slower only during
+        # startup and is safe on every supported platform.
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            mp_context=multiprocessing.get_context("spawn"),
+        ) as pool:
             rows = list(pool.map(_run_one, jobs))
     report = {**settings, "runs": rows}
     _atomic_json(output / "report.json", report)

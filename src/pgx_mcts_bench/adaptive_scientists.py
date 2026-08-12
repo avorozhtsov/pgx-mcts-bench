@@ -26,6 +26,9 @@ BUDGET_PROTOTYPES = (
     "strand-graph",
     "raster-axial",
     "cyclic-memory",
+    "raster-axial-v2",
+    "raster-axial-v3",
+    "raster-axial-v4",
 )
 BUDGET_LEARNING_RATES = {
     "s-window-128": 2.5e-4,
@@ -35,6 +38,9 @@ BUDGET_LEARNING_RATES = {
     "strand-graph": 1.0e-4,
     "raster-axial": 1.0e-4,
     "cyclic-memory": 1.0e-4,
+    "raster-axial-v2": 1.0e-4,
+    "raster-axial-v3": 1.0e-4,
+    "raster-axial-v4": 1.0e-4,
 }
 BUDGET_AUXILIARY_LEARNING_RATES = {
     "s-window-128": 2.5e-4,
@@ -44,6 +50,9 @@ BUDGET_AUXILIARY_LEARNING_RATES = {
     "strand-graph": 5.0e-4,
     "raster-axial": 5.0e-4,
     "cyclic-memory": 5.0e-4,
+    "raster-axial-v2": 5.0e-4,
+    "raster-axial-v3": 5.0e-4,
+    "raster-axial-v4": 5.0e-4,
 }
 BUDGET_PRESERVATION_WEIGHTS = {
     "s-window-128": 1.0,
@@ -53,6 +62,9 @@ BUDGET_PRESERVATION_WEIGHTS = {
     "strand-graph": 5.0,
     "raster-axial": 5.0,
     "cyclic-memory": 5.0,
+    "raster-axial-v2": 5.0,
+    "raster-axial-v3": 5.0,
+    "raster-axial-v4": 5.0,
 }
 BUDGET_MONOTONIC_WEIGHTS = {
     "s-window-128": 0.25,
@@ -62,6 +74,9 @@ BUDGET_MONOTONIC_WEIGHTS = {
     "strand-graph": 1.0,
     "raster-axial": 1.0,
     "cyclic-memory": 1.0,
+    "raster-axial-v2": 1.0,
+    "raster-axial-v3": 1.0,
+    "raster-axial-v4": 1.0,
 }
 
 

@@ -93,6 +93,8 @@ for index in "${!arms[@]}"; do
         MKL_NUM_THREADS="$torch_threads" \
         OPENBLAS_NUM_THREADS="$torch_threads" \
         NUMEXPR_NUM_THREADS="$torch_threads" \
+        OMP_WAIT_POLICY=PASSIVE \
+        GOMP_SPINCOUNT=0 \
         PYTHONUNBUFFERED=1 \
     .venv/bin/pgx-mcts-bench braid-sv2-coordinated \
       --output "$output" \

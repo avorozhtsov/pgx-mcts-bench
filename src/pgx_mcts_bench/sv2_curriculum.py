@@ -25,7 +25,7 @@ import numpy as np
 import torch
 
 from pgx_mcts_bench.adaptive_scientists import FixedWordGame, KnotItem, load_scientist
-from pgx_mcts_bench.collaboration_eval import _evaluation_record
+from pgx_mcts_bench.collaboration_eval import _evaluation_records
 from pgx_mcts_bench.collaborative_scientists import (
     _bank_from_payload,
     _json_hash,
@@ -60,13 +60,17 @@ SV2_PREFIX_PHASES: tuple[tuple[int, tuple[str, ...]], ...] = (
 )
 
 F_OLD_LEVELS = (1, 2, 4, 8)
+F_NATIVE_LEVELS = (5, 8, 12, 16)
+SIMULATION_LEVELS = (64, 128, 256, 512)
 DONATION_DOSES = (1, 2, 3)
 COORDINATED_ARMS = (
+    "static-no-sharing",
     "adaptive-no-sharing",
     "static-sharing",
     "adaptive-sharing",
 )
 CoordinatedArm = Literal[
+    "static-no-sharing",
     "adaptive-no-sharing",
     "static-sharing",
     "adaptive-sharing",
@@ -219,6 +223,79 @@ def write_prefix24(path: Path, *, seed: int = 20262000) -> dict[str, Any]:
     return payload
 
 
+def build_r200(source: Path, upper_bounds: Path) -> list[dict[str, Any]]:
+    """Convert the frozen 200-item frontier bank to the original SV2 ACS order."""
+    source_payload = json.loads(source.read_text())
+    rows = source_payload if isinstance(source_payload, list) else source_payload.get("rows")
+    if not isinstance(rows, list) or len(rows) != 200:
+        raise ValueError("the SV2 R200 source must contain exactly 200 rows")
+    upper_payload = json.loads(upper_bounds.read_text())
+    upper_values = upper_payload.get("values")
+    if not isinstance(upper_values, dict):
+        raise ValueError("the SV2 R200 upper-bound source must contain a values map")
+    row_ids = {str(row["id"]) for row in rows}
+    if set(upper_values) != row_ids:
+        raise ValueError("R200 upper-bound ids must exactly match the frozen source bank")
+    converted = []
+    for row in rows:
+        lower_bound = int(row["certified_unknotting_lower_bound"])
+        upper_bound = int(upper_values[str(row["id"])]["upper_bound"])
+        if upper_bound < lower_bound:
+            raise ValueError(f"R200 upper bound is below lower bound: {row.get('id')}")
+        source_crossings = int(row.get("crossings", len(row["word"])))
+        crossings = len(row["word"])
+        score = auditable_complexity(
+            strands=int(row["strands"]),
+            unknotting_number=upper_bound,
+            word_length=crossings,
+        )
+        converted.append(
+            {
+                **row,
+                "source_minimal_crossings": source_crossings,
+                "crossings": crossings,
+                "presentation_crossings": crossings,
+                "certified_unknotting_lower_bound": int(lower_bound),
+                "certified_unknotting_upper_bound": upper_bound,
+                "acs": score,
+                "cheap_score": score,
+            }
+        )
+    converted.sort(
+        key=lambda row: (
+            row["acs"],
+            row["strands"],
+            row["certified_unknotting_upper_bound"],
+            row["presentation_crossings"],
+            row["id"],
+        )
+    )
+    if len({str(row["id"]) for row in converted}) != 200:
+        raise ValueError("the SV2 R200 source contains duplicate representation ids")
+    return converted
+
+
+def write_r200(source: Path, upper_bounds: Path, output: Path) -> dict[str, Any]:
+    rows = build_r200(source, upper_bounds)
+    upper_payload = json.loads(upper_bounds.read_text())
+    payload = {
+        "schema": "semantic-v2-r200-v1",
+        "source": str(source.resolve()),
+        "source_sha256": _sha256(source),
+        "upper_bounds": str(upper_bounds.resolve()),
+        "upper_bounds_sha256": _sha256(upper_bounds),
+        "upper_bounds_source": upper_payload.get("source"),
+        "ordering": (
+            "global ACS=10*strands+5*certified_unknotting_upper_bound+"
+            "presentation_crossings"
+        ),
+        "presentation_crossings": "braid word length, not minimal knot crossing number",
+        "rows": rows,
+    }
+    _atomic_json(output, payload)
+    return payload
+
+
 def _atomic_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as handle:
@@ -262,6 +339,24 @@ def next_rehearsal_dose(
         return current
     index = F_OLD_LEVELS.index(current)
     return F_OLD_LEVELS[min(index + 1, len(F_OLD_LEVELS) - 1)]
+
+
+def next_compute_dose(
+    current: int,
+    *,
+    levels: tuple[int, ...],
+    observed_rate: float,
+    target: float,
+) -> int:
+    """Raise one declared compute level after a deficient completed block."""
+    if current not in levels:
+        raise ValueError(f"compute dose {current} must be one of {levels}")
+    if not 0.0 <= observed_rate <= 1.0 or not 0.0 <= target <= 1.0:
+        raise ValueError("compute adaptation rates must lie in 0..1")
+    if observed_rate >= target:
+        return current
+    index = levels.index(current)
+    return levels[min(index + 1, len(levels) - 1)]
 
 
 def _iteration(
@@ -346,19 +441,22 @@ def _evaluate(
     attempts: int,
     simulations: int,
     seed: int,
+    add_root_noise: bool = True,
 ) -> dict[str, Any]:
     cells = {}
     for ratio_index, ratio in enumerate(ratios):
         rows = []
         witnesses: list[tuple[float, int, int, list[int]]] = []
-        for attempt in range(attempts):
-            verified, measured = _evaluation_record(
-                scientist,
-                knot,
-                ratio,
-                simulations,
-                seed + ratio_index * 10_000 + attempt,
-            )
+        seeds = [seed + ratio_index * 10_000 + attempt for attempt in range(attempts)]
+        evaluated = _evaluation_records(
+            scientist,
+            knot,
+            ratio,
+            simulations,
+            seeds,
+            add_root_noise=add_root_noise,
+        )
+        for attempt, (verified, measured) in enumerate(evaluated):
             rows.append(
                 {
                     "attempt": attempt,
@@ -415,6 +513,7 @@ def _retention_summary(
     simulations: int,
     seed: int,
     identity_indices: dict[str, int] | None = None,
+    add_root_noise: bool = True,
 ) -> dict[str, Any]:
     cells = {}
     solved = 0
@@ -433,6 +532,7 @@ def _retention_summary(
                 else item_index
             )
             * 100_000,
+            add_root_noise=add_root_noise,
         )
         cells[knot.name] = evaluation
         for ratio in ratios:
@@ -735,6 +835,9 @@ def _phase_scientist(initial: dict[str, Any]) -> Any:
 
 
 def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]) -> Any:
+    # Preserve archived deterministic semantics when an old resume payload has
+    # no explicit evaluation protocol.
+    evaluation_root_noise = bool(payload.get("evaluation_root_noise", False))
     if operation == "assess":
         remaining = payload["remaining"]
         scores = expected_capped_scores(scientist, remaining, (10.0,))
@@ -752,6 +855,7 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
             seed=int(payload["seed"])
             + 600_000_000
             + int(payload["static_index"][proposal.id]) * 100_000,
+            add_root_noise=evaluation_root_noise,
         )["10.0"]
         evidence_cost = (
             float(evidence["best_objective"])
@@ -797,6 +901,7 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
             seed=int(payload["seed"])
             + 500_000_000
             + int(payload["static_index"]) * 100_000,
+            add_root_noise=evaluation_root_noise,
         )
         witnesses = _native_witnesses(scientist, selected.knot, ratios, evaluation)
         qualification_witness = payload.get("qualification_witness")
@@ -884,6 +989,7 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
             simulations=int(payload["simulations"]),
             seed=seed + 700_000_000 + round_index * 100_000,
             identity_indices=identity_indices,
+            add_root_noise=evaluation_root_noise,
         )
         dose_before = int(payload["f_old"])
         exposure = dict(payload["rehearsal_exposure"])
@@ -925,6 +1031,7 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
             simulations=int(payload["simulations"]),
             seed=seed + 700_000_000 + round_index * 100_000,
             identity_indices=identity_indices,
+            add_root_noise=evaluation_root_noise,
         )
         worsened = after["capped_cost"] > before["capped_cost"] + 1e-9
         next_f_old = next_rehearsal_dose(
@@ -962,6 +1069,7 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
             simulations=int(payload["simulations"]),
             seed=int(payload["retention_seed"]),
             identity_indices=payload["identity_indices"],
+            add_root_noise=evaluation_root_noise,
         )
         return {"exposure": exposure, "retention": retention}
 
@@ -1133,6 +1241,8 @@ def run_coordinated_arm(
     output: Path,
     *,
     arm: CoordinatedArm,
+    prior_bank: Path | None = None,
+    initial_states: dict[str, Path] | None = None,
     ratios: tuple[float, ...] = (10.0, 1000.0),
     simulations: int = 64,
     qualification_simulations: int = 64,
@@ -1142,6 +1252,7 @@ def run_coordinated_arm(
     train_steps: int = 96,
     batch_size: int = 64,
     evaluation_attempts: int = 4,
+    evaluation_root_noise: bool = True,
     block_size: int = 10,
     retention_target: float = 0.80,
     action_horizon: int = 128,
@@ -1149,6 +1260,9 @@ def run_coordinated_arm(
     seed: int = 20262020,
     torch_threads: int = 2,
     parallel_scientists: bool = True,
+    adaptive_compute: bool = False,
+    acquisition_target: float = 0.80,
+    evaluation_target: float = 0.70,
     device: str = "cpu",
     resume: bool = False,
 ) -> dict[str, Any]:
@@ -1157,6 +1271,8 @@ def run_coordinated_arm(
         raise ValueError(f"unsupported coordinated SV2 arm: {arm}")
     if not checkpoints:
         raise ValueError("at least one scientist checkpoint is required")
+    if initial_states is not None and set(initial_states) != set(checkpoints):
+        raise ValueError("initial-state names must exactly match scientist names")
     if not ratios or any(ratio <= 0 for ratio in ratios):
         raise ValueError("objective ratios must be positive")
     if rungs < 0:
@@ -1177,13 +1293,33 @@ def run_coordinated_arm(
         raise ValueError("all SV2 compute and horizon parameters must be positive")
     if arm.startswith("adaptive") and 10.0 not in ratios:
         raise ValueError("adaptive SV2 ordering requires the L10 objective")
+    if adaptive_compute:
+        if f_native not in F_NATIVE_LEVELS:
+            raise ValueError(f"adaptive F_native must start in {F_NATIVE_LEVELS}")
+        if simulations not in SIMULATION_LEVELS:
+            raise ValueError(f"adaptive simulations must start in {SIMULATION_LEVELS}")
+        if not 0.0 <= acquisition_target <= 1.0:
+            raise ValueError("acquisition target must lie in 0..1")
+        if not 0.0 <= evaluation_target <= 1.0:
+            raise ValueError("evaluation target must lie in 0..1")
 
     torch.set_num_threads(torch_threads)
     bank_payload, rows = _bank_rows(bank)
     items = _bank_from_payload(rows)
+    prior_payload: dict[str, Any] | None = None
+    prior_items = []
+    if prior_bank is not None:
+        prior_payload, prior_rows = _bank_rows(prior_bank)
+        prior_items = _bank_from_payload(prior_rows)
+    duplicate_ids = {item.id for item in items} & {item.id for item in prior_items}
+    if duplicate_ids:
+        raise ValueError(f"prior and current banks overlap: {sorted(duplicate_ids)[:3]}")
     target_rungs = min(rungs, len(items)) if rungs else len(items)
     by_id = {item.id: item for item in items}
     static_index = {item.id: index for index, item in enumerate(items)}
+    identity_index = {
+        item.id: index for index, item in enumerate([*prior_items, *items])
+    }
     name = _coordinated_name(
         arm,
         scientists=len(checkpoints),
@@ -1193,7 +1329,7 @@ def run_coordinated_arm(
         evaluation_attempts=evaluation_attempts,
     )
     protocol = {
-        "schema": "semantic-v2-coordinated-arm-v2",
+        "schema": "semantic-v2-coordinated-arm-v3",
         "arm": arm,
         "name": name,
         "source_provenance": source_provenance(),
@@ -1203,6 +1339,19 @@ def run_coordinated_arm(
         },
         "bank": str(bank.resolve()),
         "bank_sha256": _json_hash(bank_payload),
+        "prior_bank": str(prior_bank.resolve()) if prior_bank is not None else None,
+        "prior_bank_sha256": (
+            _json_hash(prior_payload) if prior_payload is not None else None
+        ),
+        "prior_representations": len(prior_items),
+        "initial_states": (
+            {
+                scientist: {"path": str(path.resolve()), "sha256": _sha256(path)}
+                for scientist, path in initial_states.items()
+            }
+            if initial_states is not None
+            else None
+        ),
         "representations": len(items),
         "requested_rungs": target_rungs,
         "ratios": list(ratios),
@@ -1220,7 +1369,20 @@ def run_coordinated_arm(
         "optimizer_steps_per_iteration": train_steps,
         "batch_size": batch_size,
         "evaluation_attempts_per_objective": evaluation_attempts,
-        "adaptive_rehearsal_only": True,
+        "evaluation_attempt_protocol": (
+            "paired-seed-dirichlet-root-noise-temperature-zero-batched"
+            if evaluation_root_noise
+            else "deterministic-temperature-zero-batched"
+        ),
+        "evaluation_root_noise": evaluation_root_noise,
+        "adaptive_compute": adaptive_compute,
+        "adaptive_rehearsal_only": not adaptive_compute,
+        "F_native_levels": list(F_NATIVE_LEVELS) if adaptive_compute else [f_native],
+        "simulation_levels": (
+            list(SIMULATION_LEVELS) if adaptive_compute else [simulations]
+        ),
+        "acquisition_target": acquisition_target,
+        "evaluation_target": evaluation_target,
         "F_old_levels": list(F_OLD_LEVELS),
         "retention_target": retention_target,
         "block_size": block_size,
@@ -1260,6 +1422,8 @@ def run_coordinated_arm(
         output.mkdir(parents=True, exist_ok=True)
         _atomic_json(manifest_path, protocol)
         _atomic_json(output / "bank.json", bank_payload)
+        if prior_payload is not None:
+            _atomic_json(output / "prior-bank.json", prior_payload)
 
     scientist_seeds = {
         name: seed + index * 100_000_000
@@ -1277,14 +1441,47 @@ def run_coordinated_arm(
         }
         donation_dose = int(state.get("donation_dose", 1))
         donation_healthy_streak = int(state.get("donation_healthy_streak", 0))
+        current_f_native = {
+            str(key): int(value)
+            for key, value in state.get(
+                "f_native", {name: f_native for name in checkpoints}
+            ).items()
+        }
+        current_simulations = {
+            str(key): int(value)
+            for key, value in state.get(
+                "simulations", {name: simulations for name in checkpoints}
+            ).items()
+        }
     else:
-        restored_states = None
+        initial_payloads = (
+            {name: _load_state(path) for name, path in initial_states.items()}
+            if initial_states is not None
+            else {}
+        )
+        restored_states = (
+            {name: payload["scientist"] for name, payload in initial_payloads.items()}
+            or None
+        )
         processed = []
         events = []
-        f_old = {name: 1 for name in checkpoints}
-        rehearsal_exposure = {name: {} for name in checkpoints}
+        f_old = {
+            name: int(initial_payloads.get(name, {}).get("f_old", 1))
+            for name in checkpoints
+        }
+        rehearsal_exposure = {
+            name: {
+                str(key): int(value)
+                for key, value in initial_payloads.get(name, {})
+                .get("rehearsal_exposure", {})
+                .items()
+            }
+            for name in checkpoints
+        }
         donation_dose = 1
         donation_healthy_streak = 0
+        current_f_native = {name: f_native for name in checkpoints}
+        current_simulations = {name: simulations for name in checkpoints}
 
     coordinator = _ScientistPhaseCoordinator(
         checkpoints,
@@ -1312,10 +1509,15 @@ def run_coordinated_arm(
                     name: {
                         "remaining": remaining,
                         "qualification_attempts": qualification_attempts,
-                        "qualification_simulations": qualification_simulations,
+                        "qualification_simulations": (
+                            current_simulations[name]
+                            if adaptive_compute
+                            else qualification_simulations
+                        ),
                         "seed": scientist_seeds[name],
                         "static_index": static_index,
                         "action_horizon": action_horizon,
+                        "evaluation_root_noise": evaluation_root_noise,
                     }
                     for name in coordinator.names
                 },
@@ -1351,8 +1553,8 @@ def run_coordinated_arm(
                 name: {
                     "selected": selected,
                     "ratios": ratios,
-                    "f_native": f_native,
-                    "simulations": simulations,
+                    "f_native": current_f_native[name],
+                    "simulations": current_simulations[name],
                     "selfplay_games": selfplay_games,
                     "train_steps": train_steps,
                     "batch_size": batch_size,
@@ -1360,6 +1562,7 @@ def run_coordinated_arm(
                     "seed": scientist_seeds[name],
                     "static_index": static_index[selected.id],
                     "qualification_witness": qualification_witnesses[name],
+                    "evaluation_root_noise": evaluation_root_noise,
                 }
                 for name in coordinator.names
             },
@@ -1367,6 +1570,9 @@ def run_coordinated_arm(
         scientist_events = {
             name: native_rows[name]["scientist_event"] for name in coordinator.names
         }
+        for name in coordinator.names:
+            scientist_events[name]["F_native"] = current_f_native[name]
+            scientist_events[name]["simulations"] = current_simulations[name]
         native_witnesses = {
             name: native_rows[name]["native_witnesses"] for name in coordinator.names
         }
@@ -1424,23 +1630,27 @@ def run_coordinated_arm(
         )
         donation_guard = None
         if block_boundary:
-            processed_knots = [by_id[item_id].knot for item_id in processed]
+            processed_knots = [
+                *[item.knot for item in prior_items],
+                *[by_id[item_id].knot for item_id in processed],
+            ]
             rehearsal_rows = coordinator.run(
                 "rehearse",
                 {
                     name: {
                         "processed_knots": processed_knots,
                         "ratios": ratios,
-                        "identity_indices": static_index,
+                        "identity_indices": identity_index,
                         "seed": scientist_seeds[name],
                         "round_index": round_index,
-                        "simulations": simulations,
+                        "simulations": current_simulations[name],
                         "f_old": f_old[name],
                         "rehearsal_exposure": rehearsal_exposure[name],
                         "selfplay_games": selfplay_games,
                         "train_steps": train_steps,
                         "batch_size": batch_size,
                         "retention_target": retention_target,
+                        "evaluation_root_noise": evaluation_root_noise,
                     }
                     for name in coordinator.names
                 },
@@ -1477,11 +1687,12 @@ def run_coordinated_arm(
                             + scientist_index * 10_000,
                             "processed_knots": processed_knots,
                             "ratios": ratios,
-                            "simulations": simulations,
+                            "simulations": current_simulations[name],
                             "retention_seed": scientist_seeds[name]
                             + 700_000_000
                             + round_index * 100_000,
-                            "identity_indices": static_index,
+                            "identity_indices": identity_index,
+                            "evaluation_root_noise": evaluation_root_noise,
                         }
                         for scientist_index, name in enumerate(coordinator.names)
                     },
@@ -1533,6 +1744,54 @@ def run_coordinated_arm(
                     "rolled_back": not accepted,
                 }
 
+            block_length = len(processed) % block_size or block_size
+            previous_count = block_length - 1
+            previous_events = events[-previous_count:] if previous_count else []
+            block_events = [*previous_events, {"scientists": scientist_events}]
+            for name in coordinator.names:
+                evaluations = [
+                    cell
+                    for row in block_events
+                    for cell in row["scientists"][name]["evaluation"].values()
+                ]
+                attempts = [attempt for cell in evaluations for attempt in cell["attempts"]]
+                acquisition_rate = (
+                    sum(cell["best_objective"] is not None for cell in evaluations)
+                    / len(evaluations)
+                    if evaluations
+                    else 0.0
+                )
+                evaluation_rate = (
+                    sum(bool(attempt["solved"]) for attempt in attempts) / len(attempts)
+                    if attempts
+                    else 0.0
+                )
+                used_f_native = current_f_native[name]
+                used_simulations = current_simulations[name]
+                if adaptive_compute:
+                    current_f_native[name] = next_compute_dose(
+                        used_f_native,
+                        levels=F_NATIVE_LEVELS,
+                        observed_rate=acquisition_rate,
+                        target=acquisition_target,
+                    )
+                    current_simulations[name] = next_compute_dose(
+                        used_simulations,
+                        levels=SIMULATION_LEVELS,
+                        observed_rate=evaluation_rate,
+                        target=evaluation_target,
+                    )
+                scientist_events[name]["compute_adaptation"] = {
+                    "acquisition_rate": acquisition_rate,
+                    "acquisition_target": acquisition_target,
+                    "evaluation_rate": evaluation_rate,
+                    "evaluation_target": evaluation_target,
+                    "F_native_used": used_f_native,
+                    "next_F_native": current_f_native[name],
+                    "simulations_used": used_simulations,
+                    "next_simulations": current_simulations[name],
+                }
+
         event = {
             "round": round_index,
             "arm": arm,
@@ -1571,6 +1830,8 @@ def run_coordinated_arm(
                 "rehearsal_exposure": rehearsal_exposure,
                 "donation_dose": donation_dose,
                 "donation_healthy_streak": donation_healthy_streak,
+                "f_native": current_f_native,
+                "simulations": current_simulations,
                 "scientists": coordinator.serializable_states(),
             },
         )
@@ -1580,6 +1841,8 @@ def run_coordinated_arm(
         "completed_rungs": len(processed),
         "processed": processed,
         "final_F_old": f_old,
+        "final_F_native": current_f_native,
+        "final_simulations": current_simulations,
         "final_donation_dose": donation_dose,
         "block_reports": block_reports,
         "events": events,
@@ -1617,6 +1880,7 @@ def coordinated_block_report(
             for attempt in cell["attempts"]
         ]
         rehearsal = block[-1]["scientists"][name].get("rehearsal")
+        compute = block[-1]["scientists"][name].get("compute_adaptation")
         scientists[name] = {
             "native_selfplay_solved": sum(
                 int(row["selfplay_solved"]) for row in native_iterations
@@ -1637,6 +1901,7 @@ def coordinated_block_report(
                 int(rehearsal["F_old"]) if rehearsal is not None else None
             ),
             "next_F_old": int(f_old[name]),
+            "compute_adaptation": compute,
             "retention_after": (
                 {
                     "solved": int(rehearsal["after"]["solved"]),
@@ -1728,6 +1993,7 @@ def _run_scientist(payload: dict[str, Any]) -> dict[str, Any]:
             attempts=int(payload["evaluation_attempts"]),
             simulations=int(payload["simulations"]),
             seed=int(payload["seed"]) + 500_000_000 + index * 100_000,
+            add_root_noise=bool(payload.get("evaluation_root_noise", False)),
         )
         event: dict[str, Any] = {
             "rung": index,
@@ -1747,6 +2013,7 @@ def _run_scientist(payload: dict[str, Any]) -> dict[str, Any]:
                 ratios=tuple(payload["ratios"]),
                 simulations=int(payload["simulations"]),
                 seed=int(payload["seed"]) + 700_000_000 + index * 100_000,
+                add_root_noise=bool(payload.get("evaluation_root_noise", False)),
             )
             dose_before = f_old
             priority = _rehearsal_priority(
@@ -1786,6 +2053,7 @@ def _run_scientist(payload: dict[str, Any]) -> dict[str, Any]:
                 ratios=tuple(payload["ratios"]),
                 simulations=int(payload["simulations"]),
                 seed=int(payload["seed"]) + 700_000_000 + index * 100_000,
+                add_root_noise=bool(payload.get("evaluation_root_noise", False)),
             )
             # The set grows between blocks, so totals from different block
             # boundaries are not comparable.  The paired before/after probe is.
@@ -1848,6 +2116,7 @@ def run_static_no_sharing(
     train_steps: int = 96,
     batch_size: int = 64,
     evaluation_attempts: int = 4,
+    evaluation_root_noise: bool = True,
     block_size: int = 10,
     retention_target: float = 0.80,
     action_horizon: int = 128,
@@ -1866,7 +2135,7 @@ def run_static_no_sharing(
         raise ValueError("worker counts and thread counts must be positive")
     bank_payload, rows = _bank_rows(bank)
     protocol = {
-        "schema": "semantic-v2-static-no-sharing-v1",
+        "schema": "semantic-v2-static-no-sharing-v2",
         "arm": "static-no-sharing",
         "name": "SV2-3S-R24-SIM64-F10-AR-EV4-NO-SHARING",
         "source_provenance": source_provenance(),
@@ -1884,6 +2153,12 @@ def run_static_no_sharing(
         "optimizer_steps_per_iteration": train_steps,
         "batch_size": batch_size,
         "evaluation_attempts_per_objective": evaluation_attempts,
+        "evaluation_attempt_protocol": (
+            "paired-seed-dirichlet-root-noise-temperature-zero-batched"
+            if evaluation_root_noise
+            else "deterministic-temperature-zero-batched"
+        ),
+        "evaluation_root_noise": evaluation_root_noise,
         "adaptive_compute": False,
         "adaptive_rehearsal_only": True,
         "F_old_levels": list(F_OLD_LEVELS),
@@ -1922,6 +2197,7 @@ def run_static_no_sharing(
             "train_steps": train_steps,
             "batch_size": batch_size,
             "evaluation_attempts": evaluation_attempts,
+            "evaluation_root_noise": evaluation_root_noise,
             "block_size": block_size,
             "retention_target": retention_target,
             "action_horizon": action_horizon,

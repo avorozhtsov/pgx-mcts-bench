@@ -39,6 +39,28 @@ def _marked(game, word: list[int], strands: int, marks: list[int]):
     return transition.state._replace(tape=tape)
 
 
+def test_serial_legal_action_translation_is_cached_by_head_and_length() -> None:
+    game = _tape_game()
+    state = game.from_word([1, 2, 1], 3).state
+    original = game.underlying_action
+    calls = 0
+
+    def counted(action, head, length):
+        nonlocal calls
+        calls += 1
+        return original(action, head, length)
+
+    game.underlying_action = counted
+    game._underlying_action_cache.clear()
+    first = game._legal(state.pgx, state.head, state.internal_steps)
+    first_calls = calls
+    second = game._legal(state.pgx, state.head, state.internal_steps)
+
+    assert first_calls == game._shift_base
+    assert calls == first_calls
+    np.testing.assert_array_equal(second, first)
+
+
 def test_shift_writes_symbol_before_moving() -> None:
     game = _tape_game(2)
     state = game.from_word([1, 2, 1], 3).state

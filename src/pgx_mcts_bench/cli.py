@@ -46,6 +46,24 @@ def braid_sv2_prefix24(
     )
 
 
+@app.command("braid-sv2-r200-bank")
+def braid_sv2_r200_bank(
+    source: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    upper_bounds: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option(dir_okay=False)],
+) -> None:
+    """Freeze the 200-item SV2 group in the original auditable ACS order."""
+    from pgx_mcts_bench.sv2_curriculum import write_r200
+
+    payload = write_r200(source, upper_bounds, output)
+    typer.echo(
+        json.dumps(
+            {"output": str(output), "representations": len(payload["rows"])},
+            indent=2,
+        )
+    )
+
+
 @app.command("braid-sv2-static-no-sharing")
 def braid_sv2_static_no_sharing(
     output: Annotated[Path, typer.Option(file_okay=False)],
@@ -60,6 +78,7 @@ def braid_sv2_static_no_sharing(
     train_steps: Annotated[int, typer.Option(min=1)] = 96,
     batch_size: Annotated[int, typer.Option(min=1)] = 64,
     evaluation_attempts: Annotated[int, typer.Option(min=1)] = 4,
+    evaluation_root_noise: bool = True,
     block_size: Annotated[int, typer.Option(min=1)] = 10,
     retention_target: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.80,
     action_horizon: Annotated[int, typer.Option(min=1)] = 128,
@@ -94,6 +113,7 @@ def braid_sv2_static_no_sharing(
         train_steps=train_steps,
         batch_size=batch_size,
         evaluation_attempts=evaluation_attempts,
+        evaluation_root_noise=evaluation_root_noise,
         block_size=block_size,
         retention_target=retention_target,
         action_horizon=action_horizon,
@@ -125,9 +145,17 @@ def braid_sv2_coordinated(
     arm: Annotated[
         str,
         typer.Option(
-            help="adaptive-no-sharing, static-sharing, or adaptive-sharing"
+            help=(
+                "static-no-sharing, adaptive-no-sharing, static-sharing, "
+                "or adaptive-sharing"
+            )
         ),
     ],
+    prior_bank: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
+    initial_state: Annotated[
+        list[str] | None,
+        typer.Option(help="Repeat NAME=STATE.pt.gz to continue full scientist state"),
+    ] = None,
     ratios: str = "10,1000",
     simulations: Annotated[int, typer.Option(min=1)] = 64,
     qualification_simulations: Annotated[int, typer.Option(min=1)] = 64,
@@ -137,6 +165,7 @@ def braid_sv2_coordinated(
     train_steps: Annotated[int, typer.Option(min=1)] = 96,
     batch_size: Annotated[int, typer.Option(min=1)] = 64,
     evaluation_attempts: Annotated[int, typer.Option(min=1)] = 4,
+    evaluation_root_noise: bool = True,
     block_size: Annotated[int, typer.Option(min=1)] = 10,
     retention_target: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.80,
     action_horizon: Annotated[int, typer.Option(min=1)] = 128,
@@ -144,6 +173,7 @@ def braid_sv2_coordinated(
     seed: int = 20262020,
     torch_threads: Annotated[int, typer.Option(min=1)] = 2,
     parallel_scientists: bool = True,
+    adaptive_compute: bool = False,
     device: str = "cpu",
     resume: bool = False,
 ) -> None:
@@ -165,11 +195,22 @@ def braid_sv2_coordinated(
         checkpoints[name] = path
     if not checkpoints:
         raise typer.BadParameter("repeat --scientist NAME=CHECKPOINT at least once")
+    initial_states: dict[str, Path] = {}
+    for value in initial_state or ():
+        if "=" not in value:
+            raise typer.BadParameter("--initial-state must be NAME=STATE.pt.gz")
+        name, raw_path = value.split("=", 1)
+        path = Path(raw_path)
+        if not path.is_file():
+            raise typer.BadParameter(f"initial state does not exist: {path}")
+        initial_states[name] = path
     report = run_coordinated_arm(
         checkpoints,
         bank,
         output,
         arm=arm,
+        prior_bank=prior_bank,
+        initial_states=initial_states or None,
         ratios=tuple(float(value) for value in ratios.split(",") if value.strip()),
         simulations=simulations,
         qualification_simulations=qualification_simulations,
@@ -179,6 +220,7 @@ def braid_sv2_coordinated(
         train_steps=train_steps,
         batch_size=batch_size,
         evaluation_attempts=evaluation_attempts,
+        evaluation_root_noise=evaluation_root_noise,
         block_size=block_size,
         retention_target=retention_target,
         action_horizon=action_horizon,
@@ -186,6 +228,7 @@ def braid_sv2_coordinated(
         seed=seed,
         torch_threads=torch_threads,
         parallel_scientists=parallel_scientists,
+        adaptive_compute=adaptive_compute,
         device=device,
         resume=resume,
     )

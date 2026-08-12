@@ -10,6 +10,7 @@ from pgx_mcts_bench.ladder import (
     _config,
     certified_development_arms,
     foundation_arms,
+    raster_axial_capacity_arms,
     vnext_arms,
 )
 from pgx_mcts_bench.networks import make_braid_network
@@ -94,6 +95,45 @@ def test_vnext_raster_is_the_admitted_local_axial_candidate() -> None:
     from pgx_mcts_bench.networks import RasterSerialBraidNet
 
     assert isinstance(network, RasterSerialBraidNet)
+
+
+def test_raster_axial_capacity_family_is_distinct_and_trainable() -> None:
+    arms = raster_axial_capacity_arms()
+    assert [arm.name for arm in arms] == [
+        "raster-axial-v2",
+        "raster-axial-v3",
+        "raster-axial-v4",
+    ]
+    assert [(arm.channels, arm.residual_blocks) for arm in arms] == [
+        (96, 6),
+        (96, 8),
+        (96, 8),
+    ]
+    assert arms[0].serial_raster_residual_style == "standard"
+    assert arms[1].serial_raster_residual_style == "layerscale"
+    assert arms[2].serial_raster_residual_style == "layerscale"
+    assert arms[2].serial_tape_symbols == 8
+    assert arms[2].serial_tape_preserve_shift
+    assert {arm.name for arm in arms} <= {arm.name for arm in foundation_arms()}
+
+    parameter_counts = []
+    for index, arm in enumerate(arms):
+        config = _config(arm, STAGES[0], 71 + index, "cpu", selfplay_games=1)
+        game = make_game(config.game)
+        network = make_braid_network(config.game, config.model)
+        transition = game.from_word([1, -2, 3, -1], strands=4)
+        observation = torch.from_numpy(transition.observation[None]).permute(0, 3, 1, 2)
+        policy, value = network(observation.float())
+        (policy.mean() + value.mean()).backward()
+        assert all(
+            parameter.grad is not None
+            for name, parameter in network.named_parameters()
+            if "residual_scale" in name
+        )
+        parameter_counts.append(sum(parameter.numel() for parameter in network.parameters()))
+    assert parameter_counts[0] > 500_000
+    assert parameter_counts[1] > parameter_counts[0]
+    assert parameter_counts[2] > parameter_counts[1]
 
 
 def test_raster_bounded_is_a_matched_pretraining_candidate() -> None:

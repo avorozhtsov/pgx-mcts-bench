@@ -173,6 +173,7 @@ class Candidate:
     serial_raster_wrap_strands: bool = False
     serial_raster_masked_norm: bool = False
     serial_raster_identity_padding: bool = False
+    serial_raster_residual_style: str = "standard"
     serial_initial_markov_stabilizations: int = 0
     serial_initial_markov_sign: int = 1
     cyclic_band_generators: bool = False
@@ -709,6 +710,38 @@ def vnext_arms() -> list[Candidate]:
     ]
 
 
+def raster_axial_capacity_arms() -> list[Candidate]:
+    """From-scratch capacity and memory variants of the admitted raster arm."""
+    raster = next(candidate for candidate in vnext_arms() if candidate.name == "raster-axial")
+    wider = replace(
+        raster,
+        name="raster-axial-v2",
+        rationale="96-channel six-block masked axial raster capacity control",
+        channels=96,
+        residual_blocks=6,
+    )
+    stable_deep = replace(
+        wider,
+        name="raster-axial-v3",
+        rationale="96-channel eight-block masked axial raster with LayerScale residuals",
+        residual_blocks=8,
+        serial_raster_residual_style="layerscale",
+    )
+    return [
+        wider,
+        stable_deep,
+        replace(
+            stable_deep,
+            name="raster-axial-v4",
+            rationale=(
+                "LayerScale raster-axial-v3 with an aligned eight-symbol writable tape"
+            ),
+            serial_tape_symbols=8,
+            serial_tape_preserve_shift=True,
+        ),
+    ]
+
+
 def certified_development_arms() -> list[Candidate]:
     """Raster baseline with theorem-bounded search values, pending admission."""
     raster = next(candidate for candidate in vnext_arms() if candidate.name == "raster-axial")
@@ -727,7 +760,7 @@ def certified_development_arms() -> list[Candidate]:
 
 def foundation_arms() -> list[Candidate]:
     """Stable roster plus explicitly named candidates eligible for pretraining."""
-    return vnext_arms() + certified_development_arms()
+    return vnext_arms() + certified_development_arms() + raster_axial_capacity_arms()
 
 
 def raster_development_arms() -> list[Candidate]:
@@ -842,6 +875,7 @@ def candidates() -> list[Candidate]:
         + experimental_capacity_arms()
         + raster_development_arms()
         + certified_development_arms()
+        + raster_axial_capacity_arms()
         + vnext_arms()
         + distilled_arms()
         + ensemble_arms()
@@ -1072,6 +1106,7 @@ def _config(
         serial_raster_wrap_strands=candidate.serial_raster_wrap_strands,
         serial_raster_masked_norm=candidate.serial_raster_masked_norm,
         serial_raster_identity_padding=candidate.serial_raster_identity_padding,
+        serial_raster_residual_style=candidate.serial_raster_residual_style,
         serial_initial_markov_stabilizations=(candidate.serial_initial_markov_stabilizations),
         serial_initial_markov_sign=candidate.serial_initial_markov_sign,
         serial_ensemble=candidate.serial_ensemble,

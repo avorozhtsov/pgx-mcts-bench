@@ -789,6 +789,21 @@ class MaskedAxialCylinderResidualBlock(AxialCylinderResidualBlock):
         return output if active is None else output * active
 
 
+class LayerScaledMaskedAxialCylinderResidualBlock(MaskedAxialCylinderResidualBlock):
+    """Mask-aware axial block stabilized for a deeper residual trunk."""
+
+    def __init__(self, channels: int, *, wrap_strands: bool = False):
+        super().__init__(channels, wrap_strands=wrap_strands)
+        self.residual_scale = nn.Parameter(torch.full((channels,), 0.1))
+
+    def forward(self, x: Tensor, active: Tensor | None = None) -> Tensor:
+        horizontal = self.horizontal(F.pad(x, (1, 1, 0, 0), mode="circular"))
+        vertical = self._vertical_convolve(x, active)
+        hidden = self.norm(self.mix(torch.cat([horizontal, vertical], dim=1)), active)
+        output = x + self.residual_scale[None, :, None, None] * F.silu(hidden)
+        return output if active is None else output * active
+
+
 class RoutedRasterResidualBlock(AxialCylinderResidualBlock):
     """Shared dilated axial block for the full routed raster scientist.
 
@@ -864,6 +879,14 @@ class RasterWindowRepresentation(nn.Module):
                 raise ValueError(
                     "masked normalisation requires a joint, axial, or scalable raster block"
                 )
+        if game.serial_raster_residual_style == "layerscale":
+            if self.variant != "axial" or not game.serial_raster_masked_norm:
+                raise ValueError("LayerScale raster residuals require masked axial blocks")
+            block_type = LayerScaledMaskedAxialCylinderResidualBlock
+        elif game.serial_raster_residual_style != "standard":
+            raise ValueError(
+                f"unknown raster residual style {game.serial_raster_residual_style!r}"
+            )
         if self.variant not in {"joint", "axial", "recurrent", "scalable"}:
             raise ValueError(f"unknown serial_raster variant {self.variant!r}")
         if game.serial_raster_wrap_strands and self.variant == "joint":

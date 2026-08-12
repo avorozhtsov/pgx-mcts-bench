@@ -12,6 +12,7 @@ from rf_knots.actions import DESTABILIZE, REDUCE
 
 from pgx_mcts_bench.adaptive_scientists import FixedWordGame, KnotItem, load_scientist
 from pgx_mcts_bench.collaboration_eval import (
+    _evaluation_records,
     compare_collaboration_evaluations,
     direct_sharing_preflight,
     evaluate_collaboration,
@@ -34,6 +35,7 @@ from pgx_mcts_bench.collaborative_scientists import (
     translate_semantic_record,
     verified_record_cost,
 )
+from pgx_mcts_bench.config import SearchConfig
 from pgx_mcts_bench.game import make_game
 from pgx_mcts_bench.ladder import _config, candidates, serial_arms
 from pgx_mcts_bench.networks import make_braid_network
@@ -49,6 +51,66 @@ from pgx_mcts_bench.sharing_gate import (
 
 def _window_candidate():
     return next(candidate for candidate in serial_arms() if candidate.name == "s-window-128")
+
+
+def test_evaluation_attempts_share_one_batched_search_per_move(monkeypatch) -> None:
+    calls = []
+
+    class FakeFixed:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def reset(self, seed):
+            return SimpleNamespace(
+                state=seed,
+                observation=np.array([seed], dtype=np.float32),
+                legal_actions=np.array([True, True]),
+                player=0,
+                terminated=False,
+            )
+
+        def step(self, state, action):
+            return SimpleNamespace(state=(state, action), terminated=True)
+
+    class FakeSearch:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def run_batch(self, **kwargs):
+            calls.append(kwargs)
+            return [
+                SimpleNamespace(action=index % 2, policy=np.array([0.5, 0.5]))
+                for index in range(len(kwargs["states"]))
+            ]
+
+    monkeypatch.setattr("pgx_mcts_bench.collaboration_eval.FixedWordGame", FakeFixed)
+    monkeypatch.setattr("pgx_mcts_bench.collaboration_eval.NeuralMCTS", FakeSearch)
+    monkeypatch.setattr(
+        "pgx_mcts_bench.collaboration_eval.verified_record_cost",
+        lambda _game, _knot, _ratio, record: (0, len(record), [record[0].action]),
+    )
+    scientist = SimpleNamespace(
+        game=object(),
+        network=object(),
+        config=SimpleNamespace(
+            search=SearchConfig(simulations=2),
+            train=SimpleNamespace(device="cpu"),
+        ),
+    )
+    rows = _evaluation_records(
+        scientist,
+        object(),
+        10.0,
+        8,
+        [101, 102, 103, 104],
+        add_root_noise=True,
+    )
+
+    assert len(rows) == 4
+    assert len(calls) == 1
+    assert calls[0]["states"] == [101, 102, 103, 104]
+    assert calls[0]["add_root_noise"] is True
+    assert all(row[1]["evaluation_batch_size"] == 4 for row in rows)
 
 
 def test_stratified_banks_are_identity_disjoint_and_span_quartiles() -> None:

@@ -174,6 +174,10 @@ class BraidGameConfig:
     # Normalise the raster trunk over live cells only.  Plain GroupNorm averages
     # over the padded canvas, which on a 50-82% inactive raster is mostly zeros.
     serial_raster_masked_norm: bool = False
+    # Residual formulation for raster encoders. ``standard`` preserves the
+    # published baseline; ``layerscale`` stabilizes a deeper axial stack with a
+    # learnable per-channel residual gate initialized near the identity.
+    serial_raster_residual_style: str = "standard"
     # Optional Markov-equivalent taller initial representation.  Each step adds
     # one new strand together with the required terminal sigma_k crossing; a
     # bare active 010 row would instead add an unknot component.

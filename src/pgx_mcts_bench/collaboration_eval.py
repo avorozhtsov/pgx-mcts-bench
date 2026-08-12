@@ -80,6 +80,36 @@ def _evaluation_record(
     objective_cap: float | None = None,
     add_root_noise: bool = False,
 ):
+    return _evaluation_records(
+        scientist,
+        knot,
+        ratio,
+        simulations,
+        [seed],
+        objective_cap=objective_cap,
+        add_root_noise=add_root_noise,
+    )[0]
+
+
+def _evaluation_records(
+    scientist,
+    knot,
+    ratio: float,
+    simulations: int,
+    seeds: list[int],
+    *,
+    objective_cap: float | None = None,
+    add_root_noise: bool = False,
+):
+    """Evaluate paired attempts with one batched MCTS call per move.
+
+    Attempts share a fixed representation and objective, but retain independent
+    RNGs and (when enabled) independent Dirichlet root noise.  This makes EV4
+    four real paired attempts instead of four identical deterministic reruns,
+    while allowing the network to evaluate their search leaves as a batch.
+    """
+    if not seeds:
+        return []
     fixed = FixedWordGame(
         scientist.game,
         knot,
@@ -91,43 +121,57 @@ def _evaluation_record(
     search = NeuralMCTS(
         fixed, scientist.network, search_config, scientist.config.train.device
     )
-    transition = fixed.reset(seed)
-    record: GameRecord = []
-    rng = np.random.default_rng(seed)
+    transitions = [fixed.reset(seed) for seed in seeds]
+    records: list[GameRecord] = [[] for _ in seeds]
+    rngs = [np.random.default_rng(seed) for seed in seeds]
     started = time.perf_counter()
-    while not transition.terminated:
-        result = search.run(
-            transition.state,
-            transition.observation,
-            transition.legal_actions,
-            rng,
-            temperature=0.0,
+    while True:
+        active = [
+            index for index, transition in enumerate(transitions)
+            if not transition.terminated
+        ]
+        if not active:
+            break
+        results = search.run_batch(
+            states=[transitions[index].state for index in active],
+            observations=[transitions[index].observation for index in active],
+            legal_actions=[transitions[index].legal_actions for index in active],
+            rngs=[rngs[index] for index in active],
+            temperatures=[0.0] * len(active),
             add_root_noise=add_root_noise,
         )
-        record.append(
-            Position(
-                observation=transition.observation,
-                legal_actions=transition.legal_actions,
-                policy=result.policy.astype(np.float32),
-                action=result.action,
-                player=transition.player,
-                role=1,
-                episode_seed=seed,
+        for index, result in zip(active, results, strict=True):
+            transition = transitions[index]
+            records[index].append(
+                Position(
+                    observation=transition.observation,
+                    legal_actions=transition.legal_actions,
+                    policy=result.policy.astype(np.float32),
+                    action=result.action,
+                    player=transition.player,
+                    role=1,
+                    episode_seed=seeds[index],
+                )
             )
+            transitions[index] = fixed.step(transition.state, result.action)
+    wall_seconds = time.perf_counter() - started
+    return [
+        (
+            verified_record_cost(scientist.game, knot, ratio, record),
+            {
+                "moves_searched": len(record),
+                # AlphaZero performs one root evaluation and at most one leaf
+                # evaluation per simulation. Keep this explicitly labelled as a
+                # scheduled upper bound rather than pretending it is a hardware
+                # counter when terminal leaves avoid inference.
+                "scheduled_network_evaluations": len(record) * (simulations + 1),
+                "wall_seconds": wall_seconds / len(seeds),
+                "batch_wall_seconds": wall_seconds,
+                "evaluation_batch_size": len(seeds),
+            },
         )
-        transition = fixed.step(transition.state, result.action)
-    return (
-        verified_record_cost(scientist.game, knot, ratio, record),
-        {
-            "moves_searched": len(record),
-            # AlphaZero performs one root evaluation and at most one leaf
-            # evaluation per simulation. Keep this explicitly labelled as a
-            # scheduled upper bound rather than pretending it is a hardware
-            # counter when terminal leaves avoid inference.
-            "scheduled_network_evaluations": len(record) * (simulations + 1),
-            "wall_seconds": time.perf_counter() - started,
-        },
-    )
+        for record in records
+    ]
 
 
 def evaluate_collaboration(
@@ -230,22 +274,25 @@ def evaluate_collaboration(
         attempts = []
         for scientist_index, scientist in enumerate(scientists):
             for ratio_index, ratio in enumerate(ratios):
-                for attempt_index in range(attempts_per_representation):
-                    attempt_seed = (
+                attempt_seeds = [
+                    (
                         seed
                         + item_index * 1_000_000
                         + scientist_index * 10_000
                         + ratio_index * 1_000
                         + attempt_index
                     )
-                    verified, compute = _evaluation_record(
-                        scientist,
-                        item.knot,
-                        ratio,
-                        simulations,
-                        attempt_seed,
-                        add_root_noise=root_noise,
-                    )
+                    for attempt_index in range(attempts_per_representation)
+                ]
+                evaluated = _evaluation_records(
+                    scientist,
+                    item.knot,
+                    ratio,
+                    simulations,
+                    attempt_seeds,
+                    add_root_noise=root_noise,
+                )
+                for attempt_index, (verified, compute) in enumerate(evaluated):
                     row = {
                         "scientist": scientist.name,
                         "ratio": ratio,

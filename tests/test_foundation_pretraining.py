@@ -117,3 +117,35 @@ def test_manifest_embeds_complete_candidate_specs_and_provenance(monkeypatch, tm
         workers=1,
         stage_limit=1,
     )
+
+
+def test_parallel_foundation_workers_use_spawn(monkeypatch, tmp_path) -> None:
+    from pgx_mcts_bench import foundation_pretraining as module
+
+    seen = {}
+
+    class Pool:
+        def __init__(self, *, max_workers, mp_context):
+            seen["workers"] = max_workers
+            seen["start_method"] = mp_context.get_start_method()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def map(self, function, jobs):
+            return [function(job) for job in jobs]
+
+    monkeypatch.setattr(module, "ProcessPoolExecutor", Pool)
+    monkeypatch.setattr(module, "_run_one", lambda payload: {"job": payload})
+    monkeypatch.setattr(module, "source_provenance", lambda: {"base_commit": "abc"})
+    run_foundation_pretraining(
+        tmp_path,
+        candidate_names=["window-local"],
+        seeds=[71, 72],
+        workers=2,
+        stage_limit=1,
+    )
+    assert seen == {"workers": 2, "start_method": "spawn"}

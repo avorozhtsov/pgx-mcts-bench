@@ -5,18 +5,80 @@ import numpy as np
 from pgx_mcts_bench.adaptive_scientists import KnotItem
 from pgx_mcts_bench.data import Position
 from pgx_mcts_bench.sv2_curriculum import (
+    F_NATIVE_LEVELS,
     F_OLD_LEVELS,
+    SIMULATION_LEVELS,
     _coordinated_name,
     _donation_is_still_eligible,
     _portfolio_summary,
     adapt_donation_dose,
     auditable_complexity,
     build_prefix24,
+    build_r200,
     coordinated_block_report,
+    next_compute_dose,
     next_rehearsal_dose,
     run_static_no_sharing,
     write_prefix24,
 )
+
+
+def test_r200_uses_original_acs_with_presentation_length(tmp_path: Path) -> None:
+    source = tmp_path / "source.json"
+    upper_bounds = tmp_path / "upper.json"
+    rows = [
+        {
+            "id": f"k{index:03d}",
+            "name": f"k{index:03d}",
+            "word": [1, -1, 1][: 1 + index % 3],
+            "strands": 2 + index % 2,
+            "crossings": 1,
+            "certified_unknotting_lower_bound": 1 + index % 2,
+            "difficulty_quartile": index // 50,
+            "cheap_score": 0.0,
+        }
+        for index in range(200)
+    ]
+    source.write_text(__import__("json").dumps(rows))
+    upper_bounds.write_text(
+        __import__("json").dumps(
+            {
+                "values": {
+                    row["id"]: {
+                        "upper_bound": row["certified_unknotting_lower_bound"] + 1
+                    }
+                    for row in rows
+                }
+            }
+        )
+    )
+    converted = build_r200(source, upper_bounds)
+    assert len(converted) == 200
+    assert [row["acs"] for row in converted] == sorted(row["acs"] for row in converted)
+    for row in converted:
+        assert row["source_minimal_crossings"] == 1
+        assert row["presentation_crossings"] == len(row["word"])
+        assert row["crossings"] == len(row["word"])
+        assert row["acs"] == (
+            10 * row["strands"]
+            + 5 * row["certified_unknotting_upper_bound"]
+            + len(row["word"])
+        )
+
+
+def test_compute_dose_only_rises_after_deficient_block() -> None:
+    assert next_compute_dose(
+        5, levels=F_NATIVE_LEVELS, observed_rate=0.80, target=0.80
+    ) == 5
+    assert next_compute_dose(
+        5, levels=F_NATIVE_LEVELS, observed_rate=0.79, target=0.80
+    ) == 8
+    assert next_compute_dose(
+        16, levels=F_NATIVE_LEVELS, observed_rate=0.0, target=0.80
+    ) == 16
+    assert next_compute_dose(
+        64, levels=SIMULATION_LEVELS, observed_rate=0.69, target=0.70
+    ) == 128
 
 
 def test_coordinated_block_report_counts_declared_work() -> None:
@@ -192,6 +254,8 @@ def test_static_manifest_freezes_learning_dose(tmp_path: Path, monkeypatch) -> N
     assert report["F_native"] == 10
     assert report["simulations"] == 64
     assert report["evaluation_attempts_per_objective"] == 4
+    assert report["evaluation_root_noise"] is True
+    assert report["evaluation_attempt_protocol"].endswith("batched")
     assert report["adaptive_compute"] is False
     assert report["adaptive_rehearsal_only"] is True
 
