@@ -8,8 +8,11 @@ from pgx_mcts_bench.sv2_curriculum import (
     F_NATIVE_LEVELS,
     F_OLD_LEVELS,
     SIMULATION_LEVELS,
+    _assert_native_commit,
+    _commit_native_event,
     _coordinated_name,
     _donation_is_still_eligible,
+    _initial_controller_values,
     _portfolio_summary,
     adapt_donation_dose,
     auditable_complexity,
@@ -21,6 +24,63 @@ from pgx_mcts_bench.sv2_curriculum import (
     run_static_no_sharing,
     write_prefix24,
 )
+
+
+def test_native_event_is_immutable_and_hash_verified(tmp_path: Path) -> None:
+    payload = {
+        "schema": "semantic-v2-native-event-v1",
+        "phase": "native-committed",
+        "round": 0,
+        "scientists": {"a": {"evaluation": {"1000.0": {"best_objective": 1007}}}},
+    }
+    reference = _commit_native_event(tmp_path, 0, payload)
+    committed = tmp_path / reference["path"]
+    assert committed.is_file()
+    _assert_native_commit(tmp_path, reference)
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="different results"):
+        _commit_native_event(tmp_path, 0, {**payload, "round": 1})
+
+    committed.write_text("{}\n")
+    with pytest.raises(RuntimeError, match="hash changed"):
+        _assert_native_commit(tmp_path, reference)
+
+
+def test_group_continuation_restores_adaptive_controller_values() -> None:
+    payloads = {
+        "a": {
+            "f_native": 12,
+            "simulations": 256,
+            "donation_dose": 2,
+            "donation_healthy_streak": 1,
+        },
+        "b": {
+            "f_native": 8,
+            "simulations": 128,
+            "donation_dose": 2,
+            "donation_healthy_streak": 1,
+        },
+    }
+    assert _initial_controller_values(
+        payloads,
+        ["a", "b"],
+        default_f_native=5,
+        default_simulations=64,
+    ) == (2, 1, {"a": 12, "b": 8}, {"a": 256, "b": 128})
+
+
+def test_group_continuation_rejects_disagreeing_sharing_controller() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="disagree"):
+        _initial_controller_values(
+            {"a": {"donation_dose": 1}, "b": {"donation_dose": 2}},
+            ["a", "b"],
+            default_f_native=5,
+            default_simulations=64,
+        )
 
 
 def test_r200_uses_original_acs_with_presentation_length(tmp_path: Path) -> None:
@@ -44,9 +104,7 @@ def test_r200_uses_original_acs_with_presentation_length(tmp_path: Path) -> None
         __import__("json").dumps(
             {
                 "values": {
-                    row["id"]: {
-                        "upper_bound": row["certified_unknotting_lower_bound"] + 1
-                    }
+                    row["id"]: {"upper_bound": row["certified_unknotting_lower_bound"] + 1}
                     for row in rows
                 }
             }
@@ -60,25 +118,15 @@ def test_r200_uses_original_acs_with_presentation_length(tmp_path: Path) -> None
         assert row["presentation_crossings"] == len(row["word"])
         assert row["crossings"] == len(row["word"])
         assert row["acs"] == (
-            10 * row["strands"]
-            + 5 * row["certified_unknotting_upper_bound"]
-            + len(row["word"])
+            10 * row["strands"] + 5 * row["certified_unknotting_upper_bound"] + len(row["word"])
         )
 
 
 def test_compute_dose_only_rises_after_deficient_block() -> None:
-    assert next_compute_dose(
-        5, levels=F_NATIVE_LEVELS, observed_rate=0.80, target=0.80
-    ) == 5
-    assert next_compute_dose(
-        5, levels=F_NATIVE_LEVELS, observed_rate=0.79, target=0.80
-    ) == 8
-    assert next_compute_dose(
-        16, levels=F_NATIVE_LEVELS, observed_rate=0.0, target=0.80
-    ) == 16
-    assert next_compute_dose(
-        64, levels=SIMULATION_LEVELS, observed_rate=0.69, target=0.70
-    ) == 128
+    assert next_compute_dose(5, levels=F_NATIVE_LEVELS, observed_rate=0.80, target=0.80) == 5
+    assert next_compute_dose(5, levels=F_NATIVE_LEVELS, observed_rate=0.79, target=0.80) == 8
+    assert next_compute_dose(16, levels=F_NATIVE_LEVELS, observed_rate=0.0, target=0.80) == 16
+    assert next_compute_dose(64, levels=SIMULATION_LEVELS, observed_rate=0.69, target=0.70) == 128
 
 
 def test_coordinated_block_report_counts_declared_work() -> None:
@@ -110,9 +158,7 @@ def test_coordinated_block_report_counts_declared_work() -> None:
         "F_old": 1,
         "after": {"solved": 4, "attempts": 4, "capped_cost": 11.0},
     }
-    report = coordinated_block_report(
-        events, block_size=2, f_old={"s": 2}, donation_dose=1
-    )
+    report = coordinated_block_report(events, block_size=2, f_old={"s": 2}, donation_dose=1)
     assert report["completed_rungs"] == 2
     assert report["selected"] == ["k0", "k1"]
     assert report["scientists"]["s"]["native_selfplay_solved"] == 6
@@ -153,9 +199,7 @@ def test_final_partial_block_does_not_repeat_prior_rounds() -> None:
         }
         for index in range(24)
     ]
-    report = coordinated_block_report(
-        events, block_size=10, f_old={"s": 1}, donation_dose=1
-    )
+    report = coordinated_block_report(events, block_size=10, f_old={"s": 1}, donation_dose=1)
     assert report["rounds"] == [20, 23]
     assert report["selected"] == ["k20", "k21", "k22", "k23"]
 
@@ -268,13 +312,9 @@ def test_coordinated_arm_names_are_unambiguous() -> None:
         "f_native": 10,
         "evaluation_attempts": 4,
     }
-    assert _coordinated_name("adaptive-no-sharing", **common).endswith(
-        "ADAPTIVE-NO-SHARING"
-    )
+    assert _coordinated_name("adaptive-no-sharing", **common).endswith("ADAPTIVE-NO-SHARING")
     assert _coordinated_name("static-sharing", **common).endswith("EV4-SHARING")
-    assert _coordinated_name("adaptive-sharing", **common).endswith(
-        "ADAPTIVE-SHARING"
-    )
+    assert _coordinated_name("adaptive-sharing", **common).endswith("ADAPTIVE-SHARING")
 
 
 def test_portfolio_summary_takes_best_scientist_and_caps_failures() -> None:
@@ -297,9 +337,7 @@ def test_portfolio_summary_takes_best_scientist_and_caps_failures() -> None:
             }
         },
     }
-    result = _portfolio_summary(
-        summaries, [knot], (10.0, 1000.0), action_horizon=128
-    )
+    result = _portfolio_summary(summaries, [knot], (10.0, 1000.0), action_horizon=128)
     assert result["solved"] == 1
     assert result["capped_cost"] == 17.0 + 20_128.0
     assert result["objectives"]["10.0"] == {

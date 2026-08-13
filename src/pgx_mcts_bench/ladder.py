@@ -185,6 +185,10 @@ class Candidate:
     # their exact meaning.
     objective_budget_channel: bool = False
     certified_value_floor: bool = False
+    invariant_features: str = ""
+    invariant_fusion: str = "late"
+    invariant_residual_blocks: int = 0
+    invariant_dual_film: bool = False
     residual_blocks: int = 2
     auxiliary_value_loss_weight: float = 0.1
     auxiliary_backprop_to_encoder: bool = False
@@ -733,9 +737,7 @@ def raster_axial_capacity_arms() -> list[Candidate]:
         replace(
             stable_deep,
             name="raster-axial-v4",
-            rationale=(
-                "LayerScale raster-axial-v3 with an aligned eight-symbol writable tape"
-            ),
+            rationale=("LayerScale raster-axial-v3 with an aligned eight-symbol writable tape"),
             serial_tape_symbols=8,
             serial_tape_preserve_shift=True,
         ),
@@ -750,17 +752,141 @@ def certified_development_arms() -> list[Candidate]:
             raster,
             name="raster-bounded",
             rationale=(
-                "masked axial raster with a certified lower bound on remaining "
-                "crossing changes"
+                "masked axial raster with a certified lower bound on remaining crossing changes"
             ),
             certified_value_floor=True,
         )
     ]
 
 
+def invariant_oracle_arms() -> list[Candidate]:
+    """Five controlled human-invariant raster scientists.
+
+    The first three isolate feature content with identical late fusion.  The
+    final two hold the combined feature set fixed and test whether invariants
+    should modulate the shared visual trunk or enter through a separate tower.
+    """
+    raster = next(candidate for candidate in vnext_arms() if candidate.name == "raster-axial")
+    return [
+        replace(
+            raster,
+            name="raster-invariant-classical",
+            rationale="classical signature/determinant/cover summaries with late fusion",
+            invariant_features="classical",
+            invariant_fusion="late",
+        ),
+        replace(
+            raster,
+            name="raster-invariant-alexander",
+            rationale="classical plus Alexander polynomial summaries with late fusion",
+            invariant_features="alexander",
+            invariant_fusion="late",
+        ),
+        replace(
+            raster,
+            name="raster-invariant-jones",
+            rationale="classical plus Jones polynomial summaries with late fusion",
+            invariant_features="jones",
+            invariant_fusion="late",
+        ),
+        replace(
+            raster,
+            name="raster-invariant-combined-film",
+            rationale="combined Alexander/Jones/classical oracle modulating the visual trunk",
+            invariant_features="combined",
+            invariant_fusion="film",
+        ),
+        replace(
+            raster,
+            name="raster-invariant-combined-dual",
+            rationale="combined oracle in a separate policy/value fusion tower",
+            invariant_features="combined",
+            invariant_fusion="dual",
+        ),
+    ]
+
+
+def invariant_oracle_mutation_arms() -> list[Candidate]:
+    """Function-preserving children of the combined dual-tower scientist."""
+    parent = next(
+        candidate
+        for candidate in invariant_oracle_arms()
+        if candidate.name == "raster-invariant-combined-dual"
+    )
+    return [
+        replace(
+            parent,
+            name="raster-invariant-combined-dual-film",
+            rationale="combined dual tower plus a zero-initialized invariant FiLM correction",
+            invariant_dual_film=True,
+        ),
+        replace(
+            parent,
+            name="raster-invariant-combined-dual-deep",
+            rationale="combined dual tower plus two zero-initialized invariant residual blocks",
+            invariant_residual_blocks=2,
+        ),
+        replace(
+            parent,
+            name="raster-invariant-combined-dual-deep-film",
+            rationale="combined dual tower with both function-preserving depth and FiLM mutations",
+            invariant_residual_blocks=2,
+            invariant_dual_film=True,
+        ),
+    ]
+
+
+def invariant_oracle_depth_dose_arms() -> list[Candidate]:
+    """Function-preserving invariant-depth doses for the second paired gate.
+
+    The unchanged FiLM and dual scientists remain the controls.  These children
+    isolate the number of zero-initialized residual blocks; they do not change
+    the invariant features, visual trunk, action space, or training protocol.
+    """
+    by_name = {candidate.name: candidate for candidate in invariant_oracle_arms()}
+    film = by_name["raster-invariant-combined-film"]
+    dual = by_name["raster-invariant-combined-dual"]
+    return [
+        replace(
+            film,
+            name="raster-invariant-combined-film-deep1",
+            rationale="combined FiLM scientist plus one zero-initialized invariant residual block",
+            invariant_residual_blocks=1,
+        ),
+        replace(
+            film,
+            name="raster-invariant-combined-film-deep2",
+            rationale="combined FiLM scientist plus two zero-initialized invariant residual blocks",
+            invariant_residual_blocks=2,
+        ),
+        replace(
+            dual,
+            name="raster-invariant-combined-dual-deep1",
+            rationale="combined dual scientist plus one zero-initialized invariant residual block",
+            invariant_residual_blocks=1,
+        ),
+        replace(
+            dual,
+            name="raster-invariant-combined-dual-deep4",
+            rationale=(
+                "combined dual scientist plus four zero-initialized invariant "
+                "residual blocks"
+            ),
+            invariant_residual_blocks=4,
+        ),
+    ]
+
+
 def foundation_arms() -> list[Candidate]:
     """Stable roster plus explicitly named candidates eligible for pretraining."""
-    return vnext_arms() + certified_development_arms() + raster_axial_capacity_arms()
+    return (
+        vnext_arms()
+        + certified_development_arms()
+        + raster_axial_capacity_arms()
+        + invariant_oracle_arms()
+        + invariant_oracle_mutation_arms()
+        + invariant_oracle_depth_dose_arms()
+    )
 
 
 def raster_development_arms() -> list[Candidate]:
@@ -876,6 +1002,9 @@ def candidates() -> list[Candidate]:
         + raster_development_arms()
         + certified_development_arms()
         + raster_axial_capacity_arms()
+        + invariant_oracle_arms()
+        + invariant_oracle_mutation_arms()
+        + invariant_oracle_depth_dose_arms()
         + vnext_arms()
         + distilled_arms()
         + ensemble_arms()
@@ -921,9 +1050,7 @@ class LadderResult:
     rehearsal_doses: dict[str, int] = field(default_factory=dict)
 
 
-def retry_last_capped_stage(
-    result: LadderResult, consecutive_caps: int
-) -> tuple[int, int] | None:
+def retry_last_capped_stage(result: LadderResult, consecutive_caps: int) -> tuple[int, int] | None:
     """Remove the terminal capped record so training can continue from its weights."""
     if not result.stages or result.stages[-1].promoted:
         return None
@@ -1114,6 +1241,8 @@ def _config(
         serial_internal_budget_remaining=candidate.serial_internal_budget_remaining,
         objective_budget_channel=candidate.objective_budget_channel,
         certified_value_floor=candidate.certified_value_floor,
+        invariant_features=candidate.invariant_features,
+        invariant_fusion=candidate.invariant_fusion,
         cyclic_band_generators=candidate.cyclic_band_generators,
     )
     return ExperimentConfig(
@@ -1124,6 +1253,8 @@ def _config(
             residual_blocks=candidate.residual_blocks,
             latent_channels=candidate.channels,
             auxiliary_value_loss_weight=candidate.auxiliary_value_loss_weight,
+            invariant_residual_blocks=candidate.invariant_residual_blocks,
+            invariant_dual_film=candidate.invariant_dual_film,
             auxiliary_backprop_to_encoder=candidate.auxiliary_backprop_to_encoder,
             auxiliary_solve_backprop_to_encoder=(candidate.auxiliary_solve_backprop_to_encoder),
             auxiliary_budget_monotonic_weight=(candidate.auxiliary_budget_monotonic_weight),
@@ -1664,10 +1795,7 @@ def run_ladder(
     if retry is not None:
         start_stage, consecutive_caps = retry
         partial = None
-        log(
-            f"    [{candidate.name}] retrying capped stage {start_stage} "
-            "from its trained weights"
-        )
+        log(f"    [{candidate.name}] retrying capped stage {start_stage} from its trained weights")
 
     def snapshot(index: int, when: str, stage_result: StageResult | None = None) -> None:
         """Weights either side of a stage, kept rather than overwritten.

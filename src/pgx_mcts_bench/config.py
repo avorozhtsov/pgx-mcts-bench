@@ -204,6 +204,14 @@ class BraidGameConfig:
     # number of crossing changes. This changes search, not the observation or
     # trainable network, and requires the rf-knots ``bounds`` extra.
     certified_value_floor: bool = False
+    # Human-computed knot invariants broadcast into the serial observation.
+    # This is an explicitly labelled oracle arm, never a silent addition to the
+    # zero-knowledge scientists. Values: classical, alexander, jones, combined.
+    invariant_features: str = ""
+    # How the raster controller consumes the global invariant vector: ``late``
+    # (value/global heads), ``film`` (feature modulation), or ``dual`` (a
+    # separate tower fused into positional policy and value).
+    invariant_fusion: str = "late"
     # Extend the Artin alphabet with the verified cyclic seam band a_{1,n}.
     # Witnesses compile back to ordinary B_n; see rf_knots.reference.
     cyclic_band_generators: bool = False
@@ -213,6 +221,13 @@ class BraidGameConfig:
             raise ValueError("serial_window must be at least 3")
         if self.serial_internal_horizon < 1:
             raise ValueError("serial_internal_horizon must be positive")
+        from pgx_mcts_bench.invariant_features import invariant_feature_size
+
+        invariant_feature_size(self.invariant_features)
+        if self.invariant_fusion not in {"late", "film", "dual"}:
+            raise ValueError(f"unknown invariant fusion {self.invariant_fusion!r}")
+        if self.invariant_features and not self.serial_raster:
+            raise ValueError("invariant oracle features currently require a raster scientist")
 
     def to_braid_config(self):
         from rf_knots.config import BraidConfig
@@ -284,6 +299,9 @@ class BraidGameConfig:
         # are constructed by the serial adapter's deterministic full-word scan.
         strand_graph = 4 if self.serial_encoder.startswith("strand-graph") else 0
         raster = 4 * self.max_strands if self.serial_raster else 0
+        from pgx_mcts_bench.invariant_features import invariant_feature_size
+
+        invariants = invariant_feature_size(self.invariant_features)
         return (
             2 * self.generator_capacity
             + 1
@@ -294,6 +312,7 @@ class BraidGameConfig:
             + tape
             + strand_graph
             + raster
+            + invariants
             + 1
             + int(self.objective_budget_channel)
         )
@@ -304,9 +323,7 @@ class BraidGameConfig:
 
     @property
     def width(self) -> int:
-        if (
-            self.serial_encoder or self.serial_ensemble or self.serial_raster == "scalable"
-        ):
+        if self.serial_encoder or self.serial_ensemble or self.serial_raster == "scalable":
             return self.max_len
         return self.serial_window
 
@@ -383,6 +400,14 @@ class ModelConfig:
     # appending a channel, so the two ends of the Pareto front can behave like
     # different networks inside one set of weights.
     film_on_ratio: bool = True
+    # Function-preserving architecture mutations for invariant-oracle children.
+    # Each residual block has a zero-initialized final projection; enabling a
+    # block therefore leaves a migrated parent's outputs exact at fork time.
+    invariant_residual_blocks: int = 0
+    # Add a zero-initialized FiLM correction to a dual-fusion invariant tower.
+    # This tests whether the successful separate tower also benefits from
+    # modulating the visual trunk without replacing either learned parent path.
+    invariant_dual_film: bool = False
     # Shadow factorized critic. Four independently initialized towers are trained
     # with deterministic per-episode bootstrap masks while MCTS continues to use
     # the legacy scalar value. Auxiliary gradients are initially kept out of the

@@ -58,6 +58,9 @@ class SerialState(NamedTuple):
     # Portable braid-state changes since the start of the simplifier episode.
     # Appended with a default so old seven-field pickles remain loadable.
     semantic_moves: int = 0
+    # Whole-knot oracle features. Legal braid/Markov rewrites preserve them, so
+    # the adapter recomputes this vector only after a crossing change.
+    invariant_vector: np.ndarray | None = None
 
 
 # Serial action layout, with G = max_strands - 1 generators and W = act_width.
@@ -256,6 +259,18 @@ class SerialBraidGame:
             "binding": 0,
             "by_method": {},
         }
+
+    def _compute_invariant_vector(self, pgx_state: Any) -> np.ndarray | None:
+        if not self.config.invariant_features:
+            return None
+        from pgx_mcts_bench.invariant_features import invariant_features
+
+        return invariant_features(
+            np.asarray(pgx_state._word),
+            int(np.asarray(pgx_state._n)),
+            self.config.invariant_features,
+            self.config.max_len,
+        )
 
     # -- action translation ---------------------------------------------------
 
@@ -497,6 +512,7 @@ class SerialBraidGame:
         tape = state.tape
         internal_steps = state.internal_steps
         semantic_moves = int(getattr(state, "semantic_moves", 0))
+        invariant_vector = getattr(state, "invariant_vector", None)
         mask = self._legal(pgx_state, head, internal_steps)
         if not mask[action]:
             raise ValueError(f"Illegal serial action {self.describe(action)}")
@@ -518,6 +534,7 @@ class SerialBraidGame:
                 reward=0.0,
                 internal_steps=internal_steps + 1,
                 semantic_moves=semantic_moves,
+                invariant_vector=invariant_vector,
             )
 
         # Painting costs a ply like everything else, and so does cycling: a free
@@ -541,6 +558,7 @@ class SerialBraidGame:
                 reward=0.0,
                 internal_steps=internal_steps + 1,
                 semantic_moves=semantic_moves,
+                invariant_vector=invariant_vector,
             )
 
         displacement = self.shift_of(action)
@@ -563,6 +581,7 @@ class SerialBraidGame:
                 reward=0.0,
                 internal_steps=internal_steps + 1,
                 semantic_moves=semantic_moves,
+                invariant_vector=invariant_vector,
             )
 
         actor = int(np.asarray(pgx_state.current_player))
@@ -570,6 +589,11 @@ class SerialBraidGame:
         next_state = self._step(
             pgx_state, np.int32(self.underlying_action(action, head, length_before))
         )
+        underlying = self.underlying_action(action, head, length_before)
+        assert underlying is not None
+        kind, _, _, _ = self.spec.decode(underlying)
+        if kind == self._crossing:
+            invariant_vector = self._compute_invariant_vector(next_state)
         moved_tape = self._rewrite_tape(pgx_state, action, head, tape)
         rewards = np.asarray(next_state.rewards, dtype=np.float32)
         length = max(int(np.asarray(next_state._word).astype(bool).sum()), 1)
@@ -591,6 +615,7 @@ class SerialBraidGame:
             reward=float(rewards[actor]),
             internal_steps=0,
             semantic_moves=semantic_moves + int(after_braid != before_braid),
+            invariant_vector=invariant_vector,
         )
 
     def _rewrite_tape(self, pgx_state: Any, action: int, head: int, tape: np.ndarray) -> np.ndarray:
@@ -979,6 +1004,7 @@ class SerialBraidGame:
         reward: float,
         internal_steps: int = 0,
         semantic_moves: int = 0,
+        invariant_vector: np.ndarray | None = None,
     ) -> Transition:
         observation = np.asarray(pgx_state.observation, dtype=np.float32)  # (L, C)
         objective_remaining = None
@@ -1053,6 +1079,14 @@ class SerialBraidGame:
                     self.config.cyclic_band_generators,
                 )
             window = np.concatenate([window, raster.reshape(observed_width, -1)], axis=1)
+        if self.config.invariant_features:
+            if invariant_vector is None:
+                invariant_vector = self._compute_invariant_vector(pgx_state)
+            assert invariant_vector is not None
+            planes = np.broadcast_to(
+                invariant_vector[None, :], (observed_width, invariant_vector.shape[0])
+            )
+            window = np.concatenate([window, planes], axis=1)
         fraction = min(internal_steps / self.config.serial_internal_horizon, 1.0)
         if self.config.serial_internal_budget_remaining:
             fraction = 1.0 - fraction
@@ -1077,6 +1111,7 @@ class SerialBraidGame:
                 tape,
                 internal_steps,
                 semantic_moves,
+                invariant_vector,
             ),
             observation=window.reshape(1, observed_width, window.shape[1]),
             legal_actions=self._legal(pgx_state, head, internal_steps),

@@ -17,7 +17,11 @@ def main() -> None:
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
     state = _load_state(args.coordinated_state)
-    names = [row["name"] for row in json.loads(args.selection.read_text())["selected"]]
+    selection = json.loads(args.selection.read_text())
+    rows = selection.get("selected", selection.get("scientists"))
+    if rows is None:
+        raise SystemExit("selection must contain a selected or scientists list")
+    names = [row["name"] for row in rows]
     if set(names) != set(state["scientists"]):
         raise SystemExit("selection and coordinated-state scientists differ")
     for name in names:
@@ -29,6 +33,10 @@ def main() -> None:
                 "scientist": state["scientists"][name],
                 "f_old": int(state["f_old"][name]),
                 "rehearsal_exposure": state["rehearsal_exposure"][name],
+                "f_native": int(state.get("f_native", {}).get(name, 5)),
+                "simulations": int(state.get("simulations", {}).get(name, 64)),
+                "donation_dose": int(state.get("donation_dose", 1)),
+                "donation_healthy_streak": int(state.get("donation_healthy_streak", 0)),
             },
         )
         print(f"{name}={destination.resolve()}")

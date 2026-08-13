@@ -554,6 +554,39 @@ class SerialBraidNet(BraidPolicyValueNet):
         self.representation = Representation(game, model, model.channels)
         self.ratio_channel = 2 * game.generator_capacity + 1 + 1 + 6
         self.film = FiLM(model.channels) if model.film_on_ratio else None
+        from pgx_mcts_bench.invariant_features import invariant_feature_size
+
+        self.invariant_dim = invariant_feature_size(game.invariant_features)
+        self.invariant_fusion = game.invariant_fusion
+        trailing = 1 + int(game.objective_budget_channel)
+        self.invariant_end = game.observation_channels - trailing
+        self.invariant_start = self.invariant_end - self.invariant_dim
+        self.invariant_encoder: nn.Module | None = None
+        self.invariant_residual = nn.ModuleList()
+        self.invariant_film: nn.Module | None = None
+        self.invariant_positional: nn.Module | None = None
+        if self.invariant_dim:
+            self.invariant_encoder = nn.Sequential(
+                nn.Linear(self.invariant_dim, model.channels),
+                nn.SiLU(),
+                nn.Linear(model.channels, model.channels),
+            )
+            for _ in range(model.invariant_residual_blocks):
+                block = nn.Sequential(
+                    nn.Linear(model.channels, model.channels),
+                    nn.SiLU(),
+                    nn.Linear(model.channels, model.channels),
+                )
+                nn.init.zeros_(block[-1].weight)
+                nn.init.zeros_(block[-1].bias)
+                self.invariant_residual.append(block)
+            if self.invariant_fusion == "film" or (
+                self.invariant_fusion == "dual" and model.invariant_dual_film
+            ):
+                self.invariant_film = nn.Linear(model.channels, 2 * model.channels)
+                if self.invariant_fusion == "dual":
+                    nn.init.zeros_(self.invariant_film.weight)
+                    nn.init.zeros_(self.invariant_film.bias)
 
         self.act_width = game.serial_width
         self.per_offset = 3 + 2 * game.generator_capacity + 1
@@ -564,8 +597,17 @@ class SerialBraidNet(BraidPolicyValueNet):
         self.head_cell = game.serial_window // 2
 
         self.positional = nn.Conv2d(model.channels, self.per_offset, 1)
+        if self.invariant_dim and self.invariant_fusion == "dual":
+            self.invariant_positional = nn.Sequential(
+                nn.Conv2d(2 * model.channels, model.channels, 1),
+                nn.SiLU(),
+                nn.Conv2d(model.channels, self.per_offset, 1),
+            )
+        body_channels = 3 * model.channels
+        if self.invariant_dim and self.invariant_fusion in {"late", "dual"}:
+            body_channels += model.channels
         self.body = nn.Sequential(
-            nn.Linear(3 * model.channels, 64),
+            nn.Linear(body_channels, 64),
             nn.ReLU(),
         )
         self.global_policy = nn.Linear(64, self.n_global)
@@ -577,7 +619,24 @@ class SerialBraidNet(BraidPolicyValueNet):
         if self.film is not None:
             hidden = self.film(hidden, observation[:, self.ratio_channel, 0, 0])
 
-        cells = self.positional(hidden)[:, :, 0, :]  # (B, per_offset, w)
+        invariant = None
+        if self.invariant_encoder is not None:
+            invariant = self.invariant_encoder(
+                observation[:, self.invariant_start : self.invariant_end, 0, 0]
+            )
+            for block in self.invariant_residual:
+                invariant = invariant + block(invariant)
+            if self.invariant_film is not None:
+                gamma, beta = self.invariant_film(invariant).chunk(2, dim=1)
+                hidden = (1.0 + 0.1 * torch.tanh(gamma)[:, :, None, None]) * hidden + beta[
+                    :, :, None, None
+                ]
+
+        if self.invariant_positional is not None and invariant is not None:
+            broadcast = invariant[:, :, None, None].expand(-1, -1, hidden.shape[2], hidden.shape[3])
+            cells = self.invariant_positional(torch.cat([hidden, broadcast], dim=1))[:, :, 0, :]
+        else:
+            cells = self.positional(hidden)[:, :, 0, :]  # (B, per_offset, w)
         acting = cells[:, :, self.act_start : self.act_start + self.act_width]
         # (B, act_width, per_offset) -> flat, matching the offset-major layout of
         # `SerialBraidGame.underlying_action`.
@@ -591,6 +650,8 @@ class SerialBraidNet(BraidPolicyValueNet):
             ],
             dim=1,
         )
+        if invariant is not None and self.invariant_fusion in {"late", "dual"}:
+            summary = torch.cat([summary, invariant], dim=1)
         features = self.body(summary)
         conditioning = self._budget_conditioning(observation)
         if conditioning is not None:
@@ -857,8 +918,13 @@ class RasterWindowRepresentation(nn.Module):
         super().__init__()
         self.max_strands = game.max_strands
         self.raster_channels = 4 * game.max_strands
+        from pgx_mcts_bench.invariant_features import invariant_feature_size
+
         trailing = int(game.serial_internal_horizon > 0) + int(game.objective_budget_channel)
-        self.raster_end = game.observation_channels - trailing
+        self.invariant_dim = invariant_feature_size(game.invariant_features)
+        self.invariant_end = game.observation_channels - trailing
+        self.invariant_start = self.invariant_end - self.invariant_dim
+        self.raster_end = self.invariant_start
         self.raster_start = self.raster_end - self.raster_channels
         self.letter_channels = 2 * game.generator_capacity + 2
         metadata_channels = self.raster_start - self.letter_channels + trailing
@@ -884,9 +950,7 @@ class RasterWindowRepresentation(nn.Module):
                 raise ValueError("LayerScale raster residuals require masked axial blocks")
             block_type = LayerScaledMaskedAxialCylinderResidualBlock
         elif game.serial_raster_residual_style != "standard":
-            raise ValueError(
-                f"unknown raster residual style {game.serial_raster_residual_style!r}"
-            )
+            raise ValueError(f"unknown raster residual style {game.serial_raster_residual_style!r}")
         if self.variant not in {"joint", "axial", "recurrent", "scalable"}:
             raise ValueError(f"unknown serial_raster variant {self.variant!r}")
         if game.serial_raster_wrap_strands and self.variant == "joint":
@@ -980,7 +1044,7 @@ class RasterWindowRepresentation(nn.Module):
         metadata = torch.cat(
             [
                 observation[:, self.letter_channels : self.raster_start, 0, :],
-                observation[:, self.raster_end :, 0, :],
+                observation[:, self.invariant_end :, 0, :],
             ],
             dim=1,
         )
@@ -1776,10 +1840,13 @@ class CyclicMemoryBraidNet(BraidPolicyValueNet):
             )
             hidden = (hidden + block(neighbours)) * occupied
         if self.global_film is not None:
-            hidden = self.global_film(
-                hidden[:, :, None, :],
-                observation[:, self.ratio_channel, 0, 0],
-            )[:, :, 0, :] * occupied
+            hidden = (
+                self.global_film(
+                    hidden[:, :, None, :],
+                    observation[:, self.ratio_channel, 0, 0],
+                )[:, :, 0, :]
+                * occupied
+            )
         count = occupied.sum(dim=2).clamp(min=1.0)
         mean = hidden.sum(dim=2) / count
         maximum = (hidden + (occupied - 1.0) * 1e4).amax(dim=2)
@@ -2217,6 +2284,8 @@ def load_policy_value_state_dict(network: PolicyValueNet, state_dict: dict[str, 
         "global_film.",
         "fusion_budget_skip.",
         "value_budget_skip.",
+        "invariant_film.",
+        "invariant_residual.",
     )
     bad_missing = [
         key

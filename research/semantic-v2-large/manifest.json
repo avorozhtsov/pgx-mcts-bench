@@ -1,0 +1,83 @@
+{
+  "already_frozen_r200": 200,
+  "blocks": [
+    {
+      "bank": "r400-1.json",
+      "bank_sha256": "91534f3bcbf1ecfd01221a5de40f0a1a000688ec611b42640784c699f00fa626",
+      "index": 1,
+      "name": "r400-1",
+      "prior": "prior-r400-1.json",
+      "prior_sha256": "9fd43b2444deadd2f902a2df03b64ac4d7595839918bcd506ba6fae2bdffaf53",
+      "rows": 400
+    },
+    {
+      "bank": "r400-2.json",
+      "bank_sha256": "2a543452ffb877e057f2028f31d05572f1333b62a0026047673d3d7688da1777",
+      "index": 2,
+      "name": "r400-2",
+      "prior": "prior-r400-2.json",
+      "prior_sha256": "1931cd72fffcac33a492d2fb053b73d996b04145720242f6f1533d70aaf59cce",
+      "rows": 400
+    },
+    {
+      "bank": "r400-3.json",
+      "bank_sha256": "3df8896b26182ad4d659e82d476c8df3a4d2c147ec85f5e139fc500d98bab8f6",
+      "index": 3,
+      "name": "r400-3",
+      "prior": "prior-r400-3.json",
+      "prior_sha256": "5afdf73cac67435bd129a3cd98c3e3f05973c47a8d71878f88d457826b9d3bcd",
+      "rows": 400
+    },
+    {
+      "bank": "r400-4.json",
+      "bank_sha256": "f7fa21a6f1f225b45a0a292814e46005d01bfbe4e8509d8073579dbb26a7ce99",
+      "index": 4,
+      "name": "r400-4",
+      "prior": "prior-r400-4.json",
+      "prior_sha256": "8c61367c4fdaf22118c73a6cedbbb142e7b3816edf3d2ad0ef6ff641e3647337",
+      "rows": 400
+    },
+    {
+      "bank": "r400-5.json",
+      "bank_sha256": "dcc900640961064b9064e076bd77abfd2f5fbfcd59e3b23353fa7f5be2bfad0b",
+      "index": 5,
+      "name": "r400-5",
+      "prior": "prior-r400-5.json",
+      "prior_sha256": "c4d817c1bcc450227de6a5abf6902076c7467bd8ecab2eab15f4897f2ef3cbcc",
+      "rows": 400
+    },
+    {
+      "bank": "r400-6.json",
+      "bank_sha256": "3417a148430fc556af16f09dcfae86e962925c49a5b6b225e42c33178379c60c",
+      "index": 6,
+      "name": "r400-6",
+      "prior": "prior-r400-6.json",
+      "prior_sha256": "a273615d0816e79be6f7fdebc4ddf1d4821494ecfca1b54308031724a7ecfbdd",
+      "rows": 400
+    },
+    {
+      "bank": "r100-tail.json",
+      "bank_sha256": "ee33650da2eaa7c3c31908ad3a6619c717f11617214d6964b61e4ad944fe1285",
+      "index": 7,
+      "name": "r100-tail",
+      "prior": "prior-r100-tail.json",
+      "prior_sha256": "17e70f82a7c53248e4b85fccca8cf7b66d793b46fb7cfd107e139a7e93f93225",
+      "rows": 100
+    }
+  ],
+  "canonical_representations": 1639,
+  "continuation_representations": 2500,
+  "knot_table": "rf-knots:src/rf_knots/data/knot_table.json",
+  "knot_table_sha256": "4fd0db9b2379d623accf3fa1cf6619c0902a5ab735079d4f52867080add32587",
+  "markov_variants": 1061,
+  "r200": "research/semantic-v2-r200.json",
+  "r200_sha256": "831917692801cb87d76b915d80e0ad3d6c2578a967e50695468a8268cc4c056e",
+  "r24": "research/semantic-v2-prefix24.json",
+  "r24_sha256": "a67a09fcd6a837b5325d8226aec686b44fba315faa045d710de9dc18ac798dfe",
+  "schema": "semantic-v2-2700-block-manifest-v1",
+  "seed": 20262270,
+  "total_representations": 2700,
+  "upperbounds_commit": "de66f29045e804931edd6d1c9735247f81ad68c1",
+  "upperbounds_workbook": "dtubbenhauer/upperbounds:data/unknotting.xlsx",
+  "upperbounds_workbook_sha256": "5f58b9d6740ed6cdb63cc728abee2ba3ac54f4427fd55127d0d6d5465f3c41d3"
+}
