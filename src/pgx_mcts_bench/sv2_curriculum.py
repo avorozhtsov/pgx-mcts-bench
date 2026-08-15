@@ -11,11 +11,12 @@ import gzip
 import hashlib
 import io
 import json
+import math
 import multiprocessing
 import os
 import tempfile
 import time
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -65,12 +66,14 @@ SIMULATION_LEVELS = (64, 128, 256, 512)
 DONATION_DOSES = (1, 2, 3)
 COORDINATED_ARMS = (
     "static-no-sharing",
+    "static-random-no-sharing",
     "adaptive-no-sharing",
     "static-sharing",
     "adaptive-sharing",
 )
 CoordinatedArm = Literal[
     "static-no-sharing",
+    "static-random-no-sharing",
     "adaptive-no-sharing",
     "static-sharing",
     "adaptive-sharing",
@@ -387,6 +390,21 @@ def next_compute_dose(
     return levels[min(index + 1, len(levels) - 1)]
 
 
+def curriculum_skip_event(
+    evaluation: dict[str, dict[str, Any]], *, prior_skips: int, limit: int
+) -> dict[str, Any] | None:
+    """Spend one bounded skip token after a full finite native attempt fails."""
+    solved = any(cell.get("best_objective") is not None for cell in evaluation.values())
+    if solved or prior_skips >= limit:
+        return None
+    return {
+        "reason": "budget_exhausted",
+        "token": prior_skips + 1,
+        "limit": limit,
+        "retained_in_denominators": True,
+    }
+
+
 def _iteration(
     scientist: Any,
     knot: KnotItem,
@@ -400,6 +418,7 @@ def _iteration(
 ) -> dict[str, Any]:
     scientist.replay.set_representation_embedding(knot.name, _replay_representation_embedding(knot))
     records = []
+    games_by_ratio: dict[str, int] = {}
     scheduled = 0
     per_ratio = selfplay_games // len(ratios)
     remainder = selfplay_games % len(ratios)
@@ -422,6 +441,7 @@ def _iteration(
             seeds,
             12,
         )
+        games_by_ratio[str(float(ratio))] = len(batch)
         records.extend(batch)
         for record in batch:
             scientist.replay.add(record, representation_id=knot.name, objective_ratio=ratio)
@@ -448,6 +468,7 @@ def _iteration(
             )
     return {
         "selfplay_games": len(records),
+        "selfplay_games_by_ratio": games_by_ratio,
         "selfplay_solved": sum(
             bool(record and float(record[0].solved) > 0.5) for record in records
         ),
@@ -629,7 +650,14 @@ def _save_state(path: Path, payload: dict[str, Any]) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     with gzip.open(temporary, "wb", compresslevel=1) as handle:
         torch.save(payload, handle)
+    with temporary.open("rb") as handle:
+        os.fsync(handle.fileno())
     os.replace(temporary, path)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def _load_state(path: Path) -> dict[str, Any]:
@@ -917,7 +945,8 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
 
     if operation == "native":
         selected = payload["selected"]
-        ratios = tuple(payload["ratios"])
+        evaluation_ratios = tuple(payload["ratios"])
+        training_ratios = tuple(payload.get("training_ratios", evaluation_ratios))
         scientist.replay.set_representation_embedding(
             selected.id, _replay_representation_embedding(selected.knot)
         )
@@ -927,7 +956,7 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
                 _iteration(
                     scientist,
                     selected.knot,
-                    ratios=ratios,
+                    ratios=training_ratios,
                     simulations=int(payload["simulations"]),
                     selfplay_games=int(payload["selfplay_games"]),
                     train_steps=int(payload["train_steps"]),
@@ -940,13 +969,15 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
         evaluation = _evaluate(
             scientist,
             selected.knot,
-            ratios=ratios,
+            ratios=evaluation_ratios,
             attempts=int(payload["evaluation_attempts"]),
             simulations=int(payload["simulations"]),
             seed=int(payload["seed"]) + 500_000_000 + int(payload["static_index"]) * 100_000,
             add_root_noise=evaluation_root_noise,
         )
-        witnesses = _native_witnesses(scientist, selected.knot, ratios, evaluation)
+        witnesses = _native_witnesses(
+            scientist, selected.knot, evaluation_ratios, evaluation
+        )
         qualification_witness = payload.get("qualification_witness")
         if qualification_witness is not None:
             scientist.replay.record_native_objective(
@@ -1019,14 +1050,15 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
 
     if operation == "rehearse":
         processed_knots = payload["processed_knots"]
-        ratios = tuple(payload["ratios"])
+        evaluation_ratios = tuple(payload["ratios"])
+        training_ratios = tuple(payload.get("training_ratios", evaluation_ratios))
         identity_indices = payload["identity_indices"]
         seed = int(payload["seed"])
         round_index = int(payload["round_index"])
         before = _retention_summary(
             scientist,
             processed_knots,
-            ratios=ratios,
+            ratios=evaluation_ratios,
             simulations=int(payload["simulations"]),
             seed=seed + 700_000_000 + round_index * 100_000,
             identity_indices=identity_indices,
@@ -1034,7 +1066,9 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
         )
         dose_before = int(payload["f_old"])
         exposure = dict(payload["rehearsal_exposure"])
-        priority = _rehearsal_priority(processed_knots, before, ratios)
+        priority = _rehearsal_priority(
+            processed_knots, before, evaluation_ratios
+        )
         priority_rank = {item.name: index for index, item in enumerate(priority)}
         selected_old = sorted(
             priority,
@@ -1052,7 +1086,7 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
                     **_iteration(
                         scientist,
                         old,
-                        ratios=ratios,
+                        ratios=training_ratios,
                         simulations=int(payload["simulations"]),
                         selfplay_games=int(payload["selfplay_games"]),
                         train_steps=int(payload["train_steps"]),
@@ -1068,7 +1102,7 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
         after = _retention_summary(
             scientist,
             processed_knots,
-            ratios=ratios,
+            ratios=evaluation_ratios,
             simulations=int(payload["simulations"]),
             seed=seed + 700_000_000 + round_index * 100_000,
             identity_indices=identity_indices,
@@ -1193,24 +1227,12 @@ class _ScientistPhaseCoordinator:
 
     def run(self, operation: str, payloads: dict[str, dict[str, Any]]) -> dict[str, Any]:
         if self.parallel:
-            futures = {}
-            for name in self.names:
-                futures[name] = self.executors[name].submit(
-                    _sv2_phase_worker,
-                    {
-                        "initial": self.initial[name],
-                        "restore_state_blob": (
-                            _state_blob(self.states[name]) if self._restore_next[name] else None
-                        ),
-                        "operation": operation,
-                        "payload": payloads[name],
-                    },
-                )
-            rows = {name: future.result() for name, future in futures.items()}
-            for name, row in rows.items():
-                self.states[name] = _state_from_blob(row["state_blob"])
-                self._restore_next[name] = False
-            return {name: row["result"] for name, row in rows.items()}
+            futures = {
+                name: self.submit(name, operation, payloads[name]) for name in self.names
+            }
+            return {
+                name: self.collect(name, future) for name, future in futures.items()
+            }
 
         result = {}
         for name in self.names:
@@ -1218,6 +1240,39 @@ class _ScientistPhaseCoordinator:
             result[name] = _sv2_phase_operation(scientist, operation, payloads[name])
             self.states[name] = _scientist_state(scientist)
         return result
+
+    def submit(
+        self, name: str, operation: str, payload: dict[str, Any]
+    ) -> Future[dict[str, Any]]:
+        """Submit one state-mutating phase to a scientist's persistent worker."""
+        if not self.parallel:
+            raise RuntimeError("asynchronous scientist submission requires parallel execution")
+        return self.executors[name].submit(
+            _sv2_phase_worker,
+            {
+                "initial": self.initial[name],
+                "restore_state_blob": (
+                    _state_blob(self.states[name]) if self._restore_next[name] else None
+                ),
+                "operation": operation,
+                "payload": payload,
+            },
+        )
+
+    def collect(self, name: str, future: Future[dict[str, Any]]) -> Any:
+        """Install a completed worker state before scheduling its next phase."""
+        row = future.result()
+        self.states[name] = _state_from_blob(row["state_blob"])
+        self._restore_next[name] = False
+        return row["result"]
+
+    def restore_full_state(self, name: str, state: dict[str, Any]) -> None:
+        """Restore a durable per-scientist cursor before resuming a pipeline."""
+        self.states[name] = state
+        self._restore_next[name] = True
+        if not self.parallel:
+            _restore_scientist(self.local[name], state)
+            self._restore_next[name] = False
 
     def restore_trainable(self, snapshots: dict[str, dict[str, Any]]) -> None:
         for name in self.names:
@@ -1254,6 +1309,221 @@ class _ScientistPhaseCoordinator:
             executor.shutdown()
 
 
+def _pipeline_slug(scientist: str) -> str:
+    return hashlib.sha256(scientist.encode()).hexdigest()[:16]
+
+
+def _pipeline_fragment_path(output: Path, round_index: int, scientist: str) -> Path:
+    return output / "pipeline" / "fragments" / f"{round_index:03d}" / (
+        _pipeline_slug(scientist) + ".json"
+    )
+
+
+def _pipeline_cursor_path(output: Path, scientist: str) -> Path:
+    return output / "pipeline" / "cursors" / (_pipeline_slug(scientist) + ".pt.gz")
+
+
+def _commit_pipeline_fragment(
+    output: Path,
+    *,
+    protocol_sha256: str,
+    round_index: int,
+    selected: str,
+    scientist: str,
+    result: dict[str, Any],
+) -> tuple[dict[str, Any], Path]:
+    payload = {
+        "schema": "semantic-v2-pipelined-native-fragment-v1",
+        "protocol_sha256": protocol_sha256,
+        "round": round_index,
+        "selected": selected,
+        "scientist": scientist,
+        "scientist_event": result["scientist_event"],
+        "native_witnesses": result["native_witnesses"],
+    }
+    path = _pipeline_fragment_path(output, round_index, scientist)
+    if path.exists():
+        if json.loads(path.read_text()) != payload:
+            raise RuntimeError(f"pipelined native fragment changed: {path}")
+    else:
+        _atomic_json(path, payload)
+    return payload, path
+
+
+def _save_pipeline_cursor(
+    output: Path,
+    *,
+    protocol_sha256: str,
+    scientist: str,
+    fragment: dict[str, Any],
+    fragment_path: Path,
+    scientist_state: dict[str, Any],
+) -> None:
+    _save_state(
+        _pipeline_cursor_path(output, scientist),
+        {
+            "schema": "semantic-v2-pipelined-scientist-cursor-v1",
+            "protocol_sha256": protocol_sha256,
+            "scientist": scientist,
+            "round": int(fragment["round"]),
+            "selected": str(fragment["selected"]),
+            "fragment": str(fragment_path.relative_to(output)),
+            "fragment_sha256": _sha256(fragment_path),
+            "scientist_state": scientist_state,
+        },
+    )
+
+
+def _load_pipeline_cursor(
+    output: Path,
+    *,
+    protocol_sha256: str,
+    scientist: str,
+) -> dict[str, Any] | None:
+    path = _pipeline_cursor_path(output, scientist)
+    if not path.exists():
+        return None
+    cursor = _load_state(path)
+    if cursor.get("schema") != "semantic-v2-pipelined-scientist-cursor-v1":
+        raise RuntimeError(f"unknown pipelined scientist cursor schema: {path}")
+    if cursor.get("protocol_sha256") != protocol_sha256:
+        raise RuntimeError(f"pipelined scientist cursor protocol differs: {path}")
+    if cursor.get("scientist") != scientist:
+        raise RuntimeError(f"pipelined scientist cursor identity differs: {path}")
+    fragment_path = output / str(cursor["fragment"])
+    if not fragment_path.is_file() or _sha256(fragment_path) != cursor["fragment_sha256"]:
+        raise RuntimeError(f"pipelined scientist cursor fragment is missing or changed: {path}")
+    return cursor
+
+
+def _load_pipeline_fragment(
+    output: Path,
+    *,
+    protocol_sha256: str,
+    round_index: int,
+    selected: str,
+    scientist: str,
+) -> dict[str, Any]:
+    path = _pipeline_fragment_path(output, round_index, scientist)
+    if not path.is_file():
+        raise RuntimeError(f"pipelined native fragment is missing: {path}")
+    fragment = json.loads(path.read_text())
+    expected = (protocol_sha256, round_index, selected, scientist)
+    actual = (
+        fragment.get("protocol_sha256"),
+        fragment.get("round"),
+        fragment.get("selected"),
+        fragment.get("scientist"),
+    )
+    if actual != expected:
+        raise RuntimeError(f"pipelined native fragment metadata differs: {path}")
+    return {
+        "scientist_event": fragment["scientist_event"],
+        "native_witnesses": fragment["native_witnesses"],
+    }
+
+
+def _run_pipelined_native_block(
+    coordinator: _ScientistPhaseCoordinator,
+    *,
+    output: Path,
+    protocol_sha256: str,
+    start_round: int,
+    selected_by_round: dict[int, str],
+    payloads_by_round: dict[int, dict[str, dict[str, Any]]],
+) -> dict[int, dict[str, dict[str, Any]]]:
+    """Run fixed/no-sharing scientists ahead independently within one block.
+
+    Every completed scientist/round pair is committed before that scientist is
+    allowed to advance.  A cursor stores its exact full state, while immutable
+    JSON fragments retain all native observations needed to reconstruct common
+    events after a crash.  The caller keeps the rehearsal barrier at block end.
+    """
+    if not coordinator.parallel:
+        raise ValueError("pipelined scientist execution requires parallel workers")
+    rounds = sorted(payloads_by_round)
+    if not rounds or rounds != list(range(start_round, rounds[-1] + 1)):
+        raise ValueError("pipelined rounds must be one non-empty contiguous block")
+    if set(selected_by_round) != set(rounds):
+        raise ValueError("pipelined selected identities must exactly match its rounds")
+    names = coordinator.names
+    if any(set(payloads_by_round[index]) != set(names) for index in rounds):
+        raise ValueError("every pipelined round must contain every scientist")
+
+    completed: dict[int, dict[str, dict[str, Any]]] = {
+        index: {} for index in rounds
+    }
+    cursor_round = {name: start_round - 1 for name in names}
+    final_round = rounds[-1]
+    for name in names:
+        cursor = _load_pipeline_cursor(
+            output, protocol_sha256=protocol_sha256, scientist=name
+        )
+        if cursor is None or int(cursor["round"]) < start_round:
+            continue
+        restored_round = int(cursor["round"])
+        if restored_round > final_round:
+            raise RuntimeError(
+                f"pipelined scientist cursor crossed the active block: {name}"
+            )
+        if str(cursor["selected"]) != selected_by_round[restored_round]:
+            raise RuntimeError(f"pipelined scientist cursor selected identity differs: {name}")
+        coordinator.restore_full_state(name, cursor["scientist_state"])
+        cursor_round[name] = restored_round
+        for round_index in range(start_round, restored_round + 1):
+            completed[round_index][name] = _load_pipeline_fragment(
+                output,
+                protocol_sha256=protocol_sha256,
+                round_index=round_index,
+                selected=selected_by_round[round_index],
+                scientist=name,
+            )
+
+    futures: dict[Future[dict[str, Any]], tuple[str, int]] = {}
+
+    def submit_next(name: str) -> None:
+        round_index = cursor_round[name] + 1
+        if round_index <= final_round:
+            future = coordinator.submit(
+                name, "native", payloads_by_round[round_index][name]
+            )
+            futures[future] = (name, round_index)
+
+    for name in names:
+        submit_next(name)
+
+    while futures:
+        done, _ = wait(futures, return_when=FIRST_COMPLETED)
+        for future in done:
+            name, round_index = futures.pop(future)
+            result = coordinator.collect(name, future)
+            fragment, fragment_path = _commit_pipeline_fragment(
+                output,
+                protocol_sha256=protocol_sha256,
+                round_index=round_index,
+                selected=selected_by_round[round_index],
+                scientist=name,
+                result=result,
+            )
+            state = coordinator.states[name]
+            assert state is not None
+            _save_pipeline_cursor(
+                output,
+                protocol_sha256=protocol_sha256,
+                scientist=name,
+                fragment=fragment,
+                fragment_path=fragment_path,
+                scientist_state=state,
+            )
+            completed[round_index][name] = result
+            cursor_round[name] = round_index
+            submit_next(name)
+
+    if any(set(completed[index]) != set(names) for index in rounds):
+        raise RuntimeError("pipelined block finished without every native result")
+    return completed
+
+
 def _coordinated_name(
     arm: CoordinatedArm,
     *,
@@ -1263,12 +1533,25 @@ def _coordinated_name(
     f_native: int,
     evaluation_attempts: int,
 ) -> str:
-    schedule = "ADAPTIVE-" if arm.startswith("adaptive") else ""
+    schedule = (
+        "ADAPTIVE-"
+        if arm.startswith("adaptive")
+        else "RANDOM-"
+        if arm == "static-random-no-sharing"
+        else ""
+    )
     sharing = "SHARING" if arm.endswith("sharing") and "no-sharing" not in arm else "NO-SHARING"
     return (
         f"SV2-{scientists}S-R{representations}-SIM{simulations}-F{f_native}-"
         f"AR-EV{evaluation_attempts}-{schedule}{sharing}"
     )
+
+
+def _frozen_static_random_order(ids: list[str], seed: int) -> list[str]:
+    """Return an input-order-independent, reproducible arena permutation."""
+    order = sorted(ids)
+    np.random.default_rng(seed).shuffle(order)
+    return order
 
 
 def _initial_controller_values(
@@ -1311,6 +1594,8 @@ def run_coordinated_arm(
     prior_bank: Path | None = None,
     initial_states: dict[str, Path] | None = None,
     ratios: tuple[float, ...] = (10.0, 1000.0),
+    training_ratios: tuple[float, ...] | None = None,
+    static_random_seed: int | None = None,
     simulations: int = 64,
     qualification_simulations: int = 64,
     qualification_attempts: int = 1,
@@ -1327,6 +1612,7 @@ def run_coordinated_arm(
     seed: int = 20262020,
     torch_threads: int = 2,
     parallel_scientists: bool = True,
+    pipelined_static_no_sharing: bool = False,
     adaptive_compute: bool = False,
     acquisition_target: float = 0.80,
     evaluation_target: float = 0.70,
@@ -1341,7 +1627,10 @@ def run_coordinated_arm(
     if initial_states is not None and set(initial_states) != set(checkpoints):
         raise ValueError("initial-state names must exactly match scientist names")
     if not ratios or any(ratio <= 0 for ratio in ratios):
-        raise ValueError("objective ratios must be positive")
+        raise ValueError("evaluation objective ratios must be positive")
+    training_ratios = ratios if training_ratios is None else training_ratios
+    if not training_ratios or any(ratio <= 0 for ratio in training_ratios):
+        raise ValueError("training objective ratios must be positive")
     if rungs < 0:
         raise ValueError("rungs must be non-negative")
     if (
@@ -1363,6 +1652,18 @@ def run_coordinated_arm(
         raise ValueError("all SV2 compute and horizon parameters must be positive")
     if arm.startswith("adaptive") and 10.0 not in ratios:
         raise ValueError("adaptive SV2 ordering requires the L10 objective")
+    if arm == "static-random-no-sharing" and static_random_seed is None:
+        raise ValueError("static-random-no-sharing requires static_random_seed")
+    if arm != "static-random-no-sharing" and static_random_seed is not None:
+        raise ValueError("static_random_seed is exclusive to static-random-no-sharing")
+    if pipelined_static_no_sharing and (
+        not parallel_scientists
+        or arm.startswith("adaptive")
+        or "no-sharing" not in arm
+    ):
+        raise ValueError(
+            "pipelined execution is restricted to parallel fixed-order no-sharing arms"
+        )
     if adaptive_compute:
         if f_native not in F_NATIVE_LEVELS:
             raise ValueError(f"adaptive F_native must start in {F_NATIVE_LEVELS}")
@@ -1375,6 +1676,10 @@ def run_coordinated_arm(
 
     torch.set_num_threads(torch_threads)
     bank_payload, rows = _bank_rows(bank)
+    skip_policy = dict(bank_payload.get("skip_policy", {}))
+    skip_limit = int(skip_policy.get("maximum_skips", 0))
+    if skip_limit < 0 or skip_limit > math.floor(0.05 * len(rows)):
+        raise ValueError("bank skip allowance must be between zero and 5% of its rows")
     items = _bank_from_payload(rows)
     prior_payload: dict[str, Any] | None = None
     prior_items = []
@@ -1387,6 +1692,10 @@ def run_coordinated_arm(
     target_rungs = min(rungs, len(items)) if rungs else len(items)
     by_id = {item.id: item for item in items}
     static_index = {item.id: index for index, item in enumerate(items)}
+    static_random_order: list[str] | None = None
+    if arm == "static-random-no-sharing":
+        assert static_random_seed is not None
+        static_random_order = _frozen_static_random_order(list(by_id), static_random_seed)
     identity_index = {item.id: index for index, item in enumerate([*prior_items, *items])}
     name = _coordinated_name(
         arm,
@@ -1396,11 +1705,12 @@ def run_coordinated_arm(
         f_native=f_native,
         evaluation_attempts=evaluation_attempts,
     )
+    invocation_source_provenance = source_provenance()
     protocol = {
-        "schema": "semantic-v2-coordinated-arm-v4",
+        "schema": "semantic-v2-coordinated-arm-v6",
         "arm": arm,
         "name": name,
-        "source_provenance": source_provenance(),
+        "source_provenance": invocation_source_provenance,
         "checkpoints": {
             scientist: {"path": str(path.resolve()), "sha256": _sha256(path)}
             for scientist, path in checkpoints.items()
@@ -1420,12 +1730,28 @@ def run_coordinated_arm(
         ),
         "representations": len(items),
         "requested_rungs": target_rungs,
+        "skip_policy": skip_policy or None,
         "ratios": list(ratios),
+        "evaluation_ratios": list(ratios),
+        "training_ratios": list(training_ratios),
+        "static_random_seed": static_random_seed,
+        "static_random_order": static_random_order,
+        "static_random_order_sha256": (
+            _json_hash({"order": static_random_order})
+            if static_random_order is not None
+            else None
+        ),
         "scheduling_objective": 10.0 if arm.startswith("adaptive") else None,
         "adaptive_selection": (
             "minimum actual L10 qualification evidence among scientist proposals"
             if arm.startswith("adaptive")
+            else "frozen uniform random permutation over sorted representation IDs"
+            if arm == "static-random-no-sharing"
             else "global ACS"
+        ),
+        "unsolved_progression": (
+            "commit the finite-dose native result, retain the unsolved task in all "
+            "coverage and capped-loss denominators, and advance to the next fixed rung"
         ),
         "simulations": simulations,
         "qualification_simulations": qualification_simulations,
@@ -1475,13 +1801,17 @@ def run_coordinated_arm(
         ),
         "device": device,
     }
-    protocol["protocol_sha256"] = _json_hash(protocol)
     manifest_path = output / "manifest.json"
     state_path = output / "state.pt.gz"
+    previous: dict[str, Any] | None = None
+    if manifest_path.exists() and resume and pipelined_static_no_sharing:
+        previous = json.loads(manifest_path.read_text())
+        protocol["source_provenance"] = previous["source_provenance"]
+    protocol["protocol_sha256"] = _json_hash(protocol)
     if manifest_path.exists():
         if not resume:
             raise FileExistsError(f"{manifest_path} exists; pass resume=True")
-        previous = json.loads(manifest_path.read_text())
+        previous = previous or json.loads(manifest_path.read_text())
         if previous.get("protocol_sha256") != protocol["protocol_sha256"]:
             raise ValueError("SV2 resume protocol differs from frozen manifest")
     else:
@@ -1566,11 +1896,73 @@ def run_coordinated_arm(
     block_reports: list[dict[str, Any]] = []
     for path in sorted((output / "blocks").glob("*.json")):
         block_reports.append(json.loads(path.read_text()))
+    pipelined_rows: dict[int, dict[str, dict[str, Any]]] = {}
+    pipelined_selected: dict[int, str] = {}
+
+    def native_payloads(selected: Any) -> dict[str, dict[str, Any]]:
+        return {
+            name: {
+                "selected": selected,
+                "ratios": ratios,
+                "training_ratios": training_ratios,
+                "f_native": current_f_native[name],
+                "simulations": current_simulations[name],
+                "selfplay_games": selfplay_games,
+                "train_steps": train_steps,
+                "batch_size": batch_size,
+                "evaluation_attempts": evaluation_attempts,
+                "seed": scientist_seeds[name],
+                "static_index": static_index[selected.id],
+                "qualification_witness": None,
+                "evaluation_root_noise": evaluation_root_noise,
+            }
+            for name in coordinator.names
+        }
+
     while len(processed) < target_rungs:
         round_index = len(processed)
         remaining = [item for item in items if item.id not in set(processed)]
         qualification: list[dict[str, Any]] = []
-        if arm.startswith("adaptive"):
+        if pipelined_static_no_sharing and round_index not in pipelined_rows:
+            block_end = min(
+                ((round_index // block_size) + 1) * block_size,
+                target_rungs,
+            )
+            if static_random_order is not None:
+                remaining_ids = {item.id for item in remaining}
+                fixed_remaining = [
+                    by_id[item_id]
+                    for item_id in static_random_order
+                    if item_id in remaining_ids
+                ]
+            else:
+                fixed_remaining = sorted(
+                    remaining, key=lambda item: (item.cheap_score, item.id)
+                )
+            block_items = fixed_remaining[: block_end - round_index]
+            pipelined_selected = {
+                index: item.id
+                for index, item in zip(
+                    range(round_index, block_end), block_items, strict=True
+                )
+            }
+            pipelined_rows = _run_pipelined_native_block(
+                coordinator,
+                output=output,
+                protocol_sha256=str(protocol["protocol_sha256"]),
+                start_round=round_index,
+                selected_by_round=pipelined_selected,
+                payloads_by_round={
+                    index: native_payloads(item)
+                    for index, item in zip(
+                        range(round_index, block_end), block_items, strict=True
+                    )
+                },
+            )
+
+        if pipelined_static_no_sharing:
+            selected_id = pipelined_selected[round_index]
+        elif arm.startswith("adaptive"):
             assessed = coordinator.run(
                 "assess",
                 {
@@ -1600,6 +1992,12 @@ def run_coordinated_arm(
                 for row in qualification
             ]
             selected_id = min(proposals)[2]
+        elif arm == "static-random-no-sharing":
+            assert static_random_order is not None
+            processed_ids = set(processed)
+            selected_id = next(
+                item_id for item_id in static_random_order if item_id not in processed_ids
+            )
         else:
             selected_id = min(remaining, key=lambda item: (item.cheap_score, item.id)).id
         selected = by_id[selected_id]
@@ -1615,32 +2013,28 @@ def run_coordinated_arm(
             )
             for name in coordinator.names
         }
-        native_rows = coordinator.run(
-            "native",
-            {
-                name: {
-                    "selected": selected,
-                    "ratios": ratios,
-                    "f_native": current_f_native[name],
-                    "simulations": current_simulations[name],
-                    "selfplay_games": selfplay_games,
-                    "train_steps": train_steps,
-                    "batch_size": batch_size,
-                    "evaluation_attempts": evaluation_attempts,
-                    "seed": scientist_seeds[name],
-                    "static_index": static_index[selected.id],
-                    "qualification_witness": qualification_witnesses[name],
-                    "evaluation_root_noise": evaluation_root_noise,
-                }
-                for name in coordinator.names
-            },
-        )
+        if pipelined_static_no_sharing:
+            native_rows = pipelined_rows[round_index]
+        else:
+            payloads = native_payloads(selected)
+            for name in coordinator.names:
+                payloads[name]["qualification_witness"] = qualification_witnesses[name]
+            native_rows = coordinator.run("native", payloads)
         scientist_events = {
             name: native_rows[name]["scientist_event"] for name in coordinator.names
         }
         for name in coordinator.names:
             scientist_events[name]["F_native"] = current_f_native[name]
             scientist_events[name]["simulations"] = current_simulations[name]
+            prior_skips = sum(
+                event["scientists"][name].get("curriculum_skip") is not None
+                for event in events
+            )
+            scientist_events[name]["curriculum_skip"] = curriculum_skip_event(
+                scientist_events[name]["evaluation"],
+                prior_skips=prior_skips,
+                limit=skip_limit,
+            )
         native_witnesses = {
             name: native_rows[name]["native_witnesses"] for name in coordinator.names
         }
@@ -1718,6 +2112,7 @@ def run_coordinated_arm(
                     name: {
                         "processed_knots": processed_knots,
                         "ratios": ratios,
+                        "training_ratios": training_ratios,
                         "identity_indices": identity_index,
                         "seed": scientist_seeds[name],
                         "round_index": round_index,
@@ -1893,20 +2288,24 @@ def run_coordinated_arm(
             block_reports.append(block_report)
             block_reports.sort(key=lambda row: row["completed_rungs"])
             _atomic_json(output / "blocks" / f"{len(processed):03d}.json", block_report)
-        _save_state(
-            state_path,
-            {
-                "processed": processed,
-                "events": events,
-                "f_old": f_old,
-                "rehearsal_exposure": rehearsal_exposure,
-                "donation_dose": donation_dose,
-                "donation_healthy_streak": donation_healthy_streak,
-                "f_native": current_f_native,
-                "simulations": current_simulations,
-                "scientists": coordinator.serializable_states(),
-            },
-        )
+        if not pipelined_static_no_sharing or block_boundary:
+            _save_state(
+                state_path,
+                {
+                    "processed": processed,
+                    "events": events,
+                    "f_old": f_old,
+                    "rehearsal_exposure": rehearsal_exposure,
+                    "donation_dose": donation_dose,
+                    "donation_healthy_streak": donation_healthy_streak,
+                    "f_native": current_f_native,
+                    "simulations": current_simulations,
+                    "scientists": coordinator.serializable_states(),
+                },
+            )
+        if pipelined_static_no_sharing and block_boundary:
+            pipelined_rows = {}
+            pipelined_selected = {}
 
     report = {
         **protocol,
@@ -1916,8 +2315,21 @@ def run_coordinated_arm(
         "final_F_native": current_f_native,
         "final_simulations": current_simulations,
         "final_donation_dose": donation_dose,
+        "curriculum_skips": {
+            name: sum(
+                event["scientists"][name].get("curriculum_skip") is not None
+                for event in events
+            )
+            for name in coordinator.names
+        },
         "block_reports": block_reports,
         "events": events,
+        "invocation_execution": (
+            "pipelined fixed-order no-sharing within rehearsal blocks"
+            if pipelined_static_no_sharing
+            else protocol["scientist_execution"]
+        ),
+        "invocation_source_provenance": invocation_source_provenance,
         "wall_seconds_this_invocation": time.perf_counter() - started,
     }
     _atomic_json(output / "report.json", report)

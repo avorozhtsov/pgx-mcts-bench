@@ -1,7 +1,11 @@
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
+import pgx_mcts_bench.sv2_curriculum as curriculum
 from pgx_mcts_bench.adaptive_scientists import KnotItem
 from pgx_mcts_bench.data import Position
 from pgx_mcts_bench.sv2_curriculum import (
@@ -12,6 +16,7 @@ from pgx_mcts_bench.sv2_curriculum import (
     _commit_native_event,
     _coordinated_name,
     _donation_is_still_eligible,
+    _frozen_static_random_order,
     _initial_controller_values,
     _portfolio_summary,
     adapt_donation_dose,
@@ -19,6 +24,7 @@ from pgx_mcts_bench.sv2_curriculum import (
     build_prefix24,
     build_r200,
     coordinated_block_report,
+    curriculum_skip_event,
     next_compute_dose,
     next_rehearsal_dose,
     run_static_no_sharing,
@@ -48,6 +54,208 @@ def test_native_event_is_immutable_and_hash_verified(tmp_path: Path) -> None:
         _assert_native_commit(tmp_path, reference)
 
 
+def test_native_phase_separates_training_and_evaluation_objectives(
+    monkeypatch,
+) -> None:
+    calls = []
+
+    class Replay:
+        def set_representation_embedding(self, *args) -> None:
+            pass
+
+        def record_native_objective(self, *args) -> None:
+            pass
+
+    scientist = SimpleNamespace(replay=Replay())
+    selected = SimpleNamespace(
+        id="x",
+        knot=KnotItem("x", 3, (1, -1, 1), 2),
+    )
+
+    def iteration(*args, ratios, **kwargs):
+        calls.append(("train", ratios))
+        return {"selfplay_games": 8}
+
+    def evaluate(*args, ratios, **kwargs):
+        calls.append(("evaluate", ratios))
+        return {"1000.0": {"best_objective": None, "attempts": []}}
+
+    monkeypatch.setattr(curriculum, "_iteration", iteration)
+    monkeypatch.setattr(curriculum, "_evaluate", evaluate)
+    monkeypatch.setattr(
+        curriculum,
+        "_native_witnesses",
+        lambda *args: {"1000.0": None},
+    )
+    curriculum._sv2_phase_operation(
+        scientist,
+        "native",
+        {
+            "selected": selected,
+            "ratios": (1000.0,),
+            "training_ratios": (10.0, 1000.0),
+            "f_native": 1,
+            "simulations": 64,
+            "selfplay_games": 8,
+            "train_steps": 1,
+            "batch_size": 1,
+            "evaluation_attempts": 4,
+            "seed": 1,
+            "static_index": 0,
+        },
+    )
+    assert calls == [
+        ("train", (10.0, 1000.0)),
+        ("evaluate", (1000.0,)),
+    ]
+
+
+def test_iteration_reports_games_by_training_objective(monkeypatch) -> None:
+    class Replay:
+        games = [object()]
+
+        def set_representation_embedding(self, *args) -> None:
+            pass
+
+        def add(self, *args, **kwargs) -> None:
+            pass
+
+    class Record(list):
+        pass
+
+    scientist = SimpleNamespace(
+        replay=Replay(),
+        game=object(),
+        network=object(),
+        optimizer=object(),
+        config=SimpleNamespace(
+            search=object(), train=SimpleNamespace(device="cpu")
+        ),
+    )
+    monkeypatch.setattr(curriculum, "replace", lambda value, **kwargs: value)
+    monkeypatch.setattr(curriculum, "FixedWordGame", lambda *args: object())
+    monkeypatch.setattr(curriculum, "NeuralMCTS", lambda *args: object())
+    monkeypatch.setattr(
+        curriculum,
+        "play_selfplay_games",
+        lambda *args: [Record() for _ in args[3]],
+    )
+    monkeypatch.setattr(curriculum, "train_alphazero_step", lambda *args, **kwargs: {})
+    result = curriculum._iteration(
+        scientist,
+        KnotItem("x", 3, (1, -1, 1), 2),
+        ratios=(10.0, 1000.0),
+        simulations=2,
+        selfplay_games=8,
+        train_steps=1,
+        batch_size=1,
+        seed=1,
+    )
+    assert result["selfplay_games_by_ratio"] == {"10.0": 4, "1000.0": 4}
+
+
+def test_pipelined_native_block_advances_fast_scientist_and_resumes(
+    tmp_path: Path,
+) -> None:
+    timeline = []
+
+    class Coordinator:
+        names = ["fast", "slow"]
+        parallel = True
+
+        def __init__(self) -> None:
+            self.pool = ThreadPoolExecutor(max_workers=2)
+            self.states = {name: {"step": -1} for name in self.names}
+            self.submitted = []
+
+        def submit(self, name, operation, payload):
+            assert operation == "native"
+            round_index = payload["round"]
+            self.submitted.append((name, round_index))
+
+            def work():
+                timeline.append(("start", name, round_index, time.monotonic()))
+                time.sleep(0.01 if name == "fast" else 0.08)
+                timeline.append(("finish", name, round_index, time.monotonic()))
+                return {"name": name, "round": round_index}
+
+            return self.pool.submit(work)
+
+        def collect(self, name, future):
+            row = future.result()
+            self.states[name] = {"step": row["round"]}
+            return {
+                "scientist_event": {
+                    "iterations": [],
+                    "evaluation": {},
+                    "native_best": {},
+                    "rehearsal": None,
+                },
+                "native_witnesses": {},
+            }
+
+        def restore_full_state(self, name, state):
+            self.states[name] = state
+
+    payloads = {
+        round_index: {
+            name: {"round": round_index} for name in ("fast", "slow")
+        }
+        for round_index in range(3)
+    }
+    selected = {round_index: f"k{round_index}" for round_index in range(3)}
+    coordinator = Coordinator()
+    first = curriculum._run_pipelined_native_block(
+        coordinator,
+        output=tmp_path,
+        protocol_sha256="a" * 64,
+        start_round=0,
+        selected_by_round=selected,
+        payloads_by_round=payloads,
+    )
+    coordinator.pool.shutdown()
+    fast_round_one_started = next(
+        row[3] for row in timeline if row[:3] == ("start", "fast", 1)
+    )
+    slow_round_zero_finished = next(
+        row[3] for row in timeline if row[:3] == ("finish", "slow", 0)
+    )
+    assert fast_round_one_started < slow_round_zero_finished
+    assert all(set(first[index]) == {"fast", "slow"} for index in range(3))
+
+    resumed = Coordinator()
+    second = curriculum._run_pipelined_native_block(
+        resumed,
+        output=tmp_path,
+        protocol_sha256="a" * 64,
+        start_round=0,
+        selected_by_round=selected,
+        payloads_by_round=payloads,
+    )
+    resumed.pool.shutdown()
+    assert resumed.submitted == []
+    assert resumed.states == {"fast": {"step": 2}, "slow": {"step": 2}}
+    assert second == first
+
+
+def test_pipelined_execution_rejects_adaptive_or_sharing_arms(tmp_path: Path) -> None:
+    import pytest
+
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    bank = tmp_path / "bank.json"
+    bank.write_text("[]")
+    for arm in ("adaptive-no-sharing", "static-sharing"):
+        with pytest.raises(ValueError, match="fixed-order no-sharing"):
+            curriculum.run_coordinated_arm(
+                {"s": checkpoint},
+                bank,
+                tmp_path / arm,
+                arm=arm,
+                pipelined_static_no_sharing=True,
+            )
+
+
 def test_group_continuation_restores_adaptive_controller_values() -> None:
     payloads = {
         "a": {
@@ -69,6 +277,19 @@ def test_group_continuation_restores_adaptive_controller_values() -> None:
         default_f_native=5,
         default_simulations=64,
     ) == (2, 1, {"a": 12, "b": 8}, {"a": 256, "b": 128})
+
+
+def test_curriculum_skip_is_bounded_and_retained_in_denominators() -> None:
+    failed = {"10.0": {"best_objective": None}, "1000.0": {"best_objective": None}}
+    solved = {"10.0": {"best_objective": 12.0}, "1000.0": {"best_objective": None}}
+    assert curriculum_skip_event(failed, prior_skips=0, limit=1) == {
+        "reason": "budget_exhausted",
+        "token": 1,
+        "limit": 1,
+        "retained_in_denominators": True,
+    }
+    assert curriculum_skip_event(failed, prior_skips=1, limit=1) is None
+    assert curriculum_skip_event(solved, prior_skips=0, limit=1) is None
 
 
 def test_group_continuation_rejects_disagreeing_sharing_controller() -> None:
@@ -313,8 +534,20 @@ def test_coordinated_arm_names_are_unambiguous() -> None:
         "evaluation_attempts": 4,
     }
     assert _coordinated_name("adaptive-no-sharing", **common).endswith("ADAPTIVE-NO-SHARING")
+    assert _coordinated_name("static-random-no-sharing", **common).endswith(
+        "RANDOM-NO-SHARING"
+    )
     assert _coordinated_name("static-sharing", **common).endswith("EV4-SHARING")
     assert _coordinated_name("adaptive-sharing", **common).endswith("ADAPTIVE-SHARING")
+
+
+def test_static_random_order_is_frozen_and_input_order_independent() -> None:
+    identities = [f"knot-{index:02d}" for index in range(20)]
+    expected = _frozen_static_random_order(identities, 2026081401)
+    assert expected == _frozen_static_random_order(list(reversed(identities)), 2026081401)
+    assert expected != sorted(identities)
+    assert expected != _frozen_static_random_order(identities, 2026081402)
+    assert sorted(expected) == sorted(identities)
 
 
 def test_portfolio_summary_takes_best_scientist_and_caps_failures() -> None:

@@ -146,8 +146,8 @@ def braid_sv2_coordinated(
         str,
         typer.Option(
             help=(
-                "static-no-sharing, adaptive-no-sharing, static-sharing, "
-                "or adaptive-sharing"
+                "static-no-sharing, static-random-no-sharing, adaptive-no-sharing, "
+                "static-sharing, or adaptive-sharing"
             )
         ),
     ],
@@ -157,6 +157,8 @@ def braid_sv2_coordinated(
         typer.Option(help="Repeat NAME=STATE.pt.gz to continue full scientist state"),
     ] = None,
     ratios: str = "10,1000",
+    training_ratios: str | None = None,
+    static_random_seed: int | None = None,
     simulations: Annotated[int, typer.Option(min=1)] = 64,
     qualification_simulations: Annotated[int, typer.Option(min=1)] = 64,
     qualification_attempts: Annotated[int, typer.Option(min=1)] = 1,
@@ -173,6 +175,7 @@ def braid_sv2_coordinated(
     seed: int = 20262020,
     torch_threads: Annotated[int, typer.Option(min=1)] = 2,
     parallel_scientists: bool = True,
+    pipelined_static_no_sharing: bool = False,
     adaptive_compute: bool = False,
     device: str = "cpu",
     resume: bool = False,
@@ -212,6 +215,16 @@ def braid_sv2_coordinated(
         prior_bank=prior_bank,
         initial_states=initial_states or None,
         ratios=tuple(float(value) for value in ratios.split(",") if value.strip()),
+        training_ratios=(
+            tuple(
+                float(value)
+                for value in training_ratios.split(",")
+                if value.strip()
+            )
+            if training_ratios is not None
+            else None
+        ),
+        static_random_seed=static_random_seed,
         simulations=simulations,
         qualification_simulations=qualification_simulations,
         qualification_attempts=qualification_attempts,
@@ -228,6 +241,7 @@ def braid_sv2_coordinated(
         seed=seed,
         torch_threads=torch_threads,
         parallel_scientists=parallel_scientists,
+        pipelined_static_no_sharing=pipelined_static_no_sharing,
         adaptive_compute=adaptive_compute,
         device=device,
         resume=resume,
