@@ -1001,17 +1001,24 @@ def load_catalogue_target(path: Path, knot_name: str) -> tuple[MasteryConfig, Br
     if row["representation_status"] != "available":
         raise ValueError(f"{knot_name} has no stored local braid representation")
     rep = row["stored_representation"]
+    interval = row.get("bound_interval", row.get("knotinfo_interval_at_snapshot"))
+    if interval is None or len(interval) != 2:
+        raise ValueError(f"{knot_name} has no two-endpoint bound interval")
+    certified_lower_bound = int(row.get("certified_lower_bound", interval[0]))
     config = MasteryConfig(
         knot_name=knot_name,
         initial_target_u=int(row["strict_upper_bound_target"]),
-        certified_lower_bound=int(row["knotinfo_interval_at_snapshot"][0]),
+        certified_lower_bound=certified_lower_bound,
     )
     provenance = {
         "catalogue": str(path),
         "catalogue_schema": payload["schema"],
-        "knotinfo_interval": row["knotinfo_interval_at_snapshot"],
+        "bound_interval": interval,
+        "bound_provenance": row.get("bound_provenance"),
         "instance_id": rep["instance_id"],
     }
+    if "knotinfo_interval_at_snapshot" in row:
+        provenance["knotinfo_interval"] = row["knotinfo_interval_at_snapshot"]
     return config, BraidState(tuple(rep["word"]), int(rep["strands"])), provenance
 
 

@@ -16,6 +16,7 @@ from pgx_mcts_bench.single_knot_mastery import (
     NodeScore,
     RepresentationNode,
     equivalent_representations,
+    load_catalogue_target,
     one_crossing_change_children,
 )
 
@@ -242,3 +243,33 @@ def test_live_heap_is_bounded_by_probability():
     assert event["pruned_nodes"] > 0
     assert event["live_nodes"] == 5
     assert len(coordinator.nodes) == 5
+
+
+def test_generic_bound_catalogue_does_not_claim_knotinfo_provenance(tmp_path: Path):
+    catalogue = tmp_path / "targets.json"
+    catalogue.write_text(
+        """{
+  "schema": "single-knot-mastery-target-catalogue-v1",
+  "candidates": [{
+    "canonical_name": "P(3,8)#2",
+    "representation_status": "available",
+    "bound_interval": [3, 4],
+    "certified_lower_bound": 3,
+    "strict_upper_bound_target": 3,
+    "bound_provenance": {"kind": "frozen-bank-declaration"},
+    "stored_representation": {
+      "word": [1, 1, 1],
+      "strands": 2,
+      "instance_id": "test-instance"
+    }
+  }]
+}\n"""
+    )
+
+    config, state, provenance = load_catalogue_target(catalogue, "P(3,8)#2")
+
+    assert config.initial_target_u == 3
+    assert config.certified_lower_bound == 3
+    assert state == BraidState((1, 1, 1), 2)
+    assert provenance["bound_interval"] == [3, 4]
+    assert "knotinfo_interval" not in provenance
