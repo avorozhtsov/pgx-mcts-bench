@@ -441,19 +441,24 @@ class ReplayBuffer:
         *,
         current_representation: str,
         rehearsal_representations: set[str],
+        rehearsal_fraction: float = 0.25,
         positions_per_episode: int = 4,
         max_position_uses: int = 0,
     ) -> list[Position]:
         """Sample exact outcome and new/rehearsal strata when available.
 
         With an even number of episode slots, native successes and failures get
-        equal slots.  Successful slots are then split equally between the
-        current representation and the old-solution bank whenever both exist.
+        equal slots. ``rehearsal_fraction`` is an absolute fraction of the
+        complete batch, capped by the available successful half. Thus 0.25
+        gives the historical current/rehearsal split and 0.50 reserves every
+        positive slot for inherited rehearsal.
         Episodes are uniform by representation and inverse-weighted by prior
         exposure; positions are deliberately spread within an episode.
         """
         if batch_size < 1 or positions_per_episode < 1:
             raise ValueError("batch and positions_per_episode must be positive")
+        if not 0.0 <= rehearsal_fraction <= 0.5:
+            raise ValueError("rehearsal_fraction must be in [0, 0.5]")
         if max_position_uses < 0:
             raise ValueError("max_position_uses must be non-negative")
         self._ensure_replay_state()
@@ -467,25 +472,28 @@ class ReplayBuffer:
                 )
             )
 
-        native = [
-            game
-            for game in self.games
-            if eligible(game) and not bool(getattr(game[0], "shared_witness", False))
-        ]
+        # Frozen rehearsal witnesses can carry ``shared_witness`` provenance,
+        # but they are intentionally part of continual replay.  The explicit
+        # representation-id strata below keep them separate from current
+        # native outcomes; filtering the flag here would erase the entire
+        # rehearsal pool before that stratification can happen.
+        available = [game for game in self.games if eligible(game)]
         successes = [
             game
-            for game in native
+            for game in available
             if not bool(getattr(game[0], "objective_censored", False))
             and float(getattr(game[0], "solved", -1.0)) > 0.5
         ]
         ordinary_failures = [
             game
-            for game in native
+            for game in available
             if not bool(getattr(game[0], "objective_censored", False))
             and float(getattr(game[0], "solved", -1.0)) <= 0.5
         ]
         capped_failures = [
-            game for game in native if bool(getattr(game[0], "objective_censored", False))
+            game
+            for game in available
+            if bool(getattr(game[0], "objective_censored", False))
         ]
         failures = ordinary_failures + capped_failures
         if not successes and not failures:
@@ -510,8 +518,11 @@ class ReplayBuffer:
         ]
         success_requests: list[tuple[str, list[GameRecord]]] = []
         if current_successes and rehearsal_successes:
-            current_slots = success_slots // 2
-            rehearsal_slots = success_slots - current_slots
+            rehearsal_slots = min(
+                success_slots,
+                max(0, round(slots * rehearsal_fraction)),
+            )
+            current_slots = success_slots - rehearsal_slots
             success_requests.extend([("current-success", current_successes)] * current_slots)
             success_requests.extend([("rehearsal-success", rehearsal_successes)] * rehearsal_slots)
         else:

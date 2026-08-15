@@ -3,10 +3,11 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from rf_knots.actions import DESTABILIZE, ActionSpec
+from rf_knots.actions import CROSSING_CHANGE, DESTABILIZE, REDUCE, ActionSpec
 from rf_knots.evidence import BraidState, UnknotWitness
 
 from pgx_mcts_bench.single_knot_mastery import (
+    AdaptiveOutcomeController,
     AttemptResult,
     DistillationExample,
     FairRefreshScheduler,
@@ -15,6 +16,7 @@ from pgx_mcts_bench.single_knot_mastery import (
     MutableProbabilityHeap,
     NodeScore,
     RepresentationNode,
+    SimulationDoseController,
     equivalent_representations,
     load_catalogue_target,
     one_crossing_change_children,
@@ -35,10 +37,10 @@ class FakeBackend:
             for node in nodes
         ]
 
-    def attempt_batch(self, nodes, target_u, seeds):
-        del target_u, seeds
+    def attempt_batch(self, nodes, target_u, seeds, *, simulations=None):
+        del target_u, simulations
         rows = []
-        for node in nodes:
+        for node, seed in zip(nodes, seeds, strict=True):
             if self.solve_unknot_representation and node.word == (1,) and node.strands == 2:
                 rows.append(
                     AttemptResult(
@@ -48,15 +50,21 @@ class FakeBackend:
                         crossing_changes=0,
                         moves=1,
                         reason="verified",
+                        seed=seed,
                     )
                 )
             else:
                 rows.append(AttemptResult(node.node_id, False, reason="budget_exhausted"))
         return rows
 
-    def train_native(self, attempts):
+    def train_native(self, attempts, *, rehearsal_fraction):
+        assert 0.0 <= rehearsal_fraction <= 0.5
         self.native_training += bool(attempts)
         return int(bool(attempts))
+
+    def retention_rate(self, *, simulations, seed):
+        del simulations, seed
+        return None
 
     def distill(self, examples, max_steps):
         used = min(len(examples), max_steps)
@@ -80,6 +88,7 @@ def config(**changes):
         refresh_top=1,
         refresh_fair=1,
         distill_after_native_attempts=100,
+        negative_confirmations=1,
     )
     return replace(base, **changes)
 
@@ -160,6 +169,21 @@ def test_equivalent_seeds_and_one_cc_children_have_replayable_paths():
         sum(spec.decode(action)[0] == 8 for action in child.semantic_path) == 1
         for child in children
     )
+    grandchildren = one_crossing_change_children(
+        children[0],
+        spec,
+        node_budget=100,
+        growth=2,
+        diagram_limit=2,
+        child_limit=4,
+    )
+    assert grandchildren
+    assert all(child.provenance["subtask_depth"] == 2 for child in grandchildren)
+    assert all(len(child.provenance["subtask_lineage"]) == 2 for child in grandchildren)
+    assert all(
+        sum(spec.decode(action)[0] == 8 for action in child.semantic_path) == 2
+        for child in grandchildren
+    )
 
 
 def test_verified_solution_ratchets_target_and_stops_at_lower_bound():
@@ -226,6 +250,30 @@ def test_saved_coordinator_resumes_heap_and_counters(tmp_path):
     assert resumed.step()["attempts"] == 1
 
 
+def test_legacy_v1_state_resumes_without_v2_protocol_changes(tmp_path):
+    coordinator = MasteryCoordinator(
+        config(),
+        FakeBackend(),
+        [(BraidState((1, 1, 1), 2), {"source": "test"})],
+    )
+    payload = coordinator.to_dict()
+    payload["schema"] = "single-knot-mastery-v1"
+    payload["config"].pop("protocol_version")
+    state = tmp_path / "state.json"
+    import json
+
+    state.write_text(json.dumps(payload))
+
+    resumed = MasteryCoordinator.from_saved(state, FakeBackend())
+
+    assert resumed.config.protocol_version == 1
+    assert resumed.config.strict_search_fraction == 1.0
+    assert resumed.config.max_training_budget_slack == 0
+    assert resumed.config.negative_confirmations == 1
+    assert resumed.config.simulation_levels == (128,)
+    assert resumed.to_dict()["schema"] == "single-knot-mastery-v1"
+
+
 def test_live_heap_is_bounded_by_probability():
     backend = FakeBackend()
     coordinator = MasteryCoordinator(
@@ -273,3 +321,130 @@ def test_generic_bound_catalogue_does_not_claim_knotinfo_provenance(tmp_path: Pa
     assert state == BraidState((1, 1, 1), 2)
     assert provenance["bound_interval"] == [3, 4]
     assert "knotinfo_interval" not in provenance
+
+
+def test_outcome_controller_relaxes_budget_without_changing_scientific_target():
+    controller = AdaptiveOutcomeController(
+        target=0.5,
+        tolerance=0.05,
+        window=8,
+        warmup=4,
+        max_slack=3,
+    )
+
+    controller.observe([False] * 4)
+
+    assert controller.slack == 1
+    assert controller.targets(2, 4, 0.5) == [2, 2, 3, 3]
+
+    controller.observe([True] * 8)
+    assert controller.slack == 0
+
+
+def test_relaxed_training_success_cannot_weaken_scientific_target():
+    class RelaxedOnlyBackend(FakeBackend):
+        def attempt_batch(self, nodes, target_u, seeds, *, simulations=None):
+            del simulations
+            rows = []
+            for node, seed in zip(nodes, seeds, strict=True):
+                if target_u > 0:
+                    rows.append(
+                        AttemptResult(
+                            node.node_id,
+                            True,
+                            semantic_actions=(
+                                self.spec.encode(CROSSING_CHANGE, 1),
+                                self.spec.encode(REDUCE, 0),
+                                self.spec.encode(DESTABILIZE),
+                            ),
+                            crossing_changes=1,
+                            moves=3,
+                            reason="verified",
+                            seed=seed,
+                        )
+                    )
+                else:
+                    rows.append(AttemptResult(node.node_id, False, seed=seed))
+            return rows
+
+    coordinator = MasteryCoordinator(
+        config(initial_target_u=0, parallel_searches=2),
+        RelaxedOnlyBackend(),
+        [
+            (BraidState((1, 1, 1), 2), {"source": "left"}),
+            (BraidState((1, 1, 1), 2), {"source": "right"}),
+        ],
+    )
+    coordinator.outcome_controller.slack = 1
+
+    event = coordinator.step()
+
+    assert event["training_only_solutions"] == 1
+    assert event["strict_verified_solutions"] == 0
+    assert coordinator.target_u == 0
+    assert coordinator.best_witness is None
+
+
+def test_negative_requires_independent_confirmations_before_replay_admission():
+    coordinator = MasteryCoordinator(
+        config(negative_confirmations=3),
+        FakeBackend(),
+        [(BraidState((1, 1, 1), 2), {"source": "test"})],
+    )
+    node_id = next(iter(coordinator.nodes))
+    rows = [
+        AttemptResult(
+            node_id,
+            False,
+            reason="objective_budget_exhausted",
+            attempt_target_u=2,
+            simulations=128,
+            seed=seed,
+        )
+        for seed in (11, 12, 13)
+    ]
+
+    admitted, pending = coordinator._admit_training_attempts(rows[:2])
+    assert admitted == []
+    assert pending == 2
+    admitted, pending = coordinator._admit_training_attempts(rows[2:])
+    assert admitted == [rows[2]]
+    assert pending == 0
+
+
+def test_simulation_dose_promotes_only_after_paired_advantage():
+    controller = SimulationDoseController(
+        (64, 128, 256),
+        current=64,
+        min_pairs=4,
+        success_margin=0.1,
+        l1000_tolerance=5.0,
+    )
+    low = [AttemptResult("n", False) for _ in range(4)]
+    high = [
+        AttemptResult("n", True, crossing_changes=1, moves=10) for _ in range(4)
+    ]
+
+    report = controller.observe(64, 128, low, high)
+
+    assert report["promoted"] is True
+    assert controller.current == 128
+    assert controller.probe_pair == (128, 256)
+
+
+def test_low_retention_increases_rehearsal_fraction():
+    class LowRetentionBackend(FakeBackend):
+        def retention_rate(self, *, simulations, seed):
+            del simulations, seed
+            return 0.75
+
+    coordinator = MasteryCoordinator(
+        config(retention_probe_interval=1, initial_rehearsal_fraction=0.25),
+        LowRetentionBackend(),
+        [(BraidState((1, 1, 1), 2), {"source": "test"})],
+    )
+
+    event = coordinator.step()
+
+    assert event["retention_rate"] == 0.75
+    assert event["rehearsal_fraction"] == 0.30

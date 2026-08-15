@@ -3,8 +3,10 @@
 The coordinator maintains a mutable priority queue of representations reached
 from one or more verified starting braids.  A node at crossing-change distance
 ``d`` is scored by the scientist's factorized head under the remaining L1000
-budget, approximating ``P(remaining crossing changes <= target_u - d)``.  The
-heap stores ``-P`` so its smallest keys are the most promising nodes.
+budget.  The head is interpreted operationally as
+``P(this solver succeeds | encoded budget, representation)``; it is not a
+claim that a witness exists.  The heap stores ``-P`` so its smallest keys are
+the most promising nodes.
 
 Search remains representation aware: a one-crossing-change child is only a
 candidate reached from one exact diagram.  A knot-type upper bound is emitted
@@ -22,7 +24,8 @@ import json
 import math
 import os
 import tempfile
-from collections import deque
+import time
+from collections import defaultdict, deque
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -50,7 +53,8 @@ from pgx_mcts_bench.game import make_game
 from pgx_mcts_bench.search import NeuralMCTS
 from pgx_mcts_bench.training import train_alphazero_step
 
-SCHEMA = "single-knot-mastery-v1"
+SCHEMA_V1 = "single-knot-mastery-v1"
+SCHEMA = "single-knot-mastery-v2"
 
 
 def _stable_id(payload: Any) -> str:
@@ -62,9 +66,12 @@ def _stable_id(payload: Any) -> str:
 class MasteryConfig:
     knot_name: str
     initial_target_u: int
+    protocol_version: int = 2
     certified_lower_bound: int = 0
     ratio: float = 1000.0
     move_allowance: int = 128
+    objective_move_base: int | None = None
+    objective_move_jitter: int = 0
     parallel_searches: int = 4
     torch_threads: int = 4
     attempts_per_node: int = 1
@@ -83,12 +90,36 @@ class MasteryConfig:
     refresh_fair: int = 2
     distill_after_native_attempts: int = 200
     max_distillation_fraction: float = 0.10
+    target_positive_fraction: float = 0.50
+    positive_fraction_tolerance: float = 0.08
+    outcome_window: int = 64
+    outcome_warmup: int = 8
+    strict_search_fraction: float = 0.50
+    max_training_budget_slack: int = 3
+    negative_confirmations: int = 3
+    initial_rehearsal_fraction: float = 0.25
+    max_rehearsal_fraction: float = 0.50
+    rehearsal_fraction_step: float = 0.05
+    retention_target: float = 0.80
+    retention_probe_interval: int = 20
+    simulation_levels: tuple[int, ...] = ()
+    simulation_probe_interval: int = 20
+    simulation_probe_lanes: int = 2
+    simulation_probe_min_pairs: int = 12
+    simulation_success_margin: float = 0.05
+    simulation_l1000_tolerance: float = 5.0
 
     def __post_init__(self) -> None:
+        if self.protocol_version not in (1, 2):
+            raise ValueError("protocol_version must be 1 or 2")
         if self.initial_target_u < 0:
             raise ValueError("initial_target_u must be non-negative")
         if self.certified_lower_bound < 0:
             raise ValueError("certified_lower_bound must be non-negative")
+        if self.objective_move_base is not None and self.objective_move_base < 0:
+            raise ValueError("objective_move_base must be non-negative")
+        if self.objective_move_jitter < 0:
+            raise ValueError("objective_move_jitter must be non-negative")
         if self.parallel_searches < 1 or self.attempts_per_node < 1:
             raise ValueError("parallel searches and attempts must be positive")
         if self.torch_threads < 1:
@@ -97,6 +128,54 @@ class MasteryConfig:
             raise ValueError("max_live_nodes must cover every parallel search lane")
         if not 0.0 <= self.max_distillation_fraction < 1.0:
             raise ValueError("max_distillation_fraction must be in [0, 1)")
+        if not 0.0 < self.target_positive_fraction < 1.0:
+            raise ValueError("target_positive_fraction must be in (0, 1)")
+        if not 0.0 <= self.positive_fraction_tolerance < 0.5:
+            raise ValueError("positive_fraction_tolerance must be in [0, 0.5)")
+        if self.outcome_window < 1 or not 1 <= self.outcome_warmup <= self.outcome_window:
+            raise ValueError("outcome warmup/window are inconsistent")
+        if not 0.0 < self.strict_search_fraction <= 1.0:
+            raise ValueError("strict_search_fraction must be in (0, 1]")
+        if self.max_training_budget_slack < 0:
+            raise ValueError("max_training_budget_slack must be non-negative")
+        if self.negative_confirmations < 1:
+            raise ValueError("negative_confirmations must be positive")
+        if not 0.0 <= self.initial_rehearsal_fraction <= self.max_rehearsal_fraction <= 0.5:
+            raise ValueError("rehearsal fractions must satisfy 0 <= initial <= max <= 0.5")
+        if self.rehearsal_fraction_step <= 0.0:
+            raise ValueError("rehearsal_fraction_step must be positive")
+        if not 0.0 <= self.retention_target <= 1.0:
+            raise ValueError("retention_target must be in [0, 1]")
+        if self.retention_probe_interval < 1:
+            raise ValueError("retention_probe_interval must be positive")
+        levels = tuple(int(value) for value in self.simulation_levels)
+        if levels and (levels != tuple(sorted(set(levels))) or min(levels) < 1):
+            raise ValueError("simulation_levels must be sorted unique positive integers")
+        if levels and self.simulations != levels[0]:
+            raise ValueError("simulations must be the minimum simulation_levels dose")
+        if self.simulation_probe_interval < 1 or self.simulation_probe_lanes < 1:
+            raise ValueError("simulation probe interval and lanes must be positive")
+        if self.simulation_probe_min_pairs < 1:
+            raise ValueError("simulation_probe_min_pairs must be positive")
+
+
+def _saved_config(payload: dict[str, Any]) -> MasteryConfig:
+    """Load a state config without changing the protocol of legacy v1 runs."""
+    row = dict(payload["config"])
+    if payload.get("schema") == SCHEMA_V1 and "protocol_version" not in row:
+        simulations = int(row.get("simulations", 128))
+        row.update(
+            {
+                "protocol_version": 1,
+                "strict_search_fraction": 1.0,
+                "max_training_budget_slack": 0,
+                "negative_confirmations": 1,
+                "initial_rehearsal_fraction": 0.0,
+                "max_rehearsal_fraction": 0.0,
+                "simulation_levels": (simulations,),
+            }
+        )
+    return MasteryConfig(**row)
 
 
 @dataclass
@@ -115,6 +194,12 @@ class RepresentationNode:
     score_version: int = 0
     last_scored_step: int = -1
     attempts: int = 0
+    priority_bonus: float = 0.0
+
+    @property
+    def science_priority(self) -> float:
+        """Scheduling key without corrupting calibrated solve probability."""
+        return float(self.probability + self.priority_bonus)
 
     @classmethod
     def create(
@@ -127,6 +212,7 @@ class RepresentationNode:
         semantic_path: Iterable[int],
         parent_id: str | None = None,
         provenance: dict[str, Any] | None = None,
+        priority_bonus: float = 0.0,
     ) -> RepresentationNode:
         compact = tuple(int(value) for value in word if int(value))
         path = tuple(int(action) for action in semantic_path)
@@ -148,6 +234,7 @@ class RepresentationNode:
             path,
             parent_id,
             dict(provenance or {}),
+            priority_bonus=float(priority_bonus),
         )
 
     @property
@@ -171,6 +258,11 @@ class AttemptResult:
     crossing_changes: int | None = None
     moves: int | None = None
     reason: str = ""
+    attempt_target_u: int | None = None
+    simulations: int | None = None
+    seed: int | None = None
+    scheduled_network_evaluations: int = 0
+    wall_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -193,13 +285,201 @@ class MasteryBackend(Protocol):
         nodes: Sequence[RepresentationNode],
         target_u: int,
         seeds: Sequence[int],
+        *,
+        simulations: int | None = None,
     ) -> list[AttemptResult]: ...
 
-    def train_native(self, attempts: Sequence[AttemptResult]) -> int: ...
+    def train_native(
+        self,
+        attempts: Sequence[AttemptResult],
+        *,
+        rehearsal_fraction: float,
+    ) -> int: ...
+
+    def retention_rate(self, *, simulations: int, seed: int) -> float | None: ...
 
     def distill(self, examples: Sequence[DistillationExample], max_steps: int) -> int: ...
 
     def save(self, path: Path) -> None: ...
+
+
+class AdaptiveOutcomeController:
+    """Keep solve-head replay near a target outcome mix via budget slack.
+
+    The controller changes only the encoded training target.  The coordinator's
+    scientific target is stored separately and can move only after witness
+    replay verification.
+    """
+
+    def __init__(
+        self,
+        *,
+        target: float,
+        tolerance: float,
+        window: int,
+        warmup: int,
+        max_slack: int,
+        slack: int = 0,
+        outcomes: Sequence[bool] = (),
+    ) -> None:
+        self.target = float(target)
+        self.tolerance = float(tolerance)
+        self.window = int(window)
+        self.warmup = int(warmup)
+        self.max_slack = int(max_slack)
+        self.slack = int(slack)
+        self.outcomes: deque[bool] = deque(
+            (bool(value) for value in outcomes), maxlen=self.window
+        )
+
+    @property
+    def positive_fraction(self) -> float | None:
+        if not self.outcomes:
+            return None
+        return sum(self.outcomes) / len(self.outcomes)
+
+    def observe(self, outcomes: Sequence[bool]) -> int:
+        self.outcomes.extend(bool(value) for value in outcomes)
+        rate = self.positive_fraction
+        if rate is None or len(self.outcomes) < self.warmup:
+            return self.slack
+        if rate < self.target - self.tolerance:
+            self.slack = min(self.max_slack, self.slack + 1)
+        elif rate > self.target + self.tolerance:
+            self.slack = max(0, self.slack - 1)
+        return self.slack
+
+    def targets(self, scientific_target: int, lanes: int, strict_fraction: float) -> list[int]:
+        strict = max(1, math.ceil(lanes * strict_fraction))
+        return [
+            scientific_target if index < strict else scientific_target + self.slack
+            for index in range(lanes)
+        ]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"slack": self.slack, "outcomes": list(self.outcomes)}
+
+
+class SimulationDoseController:
+    """Tune MCTS simulations with paired, representation-matched probes."""
+
+    def __init__(
+        self,
+        levels: Sequence[int],
+        *,
+        current: int,
+        min_pairs: int,
+        success_margin: float,
+        l1000_tolerance: float,
+        observations: dict[str, list[dict[str, float | bool | None]]] | None = None,
+    ) -> None:
+        self.levels = tuple(sorted(set(int(value) for value in levels)))
+        if current not in self.levels:
+            raise ValueError("current simulation dose is absent from levels")
+        self.current = int(current)
+        self.min_pairs = int(min_pairs)
+        self.success_margin = float(success_margin)
+        self.l1000_tolerance = float(l1000_tolerance)
+        self.observations = dict(observations or {})
+
+    @property
+    def probe_pair(self) -> tuple[int, int] | None:
+        index = self.levels.index(self.current)
+        if index + 1 >= len(self.levels):
+            return None
+        return self.current, self.levels[index + 1]
+
+    @staticmethod
+    def _cost(result: AttemptResult) -> float | None:
+        if not result.solved or result.crossing_changes is None or result.moves is None:
+            return None
+        return 1000.0 * result.crossing_changes + result.moves
+
+    def observe(
+        self,
+        low_dose: int,
+        high_dose: int,
+        low: Sequence[AttemptResult],
+        high: Sequence[AttemptResult],
+    ) -> dict[str, Any]:
+        if len(low) != len(high):
+            raise ValueError("paired dose probes returned unequal counts")
+        key = f"{low_dose}:{high_dose}"
+        bucket = self.observations.setdefault(key, [])
+        for left, right in zip(low, high, strict=True):
+            bucket.append(
+                {
+                    "low_solved": bool(left.solved),
+                    "high_solved": bool(right.solved),
+                    "low_l1000": self._cost(left),
+                    "high_l1000": self._cost(right),
+                }
+            )
+        rows = bucket[-max(self.min_pairs * 4, self.min_pairs) :]
+        n = len(rows)
+        low_rate = sum(bool(row["low_solved"]) for row in rows) / n
+        high_rate = sum(bool(row["high_solved"]) for row in rows) / n
+        success_deltas = np.asarray(
+            [
+                int(bool(row["high_solved"])) - int(bool(row["low_solved"]))
+                for row in rows
+            ],
+            dtype=np.float64,
+        )
+        success_gain = float(success_deltas.mean())
+        success_se = (
+            float(success_deltas.std(ddof=1) / math.sqrt(n)) if n > 1 else 0.0
+        )
+        success_lower_95 = success_gain - 1.96 * success_se
+        paired_costs = [
+            float(row["low_l1000"]) - float(row["high_l1000"])
+            for row in rows
+            if bool(row["low_solved"])
+            and bool(row["high_solved"])
+            and row["low_l1000"] is not None
+            and row["high_l1000"] is not None
+            and np.isfinite([row["low_l1000"], row["high_l1000"]]).all()
+        ]
+        cost_gain = float(np.mean(paired_costs)) if paired_costs else 0.0
+        cost_se = (
+            float(np.std(paired_costs, ddof=1) / math.sqrt(len(paired_costs)))
+            if len(paired_costs) > 1
+            else 0.0
+        )
+        cost_lower_95 = cost_gain - 1.96 * cost_se
+        promoted = False
+        if n >= self.min_pairs and (
+            success_lower_95 > self.success_margin
+            or cost_lower_95 > self.l1000_tolerance
+        ):
+            self.current = high_dose
+            promoted = True
+        return {
+            "pair": [low_dose, high_dose],
+            "pairs": n,
+            "low_success_rate": low_rate,
+            "high_success_rate": high_rate,
+            "paired_success_gain": success_gain,
+            "paired_success_gain_lower_95": success_lower_95,
+            "paired_l1000_gain": cost_gain,
+            "paired_l1000_gain_lower_95": cost_lower_95,
+            "low_scheduled_network_evaluations": sum(
+                row.scheduled_network_evaluations for row in low
+            ),
+            "high_scheduled_network_evaluations": sum(
+                row.scheduled_network_evaluations for row in high
+            ),
+            "low_wall_seconds": sum(row.wall_seconds for row in low),
+            "high_wall_seconds": sum(row.wall_seconds for row in high),
+            "promoted": promoted,
+            "current_simulations": self.current,
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "current": self.current,
+            "observations": self.observations,
+        }
 
 
 class MutableProbabilityHeap:
@@ -217,7 +497,7 @@ class MutableProbabilityHeap:
         )
         heapq.heappush(
             self._heap,
-            (-float(node.probability), predicted_l1000, node.last_scored_step, node.node_id,
+            (-node.science_priority, predicted_l1000, node.last_scored_step, node.node_id,
              node.score_version),
         )
 
@@ -335,6 +615,27 @@ def one_crossing_change_children(
             if state in seen:
                 continue
             seen.add(state)
+            lineage = list(node.provenance.get("subtask_lineage", []))
+            lineage.append(
+                {
+                    "parent_node_id": node.node_id,
+                    "parent_crossing_distance": node.crossing_distance,
+                    "type_preserving_prefix": [int(value) for value in prefix],
+                    "crossing_change_action": action,
+                    "crossing_change_position": position,
+                }
+            )
+            child_provenance = {
+                **node.provenance,
+                "operation": "type-preserving-prefix-then-one-crossing-change",
+                "parent": node.node_id,
+                "subtask_depth": node.crossing_distance + 1,
+                "subtask_lineage": lineage,
+            }
+            if "current_target_u" in child_provenance:
+                child_provenance["remaining_target_u"] = int(
+                    child_provenance["current_target_u"]
+                ) - (node.crossing_distance + 1)
             children.append(
                 RepresentationNode.create(
                     root_id=node.root_id,
@@ -343,10 +644,8 @@ def one_crossing_change_children(
                     crossing_distance=node.crossing_distance + 1,
                     semantic_path=(*node.semantic_path, *prefix, action),
                     parent_id=node.node_id,
-                    provenance={
-                        "operation": "type-preserving-prefix-then-one-crossing-change",
-                        "parent": node.node_id,
-                    },
+                    provenance=child_provenance,
+                    priority_bonus=node.priority_bonus,
                 )
             )
     children.sort(key=lambda child: (len(child.word), child.strands, child.word, child.node_id))
@@ -363,12 +662,14 @@ class MasteryCoordinator:
         distillation: Sequence[DistillationExample] = (),
     ) -> None:
         self.config = config
+        self.schema = SCHEMA if config.protocol_version == 2 else SCHEMA_V1
         self.backend = backend
         self.target_u = config.initial_target_u
         self.step_index = 0
         self.native_attempts_at_target = 0
         self.native_train_steps = 0
         self.distilled_train_steps = 0
+        self.rehearsal_fraction = config.initial_rehearsal_fraction
         self.best_witness: UnknotWitness | None = None
         self.nodes: dict[str, RepresentationNode] = {}
         self.root_states: dict[str, BraidState] = {}
@@ -377,6 +678,27 @@ class MasteryCoordinator:
         self.refresh = FairRefreshScheduler()
         self.distillation = sorted(distillation, key=lambda item: (item.l10, item.source))
         self.events: list[dict[str, Any]] = []
+        self.outcome_controller = AdaptiveOutcomeController(
+            target=config.target_positive_fraction,
+            tolerance=config.positive_fraction_tolerance,
+            window=config.outcome_window,
+            warmup=config.outcome_warmup,
+            max_slack=config.max_training_budget_slack,
+        )
+        levels = config.simulation_levels or (
+            config.simulations,
+            config.simulations * 2,
+            config.simulations * 4,
+        )
+        self.dose_controller = SimulationDoseController(
+            levels,
+            current=config.simulations,
+            min_pairs=config.simulation_probe_min_pairs,
+            success_margin=config.simulation_success_margin,
+            l1000_tolerance=config.simulation_l1000_tolerance,
+        )
+        self.negative_trials: dict[str, set[int]] = defaultdict(set)
+        self.admitted_negative_keys: set[str] = set()
 
         for root_index, (root, provenance) in enumerate(roots):
             root_id = f"root-{root_index:02d}-{braid_instance_id(root.word, root.strands)[6:18]}"
@@ -410,16 +732,20 @@ class MasteryCoordinator:
         distillation: Sequence[DistillationExample] = (),
     ) -> MasteryCoordinator:
         payload = json.loads(state_path.read_text())
-        if payload.get("schema") != SCHEMA:
+        if payload.get("schema") not in (SCHEMA_V1, SCHEMA):
             raise ValueError(f"unsupported mastery state schema in {state_path}")
         coordinator = cls.__new__(cls)
-        coordinator.config = MasteryConfig(**payload["config"])
+        coordinator.config = _saved_config(payload)
+        coordinator.schema = str(payload["schema"])
         coordinator.backend = backend
         coordinator.target_u = int(payload["target_u"])
         coordinator.step_index = int(payload["step_index"])
         coordinator.native_attempts_at_target = int(payload["native_attempts_at_target"])
         coordinator.native_train_steps = int(payload["native_train_steps"])
         coordinator.distilled_train_steps = int(payload["distilled_train_steps"])
+        coordinator.rehearsal_fraction = float(
+            payload.get("rehearsal_fraction", coordinator.config.initial_rehearsal_fraction)
+        )
         coordinator.best_witness = (
             UnknotWitness.from_dict(payload["best_witness"])
             if payload.get("best_witness")
@@ -445,6 +771,38 @@ class MasteryCoordinator:
             distillation, key=lambda item: (item.l10, item.source)
         )
         coordinator.events = list(payload.get("events", []))
+        outcome = payload.get("outcome_controller", {})
+        coordinator.outcome_controller = AdaptiveOutcomeController(
+            target=coordinator.config.target_positive_fraction,
+            tolerance=coordinator.config.positive_fraction_tolerance,
+            window=coordinator.config.outcome_window,
+            warmup=coordinator.config.outcome_warmup,
+            max_slack=coordinator.config.max_training_budget_slack,
+            slack=int(outcome.get("slack", 0)),
+            outcomes=outcome.get("outcomes", ()),
+        )
+        levels = coordinator.config.simulation_levels or (
+            coordinator.config.simulations,
+            coordinator.config.simulations * 2,
+            coordinator.config.simulations * 4,
+        )
+        dose = payload.get("dose_controller", {})
+        coordinator.dose_controller = SimulationDoseController(
+            levels,
+            current=int(dose.get("current", coordinator.config.simulations)),
+            min_pairs=coordinator.config.simulation_probe_min_pairs,
+            success_margin=coordinator.config.simulation_success_margin,
+            l1000_tolerance=coordinator.config.simulation_l1000_tolerance,
+            observations=dose.get("observations", {}),
+        )
+        coordinator.negative_trials = defaultdict(
+            set,
+            {
+                str(key): {int(seed) for seed in seeds}
+                for key, seeds in payload.get("negative_trials", {}).items()
+            },
+        )
+        coordinator.admitted_negative_keys = set(payload.get("admitted_negative_keys", []))
         return coordinator
 
     @property
@@ -549,6 +907,92 @@ class MasteryCoordinator:
         total_allowed = math.floor(fraction * self.native_train_steps / (1.0 - fraction))
         return max(total_allowed - self.distilled_train_steps, 0)
 
+    @staticmethod
+    def _negative_key(result: AttemptResult) -> str:
+        return ":".join(
+            (
+                result.node_id,
+                str(result.attempt_target_u),
+                str(result.simulations),
+            )
+        )
+
+    def _admit_training_attempts(
+        self, attempts: Sequence[AttemptResult]
+    ) -> tuple[list[AttemptResult], int]:
+        if self.config.protocol_version == 1:
+            return list(attempts), 0
+        admitted: list[AttemptResult] = []
+        pending = 0
+        for result in attempts:
+            if result.solved:
+                admitted.append(result)
+                continue
+            key = self._negative_key(result)
+            if result.seed is not None:
+                self.negative_trials[key].add(int(result.seed))
+            if key in self.admitted_negative_keys:
+                continue
+            if len(self.negative_trials[key]) >= self.config.negative_confirmations:
+                self.admitted_negative_keys.add(key)
+                admitted.append(result)
+            else:
+                pending += 1
+        return admitted, pending
+
+    def _attempt_grouped(
+        self,
+        nodes: Sequence[RepresentationNode],
+        targets: Sequence[int],
+        seeds: Sequence[int],
+        simulations: Sequence[int],
+    ) -> list[AttemptResult]:
+        if not (len(nodes) == len(targets) == len(seeds) == len(simulations)):
+            raise ValueError("attempt lanes have inconsistent lengths")
+        grouped: dict[tuple[int, int], list[int]] = defaultdict(list)
+        for index, (target, dose) in enumerate(zip(targets, simulations, strict=True)):
+            grouped[(int(target), int(dose))].append(index)
+        output: list[AttemptResult | None] = [None] * len(nodes)
+        for (target, dose), indexes in grouped.items():
+            rows = self.backend.attempt_batch(
+                [nodes[index] for index in indexes],
+                target,
+                [seeds[index] for index in indexes],
+                simulations=dose,
+            )
+            if len(rows) != len(indexes):
+                raise ValueError("backend returned the wrong number of attempts")
+            for index, result in zip(indexes, rows, strict=True):
+                output[index] = replace(
+                    result,
+                    attempt_target_u=target,
+                    simulations=dose,
+                    seed=int(seeds[index]),
+                )
+        if any(result is None for result in output):
+            raise RuntimeError("attempt grouping left an empty lane")
+        return [result for result in output if result is not None]
+
+    def _dose_probe(
+        self, selected: Sequence[RepresentationNode]
+    ) -> tuple[list[AttemptResult], dict[str, Any] | None]:
+        pair = self.dose_controller.probe_pair
+        if pair is None or self.step_index % self.config.simulation_probe_interval:
+            return [], None
+        nodes = list(selected[: self.config.simulation_probe_lanes])
+        if not nodes:
+            return [], None
+        seeds = [
+            self.config.seed + 700_000_000 + self.step_index * 1009 + index
+            for index in range(len(nodes))
+        ]
+        target = [self.target_u] * len(nodes)
+        low_dose, high_dose = pair
+        low = self._attempt_grouped(nodes, target, seeds, [low_dose] * len(nodes))
+        high = self._attempt_grouped(nodes, target, seeds, [high_dose] * len(nodes))
+        report = self.dose_controller.observe(low_dose, high_dose, low, high)
+        return [*low, *high], report
+
     def step(self) -> dict[str, Any]:
         if self.finished:
             return {"finished": True, "target_u": self.target_u}
@@ -578,19 +1022,38 @@ class MasteryCoordinator:
             for node in selected
             for _ in range(self.config.attempts_per_node)
         ]
-        attempts = self.backend.attempt_batch(lanes, self.target_u, seeds)
-        self.native_attempts_at_target += len(attempts)
+        scientific_target = self.target_u
+        targets = self.outcome_controller.targets(
+            scientific_target,
+            len(lanes),
+            self.config.strict_search_fraction,
+        )
+        # Rotate the strict/relaxed assignment so representation rank is not a
+        # hidden treatment variable.
+        if len(targets) > 1:
+            shift = self.step_index % len(targets)
+            targets = targets[shift:] + targets[:shift]
+        doses = [self.dose_controller.current] * len(lanes)
+        attempts = self._attempt_grouped(lanes, targets, seeds, doses)
+        probe_attempts, dose_probe = self._dose_probe(selected)
+        all_attempts = [*attempts, *probe_attempts]
+        self.native_attempts_at_target += sum(
+            result.attempt_target_u == scientific_target for result in all_attempts
+        )
         for node in selected:
             node.attempts += self.config.attempts_per_node
             self.heap.update(node)
 
         verified: list[UnknotWitness] = []
-        for result in attempts:
+        for result in all_attempts:
             if result.solved:
                 verified.append(self._verified_full_witness(result))
-        if verified:
+        ratchet_eligible = [
+            witness for witness in verified if witness.crossing_changes <= scientific_target
+        ]
+        if ratchet_eligible:
             best = min(
-                verified,
+                ratchet_eligible,
                 key=lambda witness: (
                     witness.crossing_changes,
                     1000 * witness.crossing_changes + witness.moves,
@@ -598,8 +1061,25 @@ class MasteryCoordinator:
             )
             self._ratchet(best)
 
-        trained = self.backend.train_native(attempts)
+        self.outcome_controller.observe([result.solved for result in attempts])
+        admitted_attempts, pending_negatives = self._admit_training_attempts(all_attempts)
+        trained = self.backend.train_native(
+            admitted_attempts,
+            rehearsal_fraction=self.rehearsal_fraction,
+        )
         self.native_train_steps += trained
+
+        retention_rate = None
+        if self.step_index % self.config.retention_probe_interval == 0:
+            retention_rate = self.backend.retention_rate(
+                simulations=self.config.simulations,
+                seed=self.config.seed + 800_000_000,
+            )
+            if retention_rate is not None and retention_rate < self.config.retention_target:
+                self.rehearsal_fraction = min(
+                    self.config.max_rehearsal_fraction,
+                    self.rehearsal_fraction + self.config.rehearsal_fraction_step,
+                )
 
         children: list[str] = []
         pruned_nodes = 0
@@ -623,7 +1103,7 @@ class MasteryCoordinator:
         distilled = 0
         if (
             self.native_attempts_at_target >= self.config.distill_after_native_attempts
-            and not verified
+            and not ratchet_eligible
         ):
             allowance = self._distillation_allowance()
             if allowance:
@@ -635,13 +1115,39 @@ class MasteryCoordinator:
             "type": "search_step",
             "step": self.step_index,
             "target_u": self.target_u,
+            "scientific_target_before_step": scientific_target,
+            "attempt_target_us": targets,
             "selected": [node.node_id for node in selected],
             "attempts": len(attempts),
+            "probe_attempts": len(probe_attempts),
+            "strict_attempts": sum(
+                result.attempt_target_u == scientific_target for result in all_attempts
+            ),
+            "relaxed_attempts": sum(
+                result.attempt_target_u != scientific_target for result in all_attempts
+            ),
             "verified_solutions": len(verified),
+            "strict_verified_solutions": len(ratchet_eligible),
+            "training_only_solutions": len(verified) - len(ratchet_eligible),
+            "admitted_training_attempts": len(admitted_attempts),
+            "pending_unconfirmed_negatives": pending_negatives,
+            "positive_fraction": self.outcome_controller.positive_fraction,
+            "training_budget_slack": self.outcome_controller.slack,
+            "simulations": self.dose_controller.current,
+            "simulation_probe": dose_probe,
+            "scheduled_network_evaluations": sum(
+                result.scheduled_network_evaluations for result in all_attempts
+            ),
+            "search_wall_seconds": sum(result.wall_seconds for result in all_attempts),
+            "retention_rate": retention_rate,
+            "rehearsal_fraction": self.rehearsal_fraction,
             "new_nodes": len(children),
             "pruned_nodes": pruned_nodes,
             "live_nodes": len(self.nodes),
             "native_train_steps": trained,
+            "training_metrics": dict(
+                getattr(self.backend, "last_train_metrics", {})
+            ),
             "distilled_train_steps": distilled,
         }
         self.events.append(event)
@@ -649,13 +1155,20 @@ class MasteryCoordinator:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema": SCHEMA,
+            "schema": self.schema,
             "config": asdict(self.config),
             "target_u": self.target_u,
             "step_index": self.step_index,
             "native_attempts_at_target": self.native_attempts_at_target,
             "native_train_steps": self.native_train_steps,
             "distilled_train_steps": self.distilled_train_steps,
+            "rehearsal_fraction": self.rehearsal_fraction,
+            "outcome_controller": self.outcome_controller.to_dict(),
+            "dose_controller": self.dose_controller.to_dict(),
+            "negative_trials": {
+                key: sorted(seeds) for key, seeds in sorted(self.negative_trials.items())
+            },
+            "admitted_negative_keys": sorted(self.admitted_negative_keys),
             "roots": {
                 root_id: state.to_dict() for root_id, state in sorted(self.root_states.items())
             },
@@ -692,17 +1205,82 @@ def _observation_tensor(observations: list[np.ndarray], device: torch.device) ->
 class ScientistMasteryBackend:
     """Factorized-head scorer, batched MCTS lanes, and online trainer."""
 
-    def __init__(self, scientist: Scientist, config: MasteryConfig) -> None:
+    def __init__(
+        self,
+        scientist: Scientist,
+        config: MasteryConfig,
+        *,
+        rehearsal: Sequence[DistillationExample] = (),
+    ) -> None:
         if not scientist.prediction_source.startswith("factorized"):
             raise ValueError("single-knot mastery requires a trained factorized p-head")
         if not scientist.config.game.objective_budget_channel:
             raise ValueError("single-knot mastery requires the objective-budget channel")
+        if config.protocol_version == 2:
+            if not hasattr(scientist.network, "auxiliary_solve_backprop"):
+                raise ValueError("factorized checkpoint cannot expose solve loss to its encoder")
+            # Failure policies remain masked, but the balanced negative solve
+            # loss intentionally shapes the shared representation in v2.
+            scientist.network.auxiliary_solve_backprop = True
+            if float(getattr(scientist.network, "auxiliary_loss_weight", 0.0)) <= 0.0:
+                raise ValueError("single-knot mastery requires a positive solve-head loss weight")
         self.scientist = scientist
         self.config = config
         self.spec = scientist.game.config._spec
+        self.rehearsal = tuple(rehearsal)
+        self.rehearsal_ids: set[str] = set()
+        self.last_train_metrics: dict[str, float] = {}
+        self._seed_rehearsal()
+
+    def _seed_rehearsal(self) -> None:
+        """Put verified inherited solutions in replay without taking an update."""
+        for index, example in enumerate(self.rehearsal):
+            witness = example.witness
+            witness.verify()
+            identity = f"rehearsal:{example.source}:{witness.instance_id}"
+            knot = KnotItem(
+                identity,
+                len(witness.start.word),
+                witness.start.word,
+                witness.start.strands,
+            )
+            actions = [step.action.to_flat(self.spec) for step in witness.steps]
+            record = translate_semantic_record(
+                self.scientist,
+                knot,
+                self.config.ratio,
+                actions,
+                seed=self.config.seed + 850_000_000 + index,
+            )
+            if record is None:
+                continue
+            self.scientist.replay.add(
+                record,
+                representation_id=identity,
+                objective_ratio=self.config.ratio,
+            )
+            self.rehearsal_ids.add(identity)
 
     def _item(self, node: RepresentationNode) -> KnotItem:
         return KnotItem(node.node_id, len(node.word), node.word, node.strands)
+
+    def _objective_cap(self, remaining: int, seed: int | None = None) -> float:
+        base = (
+            self.config.move_allowance
+            if self.config.objective_move_base is None
+            else self.config.objective_move_base
+        )
+        jitter = 0
+        if self.config.objective_move_jitter:
+            if seed is None:
+                jitter = self.config.objective_move_jitter // 2
+            else:
+                jitter = int(
+                    np.random.default_rng(int(seed) ^ 0x5A17).integers(
+                        0, self.config.objective_move_jitter + 1
+                    )
+                )
+        return self.config.ratio * remaining + base + jitter
 
     @torch.inference_mode()
     def score(self, nodes: Sequence[RepresentationNode], target_u: int) -> list[NodeScore]:
@@ -714,7 +1292,7 @@ class ScientistMasteryBackend:
                 live.append(False)
                 observations.append(None)
                 continue
-            cap = self.config.ratio * remaining + self.config.move_allowance
+            cap = self._objective_cap(remaining)
             game = FixedWordGame(
                 self.scientist.game,
                 self._item(node),
@@ -759,6 +1337,8 @@ class ScientistMasteryBackend:
         nodes: Sequence[RepresentationNode],
         target_u: int,
         seeds: Sequence[int],
+        *,
+        simulations: int | None = None,
     ) -> list[AttemptResult]:
         if len(nodes) != len(seeds):
             raise ValueError("one seed is required per MCTS lane")
@@ -768,7 +1348,7 @@ class ScientistMasteryBackend:
         records: list[GameRecord] = [[] for _ in nodes]
         for node, seed in zip(nodes, seeds, strict=True):
             remaining = target_u - node.crossing_distance
-            cap = self.config.ratio * remaining + self.config.move_allowance
+            cap = self._objective_cap(remaining, int(seed))
             fixed = FixedWordGame(
                 self.scientist.game,
                 self._item(node),
@@ -781,7 +1361,10 @@ class ScientistMasteryBackend:
             rngs.append(np.random.default_rng(seed))
         search_config = self.scientist.config.search
         search_config = type(search_config)(
-            **{**asdict(search_config), "simulations": self.config.simulations}
+            **{
+                **asdict(search_config),
+                "simulations": int(simulations or self.config.simulations),
+            }
         )
         search = NeuralMCTS(
             fixed_games[0],
@@ -794,6 +1377,7 @@ class ScientistMasteryBackend:
             game.first_role_player(transition.state)
             for game, transition in zip(fixed_games, transitions, strict=True)
         ]
+        started = time.perf_counter()
         while True:
             active = [
                 index
@@ -842,7 +1426,9 @@ class ScientistMasteryBackend:
                 transitions[index] = nxt
                 moves[index] += 1
 
+        batch_wall_seconds = time.perf_counter() - started
         output = []
+        dose = int(simulations or self.config.simulations)
         for node, game, transition, record in zip(
             nodes, fixed_games, transitions, records, strict=True
         ):
@@ -868,7 +1454,16 @@ class ScientistMasteryBackend:
                 record,
             )
             if verified is None:
-                output.append(AttemptResult(node.node_id, False, record, reason=reason))
+                output.append(
+                    AttemptResult(
+                        node.node_id,
+                        False,
+                        record,
+                        reason=reason,
+                        scheduled_network_evaluations=len(record) * (dose + 1),
+                        wall_seconds=batch_wall_seconds / len(nodes),
+                    )
+                )
             else:
                 cc, semantic_moves, actions = verified
                 output.append(
@@ -880,6 +1475,8 @@ class ScientistMasteryBackend:
                         cc,
                         semantic_moves,
                         "verified",
+                        scheduled_network_evaluations=len(record) * (dose + 1),
+                        wall_seconds=batch_wall_seconds / len(nodes),
                     )
                 )
         return output
@@ -889,7 +1486,7 @@ class ScientistMasteryBackend:
         for _ in range(steps):
             if self.scientist.replay.position_count < 1:
                 break
-            train_alphazero_step(
+            self.last_train_metrics = train_alphazero_step(
                 self.scientist.network,
                 self.scientist.optimizer,
                 self.scientist.replay,
@@ -900,15 +1497,64 @@ class ScientistMasteryBackend:
             completed += 1
         return completed
 
-    def train_native(self, attempts: Sequence[AttemptResult]) -> int:
+    def train_native(
+        self,
+        attempts: Sequence[AttemptResult],
+        *,
+        rehearsal_fraction: float,
+    ) -> int:
         for attempt in attempts:
             if attempt.native_record:
                 self.scientist.replay.add(
                     attempt.native_record,
                     representation_id=attempt.node_id,
-                    objective_ratio=self.config.ratio,
-                )
-        return self._train(self.config.train_steps_per_batch)
+                objective_ratio=self.config.ratio,
+            )
+        if self.config.protocol_version == 1:
+            return self._train(self.config.train_steps_per_batch)
+        completed = 0
+        current = attempts[0].node_id if attempts else ""
+        for _ in range(self.config.train_steps_per_batch):
+            if self.scientist.replay.position_count < 1:
+                break
+            self.last_train_metrics = train_alphazero_step(
+                self.scientist.network,
+                self.scientist.optimizer,
+                self.scientist.replay,
+                min(self.config.train_batch_size, self.scientist.replay.position_count),
+                torch.device(self.scientist.config.train.device),
+                policy_value_success_only=True,
+                continual_replay=True,
+                replay_current_representation=current,
+                replay_rehearsal_representations=self.rehearsal_ids,
+                replay_rehearsal_fraction=rehearsal_fraction,
+                replay_positions_per_episode=4,
+            )
+            completed += 1
+        return completed
+
+    def retention_rate(self, *, simulations: int, seed: int) -> float | None:
+        if not self.rehearsal:
+            return None
+        solved = 0
+        for index, example in enumerate(self.rehearsal):
+            witness = example.witness
+            node = RepresentationNode.create(
+                root_id=f"retention-{index}",
+                word=witness.start.word,
+                strands=witness.start.strands,
+                crossing_distance=0,
+                semantic_path=(),
+                provenance={"source": example.source, "frozen_rehearsal": True},
+            )
+            result = self.attempt_batch(
+                [node],
+                witness.crossing_changes,
+                [seed + index * 1009],
+                simulations=simulations,
+            )[0]
+            solved += int(result.solved)
+        return solved / len(self.rehearsal)
 
     def distill(self, examples: Sequence[DistillationExample], max_steps: int) -> int:
         admitted = 0
@@ -948,6 +1594,7 @@ class ScientistMasteryBackend:
             "network": self.scientist.network.state_dict(),
             "optimizer": self.scientist.optimizer.state_dict(),
             "replay": self.scientist.replay,
+            "rehearsal_ids": sorted(self.rehearsal_ids),
             "source_checkpoint": str(self.scientist.checkpoint),
         }
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -974,6 +1621,7 @@ class ScientistMasteryBackend:
         self.scientist.network.load_state_dict(payload["network"])
         self.scientist.optimizer.load_state_dict(payload["optimizer"])
         self.scientist.replay = payload["replay"]
+        self.rehearsal_ids = set(payload.get("rehearsal_ids", self.rehearsal_ids))
 
 
 def load_distillation(path: Path | None) -> list[DistillationExample]:
@@ -1030,11 +1678,24 @@ def main() -> int:
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--distillation", type=Path)
+    parser.add_argument(
+        "--rehearsal-panel",
+        type=Path,
+        help="verified inherited witnesses used for replay and frozen retention probes",
+    )
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--steps", type=int, default=100)
     parser.add_argument("--parallel-searches", type=int, default=4)
     parser.add_argument("--torch-threads", type=int, default=4)
     parser.add_argument("--simulations", type=int, default=128)
+    parser.add_argument(
+        "--simulation-levels",
+        default="",
+        help="comma-separated paired MCTS doses; defaults to S,2S,4S",
+    )
+    parser.add_argument("--negative-confirmations", type=int, default=3)
+    parser.add_argument("--target-positive-fraction", type=float, default=0.5)
+    parser.add_argument("--strict-search-fraction", type=float, default=0.5)
     parser.add_argument("--action-horizon", type=int, default=128)
     parser.add_argument("--seed", type=int, default=20260815)
     parser.add_argument("--resume", action="store_true")
@@ -1047,18 +1708,25 @@ def main() -> int:
         if not state_path.exists() or not scientist_state_path.exists():
             raise ValueError("--resume requires state.json and scientist-state.pt.gz")
         saved = json.loads(state_path.read_text())
-        config = MasteryConfig(**saved["config"])
+        config = _saved_config(saved)
         if config.knot_name != args.knot:
             raise ValueError("saved mastery state belongs to a different knot")
     else:
+        simulation_levels = tuple(
+            int(value) for value in args.simulation_levels.split(",") if value.strip()
+        )
         config = MasteryConfig(
             **{
                 **asdict(base),
                 "parallel_searches": args.parallel_searches,
                 "torch_threads": args.torch_threads,
                 "simulations": args.simulations,
+                "simulation_levels": simulation_levels,
                 "move_allowance": args.action_horizon,
                 "seed": args.seed,
+                "negative_confirmations": args.negative_confirmations,
+                "target_positive_fraction": args.target_positive_fraction,
+                "strict_search_fraction": args.strict_search_fraction,
             }
         )
     torch.set_num_threads(config.torch_threads)
@@ -1080,8 +1748,9 @@ def main() -> int:
             f"{args.knot} needs {root.strands} strands but {args.scientist} supports "
             f"{scientist.config.game.max_strands}"
         )
-    backend = ScientistMasteryBackend(scientist, config)
     distillation = load_distillation(args.distillation)
+    rehearsal = load_distillation(args.rehearsal_panel)
+    backend = ScientistMasteryBackend(scientist, config, rehearsal=rehearsal)
     if args.resume:
         backend.restore(scientist_state_path)
         coordinator = MasteryCoordinator.from_saved(

@@ -2244,6 +2244,35 @@ def load_policy_value_state_dict(network: PolicyValueNet, state_dict: dict[str, 
         migrated_state[key] = padded
         expanded = True
 
+    # Raster policy heads enumerate the three shared local rewrites, two INSERT
+    # logits per generator, and CROSSING_CHANGE.  Increasing strand capacity
+    # only inserts fresh generator slots immediately before CROSSING_CHANGE.
+    # Preserve every old semantic action exactly and retain the target module's
+    # initialization for actions that did not exist in the parent.
+    for key in (
+        "positional.weight",
+        "positional.bias",
+        "invariant_positional.2.weight",
+        "invariant_positional.2.bias",
+    ):
+        source = migrated_state.get(key)
+        target = target_state.get(key)
+        if source is None or target is None or source.shape == target.shape:
+            continue
+        compatible = (
+            source.ndim == target.ndim
+            and target.shape[0] > source.shape[0]
+            and source.shape[1:] == target.shape[1:]
+            and source.shape[0] >= 2
+        )
+        if not compatible:
+            continue
+        widened = target.clone()
+        widened[: source.shape[0] - 1] = source[:-1]
+        widened[-1] = source[-1]
+        migrated_state[key] = widened
+        expanded = True
+
     # The repaired option controller adds an explicit head-cell summary between
     # the old mean/max pools and budget scalar. Preserve old adapter behavior by
     # inserting zero weights for that new summary and moving the budget column.

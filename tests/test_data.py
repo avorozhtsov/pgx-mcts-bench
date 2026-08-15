@@ -236,6 +236,28 @@ def test_continual_replay_balances_outcomes_and_new_old_successes() -> None:
     assert strata.count("ordinary-failure") == 4
 
 
+def test_continual_replay_can_raise_rehearsal_to_the_positive_half() -> None:
+    replay = ReplayBuffer(1_000, np.random.default_rng(31))
+    replay.add(_episode("current", 1.0), representation_id="current")
+    inherited = _episode("old", 1.0)
+    for position in inherited:
+        position.shared_witness = True
+    replay.add(inherited, representation_id="old")
+    replay.add(_episode("failed", 0.0), representation_id="failed")
+
+    batch = replay.sample_continual_positions(
+        32,
+        current_representation="current",
+        rehearsal_representations={"old"},
+        rehearsal_fraction=0.5,
+        positions_per_episode=4,
+    )
+
+    successes = [position for position in batch if position.solved > 0.5]
+    assert len(successes) == 16
+    assert {position.representation_id for position in successes} == {"old"}
+
+
 def test_native_solution_bank_survives_replay_eviction_and_returns_a_copy() -> None:
     replay = ReplayBuffer(3, np.random.default_rng(31))
     best = _solution("old", 10.0, 2.0, 3.0, shared=False)

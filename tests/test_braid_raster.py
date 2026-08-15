@@ -13,6 +13,7 @@ from pgx_mcts_bench.networks import (
     RasterWindowRepresentation,
     RoutedRasterResidualBlock,
     ScalableRasterSerialBraidNet,
+    load_policy_value_state_dict,
     make_braid_network,
 )
 from pgx_mcts_bench.serial_braid import SerialBraidGame
@@ -64,6 +65,57 @@ def test_serial_observation_appends_the_head_centred_raster() -> None:
     expected_letters = np.asarray([3, -1, 2, 1, -2, 3, -1], dtype=np.int32)
     expected = SerialBraidGame.braid_raster_planes(expected_letters, 4, 5)
     np.testing.assert_array_equal(raster, expected)
+
+
+def test_raster_checkpoint_capacity_migration_preserves_old_policy_parameters() -> None:
+    source_config = replace(
+        _config(5),
+        serial_raster="axial",
+        serial_raster_masked_norm=True,
+        serial_raster_identity_padding=True,
+    )
+    target_config = replace(source_config, max_strands=12)
+    model = ModelConfig(channels=16, residual_blocks=2)
+    source = make_braid_network(source_config, model).eval()
+    target = make_braid_network(target_config, model).eval()
+
+    assert load_policy_value_state_dict(target, source.state_dict())
+    source_state = source.state_dict()
+    target_state = target.state_dict()
+    torch.testing.assert_close(
+        target_state["positional.weight"][:11],
+        source_state["positional.weight"][:11],
+        rtol=0,
+        atol=0,
+    )
+    torch.testing.assert_close(
+        target_state["positional.weight"][-1],
+        source_state["positional.weight"][-1],
+        rtol=0,
+        atol=0,
+    )
+    torch.testing.assert_close(
+        target_state["positional.bias"][:11],
+        source_state["positional.bias"][:11],
+        rtol=0,
+        atol=0,
+    )
+    torch.testing.assert_close(
+        target_state["positional.bias"][-1],
+        source_state["positional.bias"][-1],
+        rtol=0,
+        atol=0,
+    )
+    for strands, config, network in (
+        (4, source_config, source),
+        (12, target_config, target),
+    ):
+        word = [1, -2, 3, -1, 2] if strands == 4 else list(range(1, 12))
+        observation = _tensor(make_game(config).from_word(word, strands=strands).observation)
+        with torch.no_grad():
+            policy, value = network(observation)
+        assert torch.isfinite(policy).all()
+        assert torch.isfinite(value).all()
 
 
 @pytest.mark.parametrize("identity_padding", [False, True])

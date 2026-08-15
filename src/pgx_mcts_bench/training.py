@@ -298,6 +298,7 @@ def train_alphazero_step(
     replay_max_position_uses: int = 0,
     continual_replay: bool = False,
     replay_rehearsal_representations: set[str] | None = None,
+    replay_rehearsal_fraction: float = 0.25,
 ) -> dict[str, float]:
     network.train()
     optimized_parameters = _optimizer_parameters(optimizer)
@@ -311,6 +312,7 @@ def train_alphazero_step(
             batch_size,
             current_representation=replay_current_representation,
             rehearsal_representations=replay_rehearsal_representations or set(),
+            rehearsal_fraction=replay_rehearsal_fraction,
             positions_per_episode=replay_positions_per_episode,
             max_position_uses=replay_max_position_uses,
         )

@@ -14,6 +14,7 @@ from pgx_mcts_bench.adaptive_scientists import (
     smallest_crossing_pool,
     softmax,
 )
+from pgx_mcts_bench.ladder import candidates
 from pgx_mcts_bench.training import upper_bound_cost_loss
 
 
@@ -71,3 +72,12 @@ def test_fixed_word_game_delegates_value_potential() -> None:
     )
     fixed = FixedWordGame(base, KnotItem("test", 1, (1,), 2))
     assert fixed.value_potential(3, 2) == 5.0
+
+
+def test_jones_strand12_scientist_is_an_explicit_capacity_child() -> None:
+    candidate = next(
+        value for value in candidates() if value.name == "raster-invariant-jones-12"
+    )
+    assert candidate.max_strands == 12
+    assert candidate.invariant_features == "jones"
+    assert candidate.invariant_fusion == "late"

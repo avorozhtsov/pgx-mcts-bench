@@ -85,7 +85,9 @@ rsync -a --delete --prune-empty-dirs \
 resume_files=$work_root/resume-files.txt
 ssh "${ssh_options[@]}" "$remote_host" \
   "cd '$remote_root' && find . -type f \
-    \( -name 'state.pt.gz' -o -path '*/checkpoints/*.pt' -o -path '*/frozen-checkpoints/*.pt' \) \
+    \( -name 'state.pt.gz' -o -name 'scientist-state.pt.gz' \
+       -o -path '*/checkpoints/*.pt' -o -path '*/frozen-checkpoints/*.pt' \) \
+    -readable \
     ! -path '*smoke*' ! -path '*invalidated*' ! -path '*archive*' -print" \
   | sed 's#^\./##' \
   | while IFS= read -r relative; do

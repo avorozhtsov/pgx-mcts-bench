@@ -153,6 +153,10 @@ class Candidate:
     weight_decay: float = 1e-4
     serial_window: int = 7
     serial_act_width: int = 1
+    # Capacity is part of the architecture identity so migrated scientists can
+    # coexist with their historical five-strand parents.
+    max_len: int = 48
+    max_strands: int = 5
     # 0 takes the bounded serial default of 64 native plies.
     simplify_budget: int = 0
     # () takes the default power-of-two stride set. `(w // 2,)` is the original
@@ -744,6 +748,38 @@ def raster_axial_capacity_arms() -> list[Candidate]:
     ]
 
 
+def strand12_arms() -> list[Candidate]:
+    """Function-preserving 12-strand children of admitted N=5 scientists.
+
+    These names identify explicit capacity migrations; they do not imply fresh
+    pretraining.  The scalable raster action head and invariant towers share
+    their learned tensors across strand capacities.
+    """
+    parents = {
+        candidate.name: candidate
+        for candidate in vnext_arms() + invariant_oracle_arms()
+    }
+    names = (
+        "raster-axial",
+        "cyclic-memory",
+        "strand-graph",
+        "raster-invariant-combined-dual",
+        "raster-invariant-jones",
+    )
+    return [
+        replace(
+            parents[name],
+            name=f"{name}-12",
+            rationale=(
+                f"12-strand capacity lift of {name}; migrated from its N=5 "
+                "checkpoint with semantic channel/action remapping"
+            ),
+            max_strands=12,
+        )
+        for name in names
+    ]
+
+
 def certified_development_arms() -> list[Candidate]:
     """Raster baseline with theorem-bounded search values, pending admission."""
     raster = next(candidate for candidate in vnext_arms() if candidate.name == "raster-axial")
@@ -1006,6 +1042,7 @@ def candidates() -> list[Candidate]:
         + invariant_oracle_mutation_arms()
         + invariant_oracle_depth_dose_arms()
         + vnext_arms()
+        + strand12_arms()
         + distilled_arms()
         + ensemble_arms()
     )
@@ -1195,8 +1232,8 @@ def _config(
     selfplay_games: int = 8,
 ):
     game = BraidGameConfig(
-        max_len=48,
-        max_strands=5,
+        max_len=candidate.max_len,
+        max_strands=candidate.max_strands,
         scramble_budget=1,
         simplify_budget=(candidate.simplify_budget or 64),
         allow_crossing_change=True,
