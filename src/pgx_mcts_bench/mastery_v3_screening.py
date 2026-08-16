@@ -38,6 +38,28 @@ def _upper(row: dict[str, Any]) -> int:
     return int(value)
 
 
+def _proof_distillation_gate(
+    checkpoint: Path, candidate: str, curriculum_sha256: str
+) -> dict[str, Any]:
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    report = payload.get("mastery_v3_proof_distillation")
+    if not isinstance(report, dict):
+        raise ValueError(f"{candidate} checkpoint has no proof-distillation report")
+    if report.get("schema") != "mastery-v3-proof-distillation-v1":
+        raise ValueError(f"{candidate} checkpoint has an unsupported proof-distillation schema")
+    if report.get("candidate") != candidate:
+        raise ValueError(f"{candidate} checkpoint proof-distillation identity differs")
+    if report.get("curriculum_sha256") != curriculum_sha256:
+        raise ValueError(f"{candidate} proof distillation used a different curriculum")
+    if report.get("status") != "passed" or int(report.get("unsafe_labels", 1)) != 0:
+        raise ValueError(f"{candidate} proof-distillation audit did not pass")
+    if report.get("training_dose_complete") is not True:
+        raise ValueError(f"{candidate} proof-distillation dose is incomplete")
+    if report.get("operational_p_solve_trained") is not False:
+        raise ValueError(f"{candidate} proof distillation contaminated operational p_solve")
+    return report
+
+
 def _plain_source(path: Path, directory: Path) -> Path:
     if path.suffix != ".gz":
         return path
@@ -219,6 +241,18 @@ def run_screening(
     benchmark_simulations: int = 32,
 ) -> dict[str, Any]:
     curriculum = json.loads(curriculum_path.read_text())
+    curriculum_sha256 = file_sha256(curriculum_path)
+    proof_reports = {
+        name: _proof_distillation_gate(checkpoint, name, curriculum_sha256)
+        for name, checkpoint in zip(
+            CANDIDATES, (deep_checkpoint, graph_checkpoint), strict=True
+        )
+    }
+    evidence_hashes = {
+        str(report["evidence_snapshot_sha256"]) for report in proof_reports.values()
+    }
+    if len(evidence_hashes) != 1:
+        raise ValueError("candidate proof distillation used different evidence snapshots")
     rows = list(curriculum["stages"]["screening"]["rows"])
     seeds = [int(seed) for seed in curriculum["paired_screening_seeds"]]
     output.mkdir(parents=True, exist_ok=True)
@@ -342,13 +376,14 @@ def run_screening(
                 "gpu_seconds": gpu_seconds,
             },
             "coordinator": coordinator_stats,
+            "proof_distillation": proof_reports[name],
         }
         _atomic_json(output / f"{name}-report.json", reports[name])
 
     report = {
         "schema": "mastery-v3-paired-screening-v1",
         "curriculum": str(curriculum_path.resolve()),
-        "curriculum_sha256": file_sha256(curriculum_path),
+        "curriculum_sha256": curriculum_sha256,
         "source_checkpoint": str(source_checkpoint.resolve()),
         "source_checkpoint_sha256": file_sha256(source_checkpoint),
         "simulations": simulations,

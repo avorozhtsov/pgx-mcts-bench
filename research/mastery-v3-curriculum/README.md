@@ -1,7 +1,7 @@
 # Controlled mastery-v3 curriculum
 
 This directory registers the agreed three-track program and its isolated v3 implementation.
-Migration, equivalence pretraining, and paired 20-knot screening are authorized; full-240 remains
+Migration, equivalence pretraining, proof-aware distillation, and paired 20-knot screening are authorized; full-240 remains
 mechanically forbidden until the registered audit returns exactly one winner. No live v2, Q4000,
 DKT72, or B* experiment is mutated.
 
@@ -64,6 +64,24 @@ PYTHONPATH=src python scripts/pretrain_mastery_v3.py \
   --output /isolated/cyclic-memory-deep-v3-pretrained.pt
 ```
 
+Then run proof-aware distillation from the same frozen dataset for both arms:
+
+```bash
+PYTHONPATH=src python scripts/distill_mastery_v3.py \
+  --checkpoint /isolated/cyclic-memory-deep-v3-pretrained.pt \
+  --curriculum research/mastery-v3-curriculum/curriculum.json \
+  --evidence-snapshot /path/to/best-solutions-pool-20260815T2000Z.json \
+  --candidate cyclic-memory-deep-v3 \
+  --output /isolated/cyclic-memory-deep-v3-distilled.pt
+```
+
+The feasibility head receives negative labels only below `ratio * certified_lower_bound`.
+Positive budget and policy labels require a replay-verified witness from the exact starting braid
+and use its full `ratio * crossing_changes + moves` cost. The uncertified interval is masked.
+Separate ordinal and lower/upper heads learn the mathematical bounds; the operational `p_solve`
+head remains untouched. The v3-only budget feature combines the existing fixed-cap linear channel
+with a bounded `log1p` normalization so small L10 and L1000 budgets retain usable scale.
+
 `pgx_mcts_bench.gpu_inference.PersistentInferenceCoordinator` is the long-lived accelerator
 worker for CPU MCTS actors. It uses FIFO dynamic batches, registered length/strand/dose buckets,
 BF16 autocast on CUDA, per-request deadlines, and an MCTS-compatible blocking proxy. Its measured
@@ -75,8 +93,8 @@ bounds for retention, measures an end-to-end CPU/GPU probe, and writes a fail-cl
 PYTHONPATH=src python scripts/run_mastery_v3_screening.py \
   --curriculum research/mastery-v3-curriculum/curriculum.json \
   --source-checkpoint /isolated/parent-scientist-state.pt.gz \
-  --deep-checkpoint /isolated/cyclic-memory-deep-v3-pretrained.pt \
-  --graph-checkpoint /isolated/cyclic-graph-dual-v3-pretrained.pt \
+  --deep-checkpoint /isolated/cyclic-memory-deep-v3-distilled.pt \
+  --graph-checkpoint /isolated/cyclic-graph-dual-v3-distilled.pt \
   --output /isolated/screening
 ```
 

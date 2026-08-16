@@ -277,7 +277,12 @@ def build_curriculum(
             "migration_report_required": True,
             "persistent_inference_required_for_gpu_gate": True,
             "launch_authorized": {
-                "stages": ["migration", "pretraining", "paired-screening-20"],
+                "stages": [
+                    "migration",
+                    "pretraining",
+                    "proof-distillation",
+                    "paired-screening-20",
+                ],
                 "full_240": False,
             },
         },
@@ -297,6 +302,18 @@ def build_curriculum(
             "deterministic_seed": seed + 1,
             "replayable_transformations_required": True,
             "live_evidence_reading": False,
+        },
+        "proof_distillation": {
+            "kind": "certified-bounds-and-exact-witnesses",
+            "implementation": "pgx_mcts_bench.mastery_v3_distill",
+            "ratios": [10, 1000],
+            "minimum_training_steps": 500,
+            "samples_per_side": 4,
+            "negative_label": "B < ratio * certified_lower_bound",
+            "positive_label": "B >= ratio * replayed_crossing_changes + replayed_moves",
+            "ambiguous_interval_masked": True,
+            "operational_p_solve_is_separate": True,
+            "screening_requires_passed_report": True,
         },
         "stages": stages,
         "promotion": {

@@ -29,6 +29,19 @@ V3_ENCODER_WIDTH = 128
 V3_RESIDUAL_BLOCKS = 10
 V3_DILATIONS = (1, 2, 4, 8, 16, 1, 2, 4, 8, 16)
 V3_ENCODERS = {"cyclic-memory-deep-v3", "cyclic-graph-dual-v3"}
+V3_ORDINAL_MAX_U = 12
+
+
+@dataclass(frozen=True)
+class V3ProofDiagnostics:
+    """Proof-supervised outputs kept separate from operational solve odds."""
+
+    feasibility_logit: Tensor
+    lower_bound: Tensor
+    upper_bound: Tensor
+    ordinal_logits: Tensor
+    budget_linear: Tensor
+    budget_log: Tensor
 
 
 @dataclass(frozen=True)
@@ -132,6 +145,19 @@ class CyclicMemoryDeepV3(BraidPolicyValueNet):
         members = model.auxiliary_value_members
         self.solve_residual = _zero_linear(nn.Linear(features, members))
         self.cost_residual = _zero_linear(nn.Linear(features, 2 * members))
+        self.budget_encoder = nn.Sequential(
+            nn.Linear(2, self.width),
+            nn.SiLU(),
+            nn.Linear(self.width, self.width),
+            nn.SiLU(),
+        )
+        proof_features = features + self.width
+        self.feasibility_norm = nn.LayerNorm(proof_features)
+        self.feasibility_head = _zero_linear(nn.Linear(proof_features, 1))
+        self.bound_head = _zero_linear(nn.Linear(features, 2))
+        self.ordinal_head = _zero_linear(
+            nn.Linear(features, V3_ORDINAL_MAX_U + 1)
+        )
         self.auxiliary_members = members
         self._set_auxiliary_training_controls(game, model)
 
@@ -171,6 +197,51 @@ class CyclicMemoryDeepV3(BraidPolicyValueNet):
         mean = hidden.sum(dim=2) / count
         maximum = (hidden + (occupied - 1.0) * 1e4).amax(dim=2)
         return self.feature_norm(torch.cat([mean, maximum], dim=1))
+
+    def normalized_budget_features(self, observation: Tensor) -> Tensor:
+        """Return bounded linear and log-scaled remaining-L features.
+
+        The legacy observation channel remains unchanged for exact checkpoint
+        migration.  The logarithmic feature is v3-only and makes small L10 and
+        L1000 budgets numerically visible even against the fixed global cap.
+        """
+
+        if self.objective_budget_channel is None:
+            raise ValueError("mastery-v3 proof heads require objective_budget_channel")
+        linear = observation[:, self.objective_budget_channel, 0, 0].clamp(0.0, 1.0)
+        ratio = torch.exp(
+            5.0 * observation[:, self.auxiliary_ratio_channel, 0, 0]
+        )
+        global_cap = (ratio + 1.0) * self.auxiliary_budget
+        absolute = linear * global_cap
+        logarithmic = torch.log1p(absolute) / torch.log1p(global_cap).clamp(min=1e-6)
+        return torch.stack([linear, logarithmic.clamp(0.0, 1.0)], dim=1)
+
+    def _proof_representation(self, observation: Tensor) -> Tensor:
+        return self.encode_v3(observation)
+
+    def proof_diagnostics(self, observation: Tensor) -> V3ProofDiagnostics:
+        """Predict feasibility and certified-u bounds without redefining p_solve."""
+
+        budget = self.normalized_budget_features(observation)
+        representation = self._proof_representation(observation)
+        feasibility_features = self.feasibility_norm(
+            torch.cat(
+                [representation, self.budget_encoder(budget)],
+                dim=1,
+            )
+        )
+        bounds = F.softplus(self.bound_head(representation))
+        lower = bounds[:, 0]
+        upper = lower + bounds[:, 1]
+        return V3ProofDiagnostics(
+            feasibility_logit=self.feasibility_head(feasibility_features).squeeze(-1),
+            lower_bound=lower,
+            upper_bound=upper,
+            ordinal_logits=self.ordinal_head(representation),
+            budget_linear=budget[:, 0],
+            budget_log=budget[:, 1],
+        )
 
     def _deltas(
         self, observation: Tensor
@@ -393,6 +464,9 @@ class CyclicGraphDualV3(CyclicMemoryDeepV3):
             ),
             diagnostics,
         )
+
+    def _proof_representation(self, observation: Tensor) -> Tensor:
+        return self._graph_features(observation)[0]
 
     def forward(self, observation: Tensor) -> tuple[Tensor, Tensor]:
         policy, value = super().forward(observation)

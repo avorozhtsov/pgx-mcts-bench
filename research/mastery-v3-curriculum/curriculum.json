@@ -17,6 +17,7 @@
         "stages": [
           "migration",
           "pretraining",
+          "proof-distillation",
           "paired-screening-20"
         ]
       },
@@ -41,6 +42,21 @@
     "live_evidence_reading": false,
     "replayable_transformations_required": true,
     "source": "pinned evidence snapshot plus registered Q representations"
+  },
+  "proof_distillation": {
+    "ambiguous_interval_masked": true,
+    "implementation": "pgx_mcts_bench.mastery_v3_distill",
+    "kind": "certified-bounds-and-exact-witnesses",
+    "minimum_training_steps": 500,
+    "negative_label": "B < ratio * certified_lower_bound",
+    "operational_p_solve_is_separate": true,
+    "positive_label": "B >= ratio * replayed_crossing_changes + replayed_moves",
+    "ratios": [
+      10,
+      1000
+    ],
+    "samples_per_side": 4,
+    "screening_requires_passed_report": true
   },
   "promotion": {
     "capacity_exceptions_allowed": 0,

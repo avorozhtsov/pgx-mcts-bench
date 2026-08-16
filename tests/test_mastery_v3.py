@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -75,6 +76,25 @@ def test_safe_candidate_meets_registered_size_and_depth(parent) -> None:
     assert [block.dilation for block in network.blocks] == [1, 2, 4, 8, 16] * 2
     assert all(torch.count_nonzero(block.layer_scale) == 0 for block in network.blocks)
     assert 1_500_000 <= network.parameter_report()["total"] <= 3_000_000
+
+
+def test_v3_proof_heads_use_bounded_linear_and_log_budget(parent) -> None:
+    candidate = next(
+        arm for arm in mastery_v3_arms() if arm.name == "cyclic-memory-deep-v3"
+    )
+    config = _config(candidate, ("R(3,12)#0", 0), 7, "cpu", selfplay_games=1)
+    config = replace(config, game=replace(config.game, objective_budget_channel=True))
+    network = make_braid_network(config.game, config.model).eval()
+    observation = make_game(config.game).from_word(
+        [1, -2, 1], 3, math.log(1000.0)
+    ).observation
+    observation[..., -1] = 0.01
+    diagnostics = network.proof_diagnostics(_tensor(observation))
+    assert diagnostics.feasibility_logit.shape == (1,)
+    assert diagnostics.lower_bound.shape == (1,)
+    assert diagnostics.upper_bound.shape == (1,)
+    assert diagnostics.ordinal_logits.shape == (1, 13)
+    assert 0.0 < diagnostics.budget_linear.item() < diagnostics.budget_log.item() < 1.0
 
 
 def test_graph_candidate_exposes_12_strand_shared_heads(parent) -> None:

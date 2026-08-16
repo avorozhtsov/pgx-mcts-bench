@@ -86,6 +86,13 @@ def test_build_curriculum_is_disjoint_and_fills_strand_eight(tmp_path: Path) -> 
     assert result["sources"]["dkt72_exclusion_panel"]["q4000_identity_overlap_excluded"] == [
         "heavy-6-0"
     ]
+    assert result["implementation"]["launch_authorized"]["stages"] == [
+        "migration",
+        "pretraining",
+        "proof-distillation",
+        "paired-screening-20",
+    ]
+    assert result["proof_distillation"]["operational_p_solve_is_separate"] is True
 
 
 def _passing_arm(curriculum: dict[str, object], *, strict: int, capped: float) -> dict[str, object]:
