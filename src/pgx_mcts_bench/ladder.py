@@ -780,6 +780,50 @@ def strand12_arms() -> list[Candidate]:
     ]
 
 
+def mastery_v3_arms() -> list[Candidate]:
+    """Registered 12-strand children for the controlled mastery-v3 screen.
+
+    These entries make migrated checkpoints loadable by the ordinary scientist
+    machinery.  They do not authorize a launch; the immutable curriculum and
+    promotion audit remain the controlling protocol.
+    """
+
+    parent = next(
+        candidate for candidate in strand12_arms() if candidate.name == "cyclic-memory-12"
+    )
+    common = {
+        "serial_encoder_states": 128,
+        "residual_blocks": 10,
+        "batch_size": 256,
+        "learning_rate": 2.5e-4,
+        "weight_decay": 5e-5,
+    }
+    return [
+        replace(
+            parent,
+            name="cyclic-memory-deep-v3",
+            rationale=(
+                "exact cyclic-memory-12 parent plus a 128x10 zero-LayerScale "
+                "cyclic residual tower"
+            ),
+            serial_encoder="cyclic-memory-deep-v3",
+            **common,
+        ),
+        replace(
+            parent,
+            name="cyclic-graph-dual-v3",
+            rationale=(
+                "exact cyclic-memory-12 parent plus bounded strand-graph routing "
+                "and zero-initialized combined-invariant conditioning"
+            ),
+            serial_encoder="cyclic-graph-dual-v3",
+            invariant_features="combined",
+            invariant_fusion="dual",
+            **common,
+        ),
+    ]
+
+
 def certified_development_arms() -> list[Candidate]:
     """Raster baseline with theorem-bounded search values, pending admission."""
     raster = next(candidate for candidate in vnext_arms() if candidate.name == "raster-axial")
@@ -1043,6 +1087,7 @@ def candidates() -> list[Candidate]:
         + invariant_oracle_depth_dose_arms()
         + vnext_arms()
         + strand12_arms()
+        + mastery_v3_arms()
         + distilled_arms()
         + ensemble_arms()
     )

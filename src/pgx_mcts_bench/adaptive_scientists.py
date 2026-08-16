@@ -34,6 +34,8 @@ BUDGET_PROTOTYPES = (
     "strand-graph-12",
     "raster-invariant-combined-dual-12",
     "raster-invariant-jones-12",
+    "cyclic-memory-deep-v3",
+    "cyclic-graph-dual-v3",
 )
 BUDGET_LEARNING_RATES = {
     "s-window-128": 2.5e-4,
@@ -51,6 +53,8 @@ BUDGET_LEARNING_RATES = {
     "strand-graph-12": 1.0e-4,
     "raster-invariant-combined-dual-12": 1.0e-4,
     "raster-invariant-jones-12": 1.0e-4,
+    "cyclic-memory-deep-v3": 2.5e-4,
+    "cyclic-graph-dual-v3": 2.5e-4,
 }
 BUDGET_AUXILIARY_LEARNING_RATES = {
     "s-window-128": 2.5e-4,
@@ -68,6 +72,8 @@ BUDGET_AUXILIARY_LEARNING_RATES = {
     "strand-graph-12": 5.0e-4,
     "raster-invariant-combined-dual-12": 5.0e-4,
     "raster-invariant-jones-12": 5.0e-4,
+    "cyclic-memory-deep-v3": 5.0e-4,
+    "cyclic-graph-dual-v3": 5.0e-4,
 }
 BUDGET_PRESERVATION_WEIGHTS = {
     "s-window-128": 1.0,
@@ -85,6 +91,8 @@ BUDGET_PRESERVATION_WEIGHTS = {
     "strand-graph-12": 5.0,
     "raster-invariant-combined-dual-12": 5.0,
     "raster-invariant-jones-12": 5.0,
+    "cyclic-memory-deep-v3": 5.0,
+    "cyclic-graph-dual-v3": 5.0,
 }
 BUDGET_MONOTONIC_WEIGHTS = {
     "s-window-128": 0.25,
@@ -102,6 +110,8 @@ BUDGET_MONOTONIC_WEIGHTS = {
     "strand-graph-12": 1.0,
     "raster-invariant-combined-dual-12": 1.0,
     "raster-invariant-jones-12": 1.0,
+    "cyclic-memory-deep-v3": 1.0,
+    "cyclic-graph-dual-v3": 1.0,
 }
 
 
@@ -430,7 +440,10 @@ def load_scientist(
     payload = torch.load(checkpoint, map_location=device, weights_only=False)
     state = payload.get("network", payload)
     factorized = any(
-        key.startswith("auxiliary.") or key.startswith("window.auxiliary.") for key in state
+        key.startswith("auxiliary.")
+        or key.startswith("window.auxiliary.")
+        or ".auxiliary." in key
+        for key in state
     )
     if require_factorized and not factorized:
         raise ValueError(f"{checkpoint} has no trained factorized value heads")

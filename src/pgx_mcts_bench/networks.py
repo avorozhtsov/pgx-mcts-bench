@@ -2211,6 +2211,16 @@ def load_policy_value_state_dict(network: PolicyValueNet, state_dict: dict[str, 
         key.startswith("option_policy_gate.") for key in migrated_state
     ):
         network.attach_option_policy_gate()
+    nested_parent = getattr(network, "parent", None)
+    if isinstance(nested_parent, BraidPolicyValueNet):
+        if nested_parent.option_policy_adapter is None and any(
+            key.startswith("parent.option_policy_adapter.") for key in migrated_state
+        ):
+            nested_parent.attach_option_policy_adapter()
+        if nested_parent.option_policy_gate is None and any(
+            key.startswith("parent.option_policy_gate.") for key in migrated_state
+        ):
+            nested_parent.attach_option_policy_gate()
     target_state = network.state_dict()
     expandable_inputs = {
         "representation.net.0.weight",
@@ -2334,6 +2344,12 @@ def load_policy_value_state_dict(network: PolicyValueNet, state_dict: dict[str, 
 def make_braid_network(game: BraidGameConfig, model: ModelConfig) -> PolicyValueNet:
     if game.serial_ensemble:
         return TriadBraidNet(game, model)
+    if game.serial_encoder in {"cyclic-memory-deep-v3", "cyclic-graph-dual-v3"}:
+        # Lazy import avoids making the base architecture module depend on the
+        # opt-in experimental registry.
+        from pgx_mcts_bench.mastery_v3 import make_mastery_v3_network
+
+        return make_mastery_v3_network(game, model)
     if game.serial_encoder == "cyclic-memory":
         return CyclicMemoryBraidNet(game, model)
     if game.serial_encoder in {"strand-graph", "strand-graph-local"}:

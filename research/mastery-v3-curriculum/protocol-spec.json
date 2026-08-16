@@ -1,0 +1,76 @@
+{
+  "schema": "mastery-v3-controlled-program-v1",
+  "status": "authorized-staged-launch",
+  "tracks": {
+    "architecture": {
+      "control": "high-combined-dual-v2-frozen",
+      "candidates": {
+        "cyclic-memory-deep-v3": {
+          "parent": "exact high-cyclic-memory-v2 checkpoint",
+          "channels": 128,
+          "residual_blocks": 10,
+          "dilation_cycle": [1, 2, 4, 8, 16],
+          "residual_gate": "zero-initialized LayerScale",
+          "parameter_target": "1.5M-3.0M",
+          "migration": "function-preserving"
+        },
+        "cyclic-graph-dual-v3": {
+          "parent": "exact high-cyclic-memory-v2 checkpoint",
+          "branches": [
+            "cyclic-memory",
+            "explicit-strand-graph",
+            "zero-initialized-combined-invariant-conditioning"
+          ],
+          "policy": "shared row-pair policy through 12 strands",
+          "heads": ["policy", "value", "p-solve", "invalid"]
+        }
+      }
+    },
+    "gpu_skm": {
+      "refill_lanes": [32, 128],
+      "actors": "CPU",
+      "inference": "persistent GPU coordinator with length and strand bucketing",
+      "learner_batch_range": [256, 1024],
+      "learner_dtype": "BF16",
+      "deterministic_per_lane_seeds": true,
+      "durable_attempt_journals": true,
+      "explicit_deadlines": true,
+      "end_to_end_speedup_gate": 5.0,
+      "virtual_loss": "separate paired experiment"
+    },
+    "lineages": {
+      "safe": "function-preserving cyclic-memory deepening",
+      "ambitious": "new cyclic-graph-dual architecture; pretraining required before full-240"
+    }
+  },
+  "curriculum": [
+    "function-preserving migration audit",
+    "equivalence and self-supervised pretraining with replayable provenance",
+    "10 identity-disjoint simple-knot adaptation rows",
+    "28 heavy-capacity rows: four per strand count 6 through 12",
+    "frozen 20-knot screening block with two paired seeds",
+    "exactly one audited winner may advance to full-240"
+  ],
+  "gates": {
+    "migration_max_abs_error": 1e-6,
+    "screening_retention_minimum": 0.9,
+    "retention_safety_floor_by_strand": 0.8,
+    "capacity_exceptions_allowed": 0,
+    "strict_or_genuine_improvement_required": true,
+    "common_identity_and_representation_comparison": true,
+    "evidence_per_cpu_or_gpu_second_required": true,
+    "gpu_end_to_end_speedup_minimum": 5.0
+  },
+  "launch_authorization": {
+    "allowed": ["migration", "pretraining", "paired-screening-20"],
+    "full_240": false,
+    "full_240_guard": "registered audit must pass and select exactly one winner"
+  },
+  "immutability": {
+    "pinned_evidence_snapshot": "best-solutions-pool-20260815T2000Z.json",
+    "live_sharing": false,
+    "active_v2_q_dkt_and_bstar_protocols_untouched": true,
+    "dkt72_outcomes_blinded": true,
+    "dkt72_identity_and_representation_overlap": 0
+  }
+}

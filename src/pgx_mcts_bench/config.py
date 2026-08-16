@@ -226,8 +226,16 @@ class BraidGameConfig:
         invariant_feature_size(self.invariant_features)
         if self.invariant_fusion not in {"late", "film", "dual"}:
             raise ValueError(f"unknown invariant fusion {self.invariant_fusion!r}")
-        if self.invariant_features and not self.serial_raster:
-            raise ValueError("invariant oracle features currently require a raster scientist")
+        invariant_serial_encoders = {"cyclic-graph-dual-v3"}
+        if (
+            self.invariant_features
+            and not self.serial_raster
+            and self.serial_encoder not in invariant_serial_encoders
+        ):
+            raise ValueError(
+                "invariant oracle features require a raster scientist or a registered "
+                "invariant-aware serial encoder"
+            )
 
     def to_braid_config(self):
         from rf_knots.config import BraidConfig

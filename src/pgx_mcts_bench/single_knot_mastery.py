@@ -50,6 +50,10 @@ from pgx_mcts_bench.collaborative_scientists import (
 )
 from pgx_mcts_bench.data import GameRecord, Position
 from pgx_mcts_bench.game import make_game
+from pgx_mcts_bench.gpu_inference import (
+    CoordinatedPolicyValueNet,
+    PersistentInferenceCoordinator,
+)
 from pgx_mcts_bench.search import NeuralMCTS
 from pgx_mcts_bench.training import train_alphazero_step
 
@@ -1211,6 +1215,8 @@ class ScientistMasteryBackend:
         config: MasteryConfig,
         *,
         rehearsal: Sequence[DistillationExample] = (),
+        inference_coordinator: PersistentInferenceCoordinator | None = None,
+        inference_timeout_seconds: float | None = None,
     ) -> None:
         if not scientist.prediction_source.startswith("factorized"):
             raise ValueError("single-knot mastery requires a trained factorized p-head")
@@ -1228,6 +1234,8 @@ class ScientistMasteryBackend:
         self.config = config
         self.spec = scientist.game.config._spec
         self.rehearsal = tuple(rehearsal)
+        self.inference_coordinator = inference_coordinator
+        self.inference_timeout_seconds = inference_timeout_seconds
         self.rehearsal_ids: set[str] = set()
         self.last_train_metrics: dict[str, float] = {}
         self._seed_rehearsal()
@@ -1307,9 +1315,13 @@ class ScientistMasteryBackend:
             return [NodeScore(0.0, float("inf"), float("inf")) for _ in nodes]
         device = torch.device(self.scientist.config.train.device)
         self.scientist.network.eval()
-        _, _, auxiliary = self.scientist.network.forward_with_auxiliary(
-            _observation_tensor(active, device)
-        )
+        tensor = _observation_tensor(active, device)
+        if self.inference_coordinator is None:
+            _, _, auxiliary = self.scientist.network.forward_with_auxiliary(tensor)
+        else:
+            _, _, auxiliary = self.inference_coordinator.infer(
+                tensor, mode="auxiliary"
+            )
         if auxiliary is None:
             raise ValueError("checkpoint has no factorized auxiliary outputs")
         solve_logits, crossings, moves = auxiliary
@@ -1366,9 +1378,18 @@ class ScientistMasteryBackend:
                 "simulations": int(simulations or self.config.simulations),
             }
         )
+        inference_network = (
+            self.scientist.network
+            if self.inference_coordinator is None
+            else CoordinatedPolicyValueNet(
+                self.inference_coordinator,
+                dose=int(simulations or self.config.simulations),
+                timeout=self.inference_timeout_seconds,
+            )
+        )
         search = NeuralMCTS(
             fixed_games[0],
-            self.scientist.network,
+            inference_network,
             search_config,
             self.scientist.config.train.device,
         )
