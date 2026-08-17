@@ -28,6 +28,7 @@ import torch
 from pgx_mcts_bench.adaptive_scientists import FixedWordGame, KnotItem, load_scientist
 from pgx_mcts_bench.collaboration_eval import _evaluation_records, _evaluation_tasks
 from pgx_mcts_bench.collaborative_scientists import (
+    BankItem,
     _bank_from_payload,
     _json_hash,
     _replay_representation_embedding,
@@ -85,6 +86,27 @@ class DonationDoseDecision:
     dose: int
     healthy_streak: int
     reason: str
+
+
+@dataclass(frozen=True)
+class _RetentionRepresentation:
+    """A braid presentation with its protocol-stable representation identity."""
+
+    id: str
+    knot: KnotItem
+
+
+def _retention_representations(
+    items: list[KnotItem] | list[BankItem],
+) -> list[_RetentionRepresentation]:
+    return [
+        (
+            _RetentionRepresentation(item.id, item.knot)
+            if isinstance(item, BankItem)
+            else _RetentionRepresentation(item.name, item)
+        )
+        for item in items
+    ]
 
 
 def adapt_donation_dose(
@@ -575,7 +597,7 @@ def _single_evaluation_cell(
 
 def _retention_summary(
     scientist: Any,
-    knots: list[KnotItem],
+    items: list[KnotItem] | list[BankItem],
     *,
     ratios: tuple[float, ...],
     simulations: int,
@@ -583,41 +605,41 @@ def _retention_summary(
     identity_indices: dict[str, int] | None = None,
     add_root_noise: bool = True,
 ) -> dict[str, Any]:
-    cells = {}
+    representations = _retention_representations(items)
     solved = 0
     capped = 0.0
-    cells = {knot.name: {} for knot in knots}
+    cells = {item.id: {} for item in representations}
     retention_batch_size = 16
     for ratio_index, ratio in enumerate(ratios):
-        for start in range(0, len(knots), retention_batch_size):
-            batch = knots[start : start + retention_batch_size]
+        for start in range(0, len(representations), retention_batch_size):
+            batch = representations[start : start + retention_batch_size]
             batch_seeds = [
                 seed
                 + ratio_index * 10_000
-                + (identity_indices[knot.name] if identity_indices is not None else start + offset)
+                + (identity_indices[item.id] if identity_indices is not None else start + offset)
                 * 100_000
-                for offset, knot in enumerate(batch)
+                for offset, item in enumerate(batch)
             ]
             evaluated = _evaluation_tasks(
                 scientist,
-                batch,
+                [item.knot for item in batch],
                 ratio,
                 simulations,
                 batch_seeds,
                 add_root_noise=add_root_noise,
             )
-            for knot, (verified, measured) in zip(batch, evaluated, strict=True):
-                cells[knot.name][str(ratio)] = _single_evaluation_cell(ratio, verified, measured)
-    for knot in knots:
+            for item, (verified, measured) in zip(batch, evaluated, strict=True):
+                cells[item.id][str(ratio)] = _single_evaluation_cell(ratio, verified, measured)
+    for item in representations:
         for ratio in ratios:
-            row = cells[knot.name][str(ratio)]
+            row = cells[item.id][str(ratio)]
             solved += int(row["best_objective"] is not None)
             failure = ratio * 20.0 + int(scientist.config.game.simplify_budget)
             capped += min(
                 failure,
                 float(row["best_objective"]) if row["best_objective"] is not None else failure,
             )
-    attempts = len(knots) * len(ratios)
+    attempts = len(representations) * len(ratios)
     return {
         "attempts": attempts,
         "solved": solved,
@@ -629,20 +651,24 @@ def _retention_summary(
 
 
 def _rehearsal_priority(
-    knots: list[KnotItem], retention: dict[str, Any], ratios: tuple[float, ...]
-) -> list[KnotItem]:
+    items: list[KnotItem] | list[BankItem],
+    retention: dict[str, Any],
+    ratios: tuple[float, ...],
+) -> list[_RetentionRepresentation]:
     """Put failed and expensive retained tasks before exposure balancing."""
 
-    def key(knot: KnotItem) -> tuple[int, float, str]:
-        cells = retention["cells"][knot.name]
+    representations = _retention_representations(items)
+
+    def key(item: _RetentionRepresentation) -> tuple[int, float, str]:
+        cells = retention["cells"][item.id]
         failures = sum(cells[str(ratio)]["best_objective"] is None for ratio in ratios)
         cost = 0.0
         for ratio in ratios:
             objective = cells[str(ratio)]["best_objective"]
             cost += float(objective) if objective is not None else ratio * 20.0 + 128.0
-        return (-failures, -cost, knot.name)
+        return (-failures, -cost, item.id)
 
-    return sorted(knots, key=key)
+    return sorted(representations, key=key)
 
 
 def _save_state(path: Path, payload: dict[str, Any]) -> None:
@@ -741,23 +767,25 @@ def _native_witnesses(
 
 def _portfolio_summary(
     summaries: dict[str, dict[str, Any]],
-    knots: list[KnotItem],
+    items: list[KnotItem] | list[BankItem],
     ratios: tuple[float, ...],
     *,
     action_horizon: int,
 ) -> dict[str, Any]:
     """Take the best paired retention result over the scientist roster."""
+    representations = _retention_representations(items)
     cells: dict[str, Any] = {}
     solved = 0
     capped_cost = 0.0
     objectives = {
-        str(ratio): {"attempts": len(knots), "solved": 0, "capped_cost": 0.0} for ratio in ratios
+        str(ratio): {"attempts": len(representations), "solved": 0, "capped_cost": 0.0}
+        for ratio in ratios
     }
-    for knot in knots:
+    for item in representations:
         for ratio in ratios:
             candidates = []
             for scientist, summary in summaries.items():
-                objective = summary["cells"][knot.name][str(ratio)]["best_objective"]
+                objective = summary["cells"][item.id][str(ratio)]["best_objective"]
                 if objective is not None:
                     candidates.append((float(objective), scientist))
             failure = ratio * 20.0 + action_horizon
@@ -767,8 +795,8 @@ def _portfolio_summary(
                 capped_cost += min(failure, objective)
                 objectives[str(ratio)]["solved"] += 1
                 objectives[str(ratio)]["capped_cost"] += min(failure, objective)
-                cells[f"{knot.name}|{ratio:g}"] = {
-                    "representation": knot.name,
+                cells[f"{item.id}|{ratio:g}"] = {
+                    "representation": item.id,
                     "ratio": ratio,
                     "solved": True,
                     "objective": objective,
@@ -777,14 +805,14 @@ def _portfolio_summary(
             else:
                 capped_cost += failure
                 objectives[str(ratio)]["capped_cost"] += failure
-                cells[f"{knot.name}|{ratio:g}"] = {
-                    "representation": knot.name,
+                cells[f"{item.id}|{ratio:g}"] = {
+                    "representation": item.id,
                     "ratio": ratio,
                     "solved": False,
                     "objective": failure,
                     "scientist": None,
                 }
-    attempts = len(knots) * len(ratios)
+    attempts = len(representations) * len(ratios)
     return {
         "attempts": attempts,
         "solved": solved,
@@ -1049,7 +1077,7 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
         return rows
 
     if operation == "rehearse":
-        processed_knots = payload["processed_knots"]
+        processed_items = payload["processed_items"]
         evaluation_ratios = tuple(payload["ratios"])
         training_ratios = tuple(payload.get("training_ratios", evaluation_ratios))
         identity_indices = payload["identity_indices"]
@@ -1057,7 +1085,7 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
         round_index = int(payload["round_index"])
         before = _retention_summary(
             scientist,
-            processed_knots,
+            processed_items,
             ratios=evaluation_ratios,
             simulations=int(payload["simulations"]),
             seed=seed + 700_000_000 + round_index * 100_000,
@@ -1067,25 +1095,25 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
         dose_before = int(payload["f_old"])
         exposure = dict(payload["rehearsal_exposure"])
         priority = _rehearsal_priority(
-            processed_knots, before, evaluation_ratios
+            processed_items, before, evaluation_ratios
         )
-        priority_rank = {item.name: index for index, item in enumerate(priority)}
+        priority_rank = {item.id: index for index, item in enumerate(priority)}
         selected_old = sorted(
             priority,
             key=lambda item: (
-                exposure.get(item.name, 0),
-                priority_rank[item.name],
+                exposure.get(item.id, 0),
+                priority_rank[item.id],
             ),
         )[:dose_before]
         rehearsal_rows = []
         for old in selected_old:
-            previous_exposures = exposure.get(old.name, 0)
+            previous_exposures = exposure.get(old.id, 0)
             rehearsal_rows.append(
                 {
-                    "representation": old.name,
+                    "representation": old.id,
                     **_iteration(
                         scientist,
-                        old,
+                        old.knot,
                         ratios=training_ratios,
                         simulations=int(payload["simulations"]),
                         selfplay_games=int(payload["selfplay_games"]),
@@ -1093,15 +1121,15 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
                         batch_size=int(payload["batch_size"]),
                         seed=seed
                         + 800_000_000
-                        + int(identity_indices[old.name]) * 1_000_000
+                        + int(identity_indices[old.id]) * 1_000_000
                         + previous_exposures * 10_000,
                     ),
                 }
             )
-            exposure[old.name] = previous_exposures + 1
+            exposure[old.id] = previous_exposures + 1
         after = _retention_summary(
             scientist,
-            processed_knots,
+            processed_items,
             ratios=evaluation_ratios,
             simulations=int(payload["simulations"]),
             seed=seed + 700_000_000 + round_index * 100_000,
@@ -1122,7 +1150,7 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
             "event": {
                 "F_old": dose_before,
                 "next_F_old": next_f_old,
-                "selected": [item.name for item in selected_old],
+                "selected": [item.id for item in selected_old],
                 "iterations": rehearsal_rows,
                 "before": before,
                 "after": after,
@@ -1139,7 +1167,7 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
         )
         retention = _retention_summary(
             scientist,
-            payload["processed_knots"],
+            payload["processed_items"],
             ratios=tuple(payload["ratios"]),
             simulations=int(payload["simulations"]),
             seed=int(payload["retention_seed"]),
@@ -1804,7 +1832,7 @@ def run_coordinated_arm(
     manifest_path = output / "manifest.json"
     state_path = output / "state.pt.gz"
     previous: dict[str, Any] | None = None
-    if manifest_path.exists() and resume and pipelined_static_no_sharing:
+    if manifest_path.exists() and resume:
         previous = json.loads(manifest_path.read_text())
         protocol["source_provenance"] = previous["source_provenance"]
     protocol["protocol_sha256"] = _json_hash(protocol)
@@ -1814,6 +1842,20 @@ def run_coordinated_arm(
         previous = previous or json.loads(manifest_path.read_text())
         if previous.get("protocol_sha256") != protocol["protocol_sha256"]:
             raise ValueError("SV2 resume protocol differs from frozen manifest")
+        if invocation_source_provenance != previous["source_provenance"]:
+            resume_payload = {
+                "schema": "semantic-v2-resume-provenance-v1",
+                "protocol_sha256": protocol["protocol_sha256"],
+                "frozen_source_provenance": previous["source_provenance"],
+                "resume_source_provenance": invocation_source_provenance,
+            }
+            resume_hash = _json_hash(resume_payload)
+            resume_path = output / "resume-provenance" / f"{resume_hash}.json"
+            if resume_path.exists():
+                if json.loads(resume_path.read_text()) != resume_payload:
+                    raise RuntimeError(f"resume provenance changed: {resume_path}")
+            else:
+                _atomic_json(resume_path, resume_payload)
     else:
         if resume:
             raise FileNotFoundError(f"cannot resume without {manifest_path}")
@@ -2102,15 +2144,15 @@ def run_coordinated_arm(
         block_boundary = len(processed) % block_size == 0 or len(processed) == target_rungs
         donation_guard = None
         if block_boundary:
-            processed_knots = [
-                *[item.knot for item in prior_items],
-                *[by_id[item_id].knot for item_id in processed],
+            processed_items = [
+                *prior_items,
+                *[by_id[item_id] for item_id in processed],
             ]
             rehearsal_rows = coordinator.run(
                 "rehearse",
                 {
                     name: {
-                        "processed_knots": processed_knots,
+                        "processed_items": processed_items,
                         "ratios": ratios,
                         "training_ratios": training_ratios,
                         "identity_indices": identity_index,
@@ -2140,7 +2182,7 @@ def run_coordinated_arm(
                 _assert_native_commit(output, native_commit)
                 portfolio_before = _portfolio_summary(
                     retention_after,
-                    processed_knots,
+                    processed_items,
                     ratios,
                     action_horizon=action_horizon,
                 )
@@ -2156,7 +2198,7 @@ def run_coordinated_arm(
                             + 950_000_000
                             + round_index * 1_000_000
                             + scientist_index * 10_000,
-                            "processed_knots": processed_knots,
+                            "processed_items": processed_items,
                             "ratios": ratios,
                             "simulations": current_simulations[name],
                             "retention_seed": scientist_seeds[name]
@@ -2175,7 +2217,7 @@ def run_coordinated_arm(
                 }
                 portfolio_after = _portfolio_summary(
                     retention_after_donation,
-                    processed_knots,
+                    processed_items,
                     ratios,
                     action_horizon=action_horizon,
                 )
@@ -2495,7 +2537,7 @@ def _run_scientist(payload: dict[str, Any]) -> dict[str, Any]:
             selected = sorted(
                 priority,
                 key=lambda item: (
-                    rehearsal_exposure.get(item.name, 0),
+                    rehearsal_exposure.get(item.id, 0),
                     priority.index(item),
                 ),
             )[:f_old]
@@ -2503,10 +2545,10 @@ def _run_scientist(payload: dict[str, Any]) -> dict[str, Any]:
             for rehearsal_index, old in enumerate(selected):
                 rehearsal_rows.append(
                     {
-                        "representation": old.name,
+                        "representation": old.id,
                         **_iteration(
                             scientist,
-                            old,
+                            old.knot,
                             ratios=tuple(payload["ratios"]),
                             simulations=int(payload["simulations"]),
                             selfplay_games=int(payload["selfplay_games"]),
@@ -2519,7 +2561,7 @@ def _run_scientist(payload: dict[str, Any]) -> dict[str, Any]:
                         ),
                     }
                 )
-                rehearsal_exposure[old.name] = rehearsal_exposure.get(old.name, 0) + 1
+                rehearsal_exposure[old.id] = rehearsal_exposure.get(old.id, 0) + 1
             after = _retention_summary(
                 scientist,
                 knots[: index + 1],
@@ -2541,7 +2583,7 @@ def _run_scientist(payload: dict[str, Any]) -> dict[str, Any]:
             event["rehearsal"] = {
                 "F_old": dose_before,
                 "next_F_old": f_old,
-                "selected": [item.name for item in selected],
+                "selected": [item.id for item in selected],
                 "iterations": rehearsal_rows,
                 "before": before,
                 "after": after,

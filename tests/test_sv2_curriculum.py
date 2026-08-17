@@ -7,6 +7,7 @@ import numpy as np
 
 import pgx_mcts_bench.sv2_curriculum as curriculum
 from pgx_mcts_bench.adaptive_scientists import KnotItem
+from pgx_mcts_bench.collaborative_scientists import BankItem
 from pgx_mcts_bench.data import Position
 from pgx_mcts_bench.sv2_curriculum import (
     F_NATIVE_LEVELS,
@@ -584,6 +585,67 @@ def test_portfolio_summary_takes_best_scientist_and_caps_failures() -> None:
         "capped_cost": 20_128.0,
     }
     assert result["cells"]["x|10"]["scientist"] == "b"
+
+
+def test_portfolio_summary_keeps_duplicate_knot_names_as_distinct_representations() -> None:
+    knot = KnotItem("11n_142", 11, (1, -2, 1), 3)
+    items = [
+        BankItem("11n_142::presentation-a", knot, 1.0, 0),
+        BankItem("11n_142::presentation-b", knot, 2.0, 0),
+    ]
+    summaries = {
+        "scientist": {
+            "cells": {
+                "11n_142::presentation-a": {"10.0": {"best_objective": 17.0}},
+                "11n_142::presentation-b": {"10.0": {"best_objective": None}},
+            }
+        }
+    }
+
+    result = _portfolio_summary(summaries, items, (10.0,), action_horizon=128)
+
+    assert result["attempts"] == 2
+    assert result["solved"] == 1
+    assert set(result["cells"]) == {
+        "11n_142::presentation-a|10",
+        "11n_142::presentation-b|10",
+    }
+
+
+def test_retention_uses_representation_ids_for_cells_and_seeds(monkeypatch) -> None:
+    knot = KnotItem("11n_142", 11, (1, -2, 1), 3)
+    items = [
+        BankItem("11n_142::presentation-a", knot, 1.0, 0),
+        BankItem("11n_142::presentation-b", knot, 2.0, 0),
+    ]
+    observed_seeds = []
+
+    def evaluate(*args, **kwargs):
+        observed_seeds.extend(args[4])
+        return [(None, {"scheduled_network_evaluations": 0}) for _ in args[1]]
+
+    monkeypatch.setattr(curriculum, "_evaluation_tasks", evaluate)
+    scientist = SimpleNamespace(
+        config=SimpleNamespace(game=SimpleNamespace(simplify_budget=128))
+    )
+
+    result = curriculum._retention_summary(
+        scientist,
+        items,
+        ratios=(10.0,),
+        simulations=2,
+        seed=7,
+        identity_indices={
+            "11n_142::presentation-a": 3,
+            "11n_142::presentation-b": 5,
+        },
+    )
+
+    assert set(result["cells"]) == {
+        "11n_142::presentation-a",
+        "11n_142::presentation-b",
+    }
+    assert observed_seeds == [300_007, 500_007]
 
 
 def test_donation_eligibility_is_strict_and_ratio_specific() -> None:
