@@ -56,6 +56,91 @@ def load_source_payload(path: Path, device: str) -> dict[str, object]:
     return payload
 
 
+def build_candidate(candidate_name: str, seed: int, device: str):
+    candidate = next(arm for arm in mastery_v3_arms() if arm.name == candidate_name)
+    config = _config(
+        candidate,
+        ("R(3,12)#0", 0),
+        seed,
+        device,
+        selfplay_games=1,
+    )
+    torch.manual_seed(seed)
+    child = make_braid_network(config.game, config.model).to(device).eval()
+    if not isinstance(child, CyclicMemoryDeepV3):
+        raise TypeError(f"unexpected child network {type(child).__name__}")
+    return candidate, config, child
+
+
+def source_hashes() -> dict[str, str]:
+    repo_root = Path(__file__).resolve().parents[1]
+    paths = (
+        repo_root / "src/pgx_mcts_bench/mastery_v3.py",
+        repo_root / "src/pgx_mcts_bench/gpu_inference.py",
+        repo_root / "research/mastery-v3-curriculum/protocol-spec.json",
+        repo_root / "research/mastery-v3-curriculum/curriculum.json",
+    )
+    return {str(path.relative_to(repo_root)): sha256(path) for path in paths}
+
+
+def save_checkpoint(
+    output: Path,
+    child: CyclicMemoryDeepV3,
+    candidate,
+    initialization: dict[str, object],
+) -> dict[str, object]:
+    payload = {
+        "network": child.state_dict(),
+        "candidate_spec": asdict(candidate),
+        "mastery_v3_migration": initialization,
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=output.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+    try:
+        torch.save(payload, temporary)
+        os.replace(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
+    report = {
+        **initialization,
+        "checkpoint": str(output.resolve()),
+        "checkpoint_sha256": sha256(output),
+    }
+    report_path = output.with_suffix(output.suffix + ".json")
+    report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    return report
+
+
+def initialize_native(
+    output: Path,
+    *,
+    candidate_name: str,
+    seed: int,
+    device: str,
+) -> dict[str, object]:
+    """Create a genuinely fresh v3 control with no inherited parent weights."""
+
+    if output.exists():
+        raise FileExistsError(f"refusing to overwrite {output}")
+    candidate, _config_value, child = build_candidate(candidate_name, seed, device)
+    initialization = {
+        "schema": "mastery-v3-native-initialization-v1",
+        "candidate": candidate_name,
+        "initialization": "native",
+        "source_scientist": None,
+        "source_checkpoint": None,
+        "source_checkpoint_sha256": None,
+        "seed": seed,
+        "parameter_report": child.parameter_report(),
+        "source_hashes": source_hashes(),
+        "function_preservation_applicable": False,
+        "passed": True,
+        "launched": False,
+    }
+    return save_checkpoint(output, child, candidate, initialization)
+
+
 @torch.inference_mode()
 def migrate(
     source_checkpoint: Path,
@@ -79,19 +164,7 @@ def migrate(
             require_factorized=True,
             objective_budget_channel=True,
         )
-    candidate = next(
-        arm for arm in mastery_v3_arms() if arm.name == candidate_name
-    )
-    config = _config(
-        candidate,
-        ("R(3,12)#0", 0),
-        seed,
-        device,
-        selfplay_games=1,
-    )
-    child = make_braid_network(config.game, config.model).to(device).eval()
-    if not isinstance(child, CyclicMemoryDeepV3):
-        raise TypeError(f"unexpected child network {type(child).__name__}")
+    candidate, config, child = build_candidate(candidate_name, seed, device)
     child.load_parent_state_dict(source.network.state_dict())
 
     child_game = make_game(config.game)
@@ -135,13 +208,6 @@ def migrate(
             f"function-preserving migration failed: {maximum} > {tolerance}"
         )
 
-    repo_root = Path(__file__).resolve().parents[1]
-    source_files = (
-        repo_root / "src/pgx_mcts_bench/mastery_v3.py",
-        repo_root / "src/pgx_mcts_bench/gpu_inference.py",
-        repo_root / "research/mastery-v3-curriculum/protocol-spec.json",
-        repo_root / "research/mastery-v3-curriculum/curriculum.json",
-    )
     initialization = {
         "schema": "mastery-v3-function-preserving-migration-v1",
         "candidate": candidate_name,
@@ -154,37 +220,15 @@ def migrate(
         "passed": True,
         "probe_rows": probe_rows,
         "parameter_report": child.parameter_report(),
-        "source_hashes": {
-            str(path.relative_to(repo_root)): sha256(path) for path in source_files
-        },
+        "source_hashes": source_hashes(),
         "launched": False,
     }
-    payload = {
-        "network": child.state_dict(),
-        "candidate_spec": asdict(candidate),
-        "mastery_v3_migration": initialization,
-    }
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(dir=output.parent, delete=False) as handle:
-        temporary = Path(handle.name)
-    try:
-        torch.save(payload, temporary)
-        os.replace(temporary, output)
-    finally:
-        temporary.unlink(missing_ok=True)
-    report = {
-        **initialization,
-        "checkpoint": str(output.resolve()),
-        "checkpoint_sha256": sha256(output),
-    }
-    report_path = output.with_suffix(output.suffix + ".json")
-    report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-    return report
+    return save_checkpoint(output, child, candidate, initialization)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source-checkpoint", type=Path, required=True)
+    parser.add_argument("--source-checkpoint", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--candidate",
@@ -194,15 +238,30 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=2026081700)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--tolerance", type=float, default=1e-6)
-    args = parser.parse_args()
-    report = migrate(
-        args.source_checkpoint,
-        args.output,
-        candidate_name=args.candidate,
-        seed=args.seed,
-        device=args.device,
-        tolerance=args.tolerance,
+    parser.add_argument(
+        "--initialization", choices=("warm", "native"), default="warm"
     )
+    args = parser.parse_args()
+    if args.initialization == "native":
+        if args.source_checkpoint is not None:
+            parser.error("--source-checkpoint is forbidden for native initialization")
+        report = initialize_native(
+            args.output,
+            candidate_name=args.candidate,
+            seed=args.seed,
+            device=args.device,
+        )
+    else:
+        if args.source_checkpoint is None:
+            parser.error("--source-checkpoint is required for warm initialization")
+        report = migrate(
+            args.source_checkpoint,
+            args.output,
+            candidate_name=args.candidate,
+            seed=args.seed,
+            device=args.device,
+            tolerance=args.tolerance,
+        )
     print(json.dumps(report, indent=2, sort_keys=True))
 
 

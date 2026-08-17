@@ -184,6 +184,31 @@ def _tensor(observations: list[np.ndarray], device: str) -> Tensor:
     )
 
 
+def masked_policy_kl(
+    child_logits: Tensor,
+    parent_logits: Tensor,
+    legal_actions: Tensor,
+) -> Tensor:
+    """Return KL(parent || child) on the action set exposed to MCTS.
+
+    Illegal logits are implementation detail: search masks them before
+    normalizing a policy.  Including them in a preservation gate can therefore
+    reject two behaviorally identical policies.  Fail closed if any row lacks
+    a legal action or the tensors disagree about the action space.
+    """
+
+    if child_logits.shape != parent_logits.shape or child_logits.shape != legal_actions.shape:
+        raise ValueError("policy logits and legal-action masks must have identical shapes")
+    legal = legal_actions.to(device=child_logits.device, dtype=torch.bool)
+    if not bool(legal.any(dim=1).all()):
+        raise ValueError("every policy row must expose at least one legal action")
+    floor = torch.finfo(child_logits.dtype).min
+    child_log_probs = F.log_softmax(child_logits.masked_fill(~legal, floor), dim=1)
+    parent_log_probs = F.log_softmax(parent_logits.masked_fill(~legal, floor), dim=1)
+    parent_probs = parent_log_probs.exp()
+    return F.kl_div(child_log_probs, parent_probs, reduction="batchmean")
+
+
 def _evaluate(
     network: CyclicMemoryDeepV3,
     observations: Tensor,
@@ -345,6 +370,7 @@ def distill_mastery_v3(
 
     policy_observations: list[np.ndarray] = []
     policy_actions: list[int] = []
+    policy_legal_actions: list[np.ndarray] = []
     for representation_id, witness_item in sorted(exact_for_row.items()):
         row = row_by_representation[representation_id]
         witness: UnknotWitness = witness_item["witness"]
@@ -378,11 +404,17 @@ def distill_mastery_v3(
             transition = game.reset(seed + len(policy_actions))
             for position in translated:
                 action = int(position.action)
+                if not bool(transition.legal_actions[action]):
+                    raise ValueError(
+                        f"translated witness for {representation_id} contains an illegal action"
+                    )
                 policy_observations.append(np.asarray(transition.observation))
                 policy_actions.append(action)
+                policy_legal_actions.append(np.asarray(transition.legal_actions, dtype=bool))
                 transition = game.step(transition.state, action)
     policy_tensor = _tensor(policy_observations, device)
     policy_targets = torch.tensor(policy_actions, dtype=torch.long, device=device)
+    policy_legal = torch.from_numpy(np.stack(policy_legal_actions)).to(device)
 
     for parameter in network.parameters():
         parameter.requires_grad_(False)
@@ -452,10 +484,10 @@ def distill_mastery_v3(
         with torch.no_grad():
             parent_policy, _ = network.parent(network._parent_observation(policy_batch))
         imitation_loss = F.cross_entropy(child_policy, policy_targets[policy_indexes])
-        preservation_loss = F.kl_div(
-            F.log_softmax(child_policy, dim=1),
-            F.softmax(parent_policy, dim=1),
-            reduction="batchmean",
+        preservation_loss = masked_policy_kl(
+            child_policy,
+            parent_policy,
+            policy_legal[policy_indexes],
         )
         loss = (
             feasibility_loss
@@ -492,11 +524,15 @@ def distill_mastery_v3(
                 reduction="batchmean",
             ).item()
         )
+        parent_policy_kl_legal = float(
+            masked_policy_kl(child_policy, parent_policy, policy_legal).item()
+        )
     unsafe_labels = sum(
         (not label.feasible and label.budget >= label.ratio * label.certified_lower_bound)
         for label in labels
     )
     metrics["parent_policy_kl"] = parent_policy_kl
+    metrics["parent_policy_kl_legal"] = parent_policy_kl_legal
     passed = bool(
         steps >= MINIMUM_TRAINING_STEPS
         and samples_per_side >= MINIMUM_SAMPLES_PER_SIDE
@@ -505,7 +541,7 @@ def distill_mastery_v3(
         and metrics["ordinal_accuracy"] >= 0.80
         and metrics["bound_mae"] <= 1.0
         and metrics["budget_monotonic_violation_rate"] <= 0.05
-        and metrics["parent_policy_kl"] <= 0.25
+        and metrics["parent_policy_kl_legal"] <= 0.25
         and all(math.isfinite(value) for value in metrics.values())
     )
     report = {
@@ -542,6 +578,8 @@ def distill_mastery_v3(
         "positive_label_rule": "B >= ratio * replayed_crossing_changes + replayed_moves",
         "negative_label_rule": "B < ratio * certified_lower_bound",
         "ambiguous_interval_masked": True,
+        "policy_preservation_gate": "KL(parent||child) normalized over legal actions",
+        "raw_parent_policy_kl_advisory_only": True,
     }
     repo_root = Path(__file__).resolve().parents[2]
     report["source_hashes"] = {

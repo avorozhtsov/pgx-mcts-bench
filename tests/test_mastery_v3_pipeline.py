@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 import torch
 
-from pgx_mcts_bench.mastery_v3_distill import certified_budget_labels, ordinal_targets
+from pgx_mcts_bench.mastery_v3_distill import (
+    certified_budget_labels,
+    masked_policy_kl,
+    ordinal_targets,
+)
 from pgx_mcts_bench.mastery_v3_pretrain import _rotations
 from pgx_mcts_bench.mastery_v3_screening import (
     _proof_distillation_gate,
@@ -90,3 +94,22 @@ def test_screening_requires_passed_proof_distillation(tmp_path) -> None:
     torch.save({"mastery_v3_proof_distillation": report}, checkpoint)
     with pytest.raises(ValueError, match="did not pass"):
         _proof_distillation_gate(checkpoint, "cyclic-memory-deep-v3", "curriculum")
+
+
+def test_policy_preservation_ignores_logits_for_illegal_actions() -> None:
+    parent = torch.tensor([[2.0, 0.0, -1.0, 17.0]])
+    child = torch.tensor([[2.0, 0.0, -1.0, -23.0]])
+    legal = torch.tensor([[True, True, True, False]])
+    assert masked_policy_kl(child, parent, legal).item() == pytest.approx(0.0, abs=1e-6)
+    raw = torch.nn.functional.kl_div(
+        torch.log_softmax(child, dim=1),
+        torch.softmax(parent, dim=1),
+        reduction="batchmean",
+    )
+    assert raw.item() > 1.0
+
+
+def test_policy_preservation_fails_closed_without_legal_action() -> None:
+    logits = torch.zeros((1, 3))
+    with pytest.raises(ValueError, match="at least one legal action"):
+        masked_policy_kl(logits, logits, torch.zeros_like(logits, dtype=torch.bool))

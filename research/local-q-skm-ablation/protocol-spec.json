@@ -1,0 +1,49 @@
+{
+  "schema": "local-q-skm-growth-ablation-v1",
+  "registered_before_launch": true,
+  "questions": [
+    "Does native v3 initialization grow faster than warm shape migration?",
+    "Does static-no-sharing Q training grow held-out strict solve ability faster than SKM training?",
+    "Is an 0.80 retention promotion threshold discriminative at the same registered dose?"
+  ],
+  "architecture": "cyclic-memory-deep-v3",
+  "capacity": {
+    "max_strands": 12,
+    "objective_budget_channel": true
+  },
+  "panels": {
+    "training": 20,
+    "heldout": 20,
+    "source": "first 40 identities of frozen high-strand-bound-improvement-240",
+    "overlap_allowed": false
+  },
+  "paired_controls": {
+    "same_initial_checkpoint": true,
+    "same_task_order": true,
+    "same_seeds": true,
+    "same_ratios": [10, 1000],
+    "failures_remain_in_denominators": true
+  },
+  "local_compute": {
+    "logical_cpu_limit": 6,
+    "device": "cpu",
+    "run_arms_sequentially": true,
+    "full_q4000_forbidden_before_selection": true,
+    "full_skm240_forbidden_before_selection": true
+  },
+  "primary_selection": [
+    "heldout strict successes at target upper minus one",
+    "heldout relaxed successes at the current upper when strict successes tie",
+    "heldout capped L1000 loss",
+    "strict successes per scheduled network evaluation",
+    "strict successes per CPU second"
+  ],
+  "secondary_safety": [
+    "retention at current certified upper",
+    "retention by strand count",
+    "invalid witnesses",
+    "capacity exceptions"
+  ],
+  "promotion_rule": "Select exactly one training process only after both arms finish the paired panel; fail closed and raise the common evaluation dose if every registered statistic ties; use retention as a reported safety axis and flag below 0.80 rather than declaring 0.80 mathematically optimal.",
+  "continuation": "Launch only the selected process locally with a six-logical-core cap; checkpoint every 20 introduced identities and retain resumable state."
+}

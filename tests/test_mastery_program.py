@@ -14,6 +14,7 @@ from pgx_mcts_bench.mastery_program import (
     ProgramConfig,
     SequenceChallenge,
     load_sequence,
+    load_short_ablation_sequence,
 )
 from pgx_mcts_bench.single_knot_mastery import AttemptResult, NodeScore
 
@@ -152,6 +153,37 @@ def test_load_sequence_requires_a_long_unique_curriculum(tmp_path: Path):
         assert "not unique" in str(error)
     else:
         raise AssertionError("duplicate challenge ids were accepted")
+
+
+def test_short_ablation_sequence_has_distinct_fail_closed_schema(tmp_path: Path):
+    rows = [
+        {
+            "challenge_id": f"short-{index}",
+            "canonical_name": f"K{index}",
+            "representation_id": f"short-r-{index}",
+            "stored_representation": {"word": [1], "strands": 2},
+            "bound_interval": [0, 2],
+            "acs10": index,
+        }
+        for index in range(20)
+    ]
+    path = tmp_path / "short.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": "q-skm-short-ablation-sequence-v1",
+                "name": "paired-short-test",
+                "challenges": rows,
+            }
+        )
+    )
+    assert len(load_short_ablation_sequence(path)[1]) == 20
+    try:
+        load_sequence(path)
+    except ValueError as error:
+        assert "unsupported sequence schema" in str(error)
+    else:
+        raise AssertionError("short ablation leaked into the SKM-240 loader")
 
 
 def test_searched_task_is_rekeyed_and_can_be_visited_again(tmp_path: Path):

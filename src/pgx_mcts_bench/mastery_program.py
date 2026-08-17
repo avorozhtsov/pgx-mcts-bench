@@ -195,6 +195,16 @@ def load_sequence(path: Path) -> tuple[str, list[SequenceChallenge]]:
     return _load_challenges(path, expected_schema="multi-knot-mastery-sequence-v1", minimum=200)
 
 
+def load_short_ablation_sequence(path: Path) -> tuple[str, list[SequenceChallenge]]:
+    """Load the registered 20-task process comparison without weakening SKM-240."""
+
+    return _load_challenges(
+        path,
+        expected_schema="q-skm-short-ablation-sequence-v1",
+        minimum=20,
+    )
+
+
 def load_reservoir(path: Path) -> tuple[str, list[SequenceChallenge]]:
     return _load_challenges(path, expected_schema="multi-knot-mastery-reservoir-v1", minimum=1)
 
@@ -1063,9 +1073,18 @@ def main() -> int:
     parser.add_argument("--challenge-seconds-limit", type=float, default=900.0)
     parser.add_argument("--seed", type=int, default=20260815)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--short-ablation",
+        action="store_true",
+        help="require the registered 20-task Q-vs-SKM ablation schema",
+    )
     args = parser.parse_args()
 
-    sequence_name, sequence = load_sequence(args.sequence)
+    sequence_name, sequence = (
+        load_short_ablation_sequence(args.sequence)
+        if args.short_ablation
+        else load_sequence(args.sequence)
+    )
     sequence_hash = _sha256(args.sequence)
     reservoir: list[SequenceChallenge] = []
     reservoir_hash = None
