@@ -9,8 +9,9 @@ import json
 from pathlib import Path
 
 
-def sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def json_sha256(value: object) -> str:
+    """Match the semantic JSON hash recorded by the SV2 runner."""
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
 def main() -> None:
@@ -26,7 +27,11 @@ def main() -> None:
     report = json.loads(report_path.read_text())
     rows = {str(row["id"]): row for row in group["rows"]}
     expected = int(group["size"])
-    skip_count = sum(int(value) for value in report.get("curriculum_skips", {}).values())
+    skip_counts = {
+        str(scientist): int(value)
+        for scientist, value in report.get("curriculum_skips", {}).items()
+    }
+    skip_count = sum(skip_counts.values())
     skip_reasons = [
         str(scientist["curriculum_skip"].get("reason"))
         for event in report.get("events", [])
@@ -36,7 +41,7 @@ def main() -> None:
     maximum_skips = int(group["skip_policy"]["maximum_skips"])
 
     failures: list[str] = []
-    if report.get("bank_sha256") != sha256(args.group):
+    if report.get("bank_sha256") != json_sha256(group):
         failures.append("bank hash differs from the frozen Q4000 group")
     if int(report.get("completed_rungs", -1)) != expected:
         failures.append(f"completed_rungs != {expected}")
@@ -49,8 +54,16 @@ def main() -> None:
         failures.append(f"durable native events {len(native_events)} != {expected}")
     if not state_path.is_file() or state_path.stat().st_size == 0:
         failures.append("coordinated state is missing or empty")
-    if skip_count > maximum_skips:
-        failures.append(f"skip ledger {skip_count} exceeds {maximum_skips}")
+    excessive_skips = {
+        scientist: count
+        for scientist, count in skip_counts.items()
+        if count > maximum_skips
+    }
+    if excessive_skips:
+        failures.append(
+            "per-scientist skip ledger exceeds "
+            f"{maximum_skips}: {json.dumps(excessive_skips, sort_keys=True)}"
+        )
     if "capacity" in skip_reasons:
         failures.append("capacity exception recorded")
 
@@ -87,6 +100,7 @@ def main() -> None:
         "completed_rungs": report.get("completed_rungs"),
         "native_event_files": len(native_events),
         "skip_count": skip_count,
+        "skip_counts": skip_counts,
         "skip_reasons": skip_reasons,
         "maximum_skips": maximum_skips,
         "retention_rates": retention_rates,

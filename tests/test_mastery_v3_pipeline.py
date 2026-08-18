@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 import torch
 
@@ -113,3 +119,113 @@ def test_policy_preservation_fails_closed_without_legal_action() -> None:
     logits = torch.zeros((1, 3))
     with pytest.raises(ValueError, match="at least one legal action"):
         masked_policy_kl(logits, logits, torch.zeros_like(logits, dtype=torch.bool))
+
+
+def test_local_q4000_audit_uses_semantic_bank_hash(tmp_path) -> None:
+    group = {
+        "name": "q1",
+        "size": 1,
+        "skip_policy": {"maximum_skips": 0},
+        "rows": [{"id": "k", "strands": 6}],
+    }
+    group_path = tmp_path / "group.json"
+    group_path.write_text(json.dumps(group, indent=2) + "\n")
+    output = tmp_path / "output"
+    (output / "native-events").mkdir(parents=True)
+    (output / "native-events" / "000.json").write_text("{}\n")
+    (output / "state.pt.gz").write_bytes(b"state")
+    report = {
+        "bank_sha256": hashlib.sha256(
+            json.dumps(group, sort_keys=True).encode()
+        ).hexdigest(),
+        "completed_rungs": 1,
+        "processed": ["k"],
+        "curriculum_skips": {"scientist": 0},
+        "events": [
+            {
+                "selected": "k",
+                "scientists": {
+                    "scientist": {
+                        "curriculum_skip": None,
+                        "iterations": [{"selfplay_solved": 1}],
+                    }
+                },
+            }
+        ],
+        "block_reports": [
+            {
+                "scientists": {
+                    "scientist": {
+                        "retention_after": {"attempts": 1, "solved": 1}
+                    }
+                }
+            }
+        ],
+    }
+    (output / "report.json").write_text(json.dumps(report) + "\n")
+    script = Path(__file__).parents[1] / "scripts" / "audit_local_q4000_group.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "--group", str(group_path), "--output", str(output)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_local_q4000_audit_applies_skip_limit_per_scientist(tmp_path) -> None:
+    group = {
+        "name": "q1",
+        "size": 1,
+        "skip_policy": {"maximum_skips": 1},
+        "rows": [{"id": "k", "strands": 6}],
+    }
+    group_path = tmp_path / "group.json"
+    group_path.write_text(json.dumps(group) + "\n")
+    output = tmp_path / "output"
+    (output / "native-events").mkdir(parents=True)
+    (output / "native-events" / "000.json").write_text("{}\n")
+    (output / "state.pt.gz").write_bytes(b"state")
+    report = {
+        "bank_sha256": hashlib.sha256(
+            json.dumps(group, sort_keys=True).encode()
+        ).hexdigest(),
+        "completed_rungs": 1,
+        "processed": ["k"],
+        "curriculum_skips": {"a": 1, "b": 1},
+        "events": [
+            {
+                "selected": "k",
+                "scientists": {
+                    "a": {
+                        "curriculum_skip": {"reason": "budget_exhausted"},
+                        "iterations": [{"selfplay_solved": 1}],
+                    },
+                    "b": {
+                        "curriculum_skip": {"reason": "budget_exhausted"},
+                        "iterations": [{"selfplay_solved": 0}],
+                    },
+                },
+            }
+        ],
+        "block_reports": [
+            {
+                "scientists": {
+                    "a": {"retention_after": {"attempts": 1, "solved": 1}},
+                    "b": {"retention_after": {"attempts": 1, "solved": 1}},
+                }
+            }
+        ],
+    }
+    (output / "report.json").write_text(json.dumps(report) + "\n")
+    script = Path(__file__).parents[1] / "scripts" / "audit_local_q4000_group.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "--group", str(group_path), "--output", str(output)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    audit = json.loads((output / "local-group-audit.json").read_text())
+    assert audit["skip_count"] == 2
+    assert audit["skip_counts"] == {"a": 1, "b": 1}

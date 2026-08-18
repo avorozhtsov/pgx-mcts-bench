@@ -1069,6 +1069,7 @@ def main() -> int:
     parser.add_argument("--simulations", type=int, default=128)
     parser.add_argument("--action-horizon", type=int, default=256)
     parser.add_argument("--max-heap", type=int, default=200)
+    parser.add_argument("--task-attempt-limit", type=int, default=6)
     parser.add_argument("--challenge-attempt-limit", type=int, default=24)
     parser.add_argument("--challenge-seconds-limit", type=float, default=900.0)
     parser.add_argument("--seed", type=int, default=20260815)
@@ -1160,6 +1161,7 @@ def main() -> int:
             scientist=args.scientist,
             max_heap=args.max_heap,
             parallel_searches=args.parallel_searches,
+            task_attempt_limit=args.task_attempt_limit,
             challenge_attempt_limit=args.challenge_attempt_limit,
             challenge_search_seconds_limit=args.challenge_seconds_limit,
             seed=args.seed,

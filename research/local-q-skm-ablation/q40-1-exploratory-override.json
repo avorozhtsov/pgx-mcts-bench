@@ -1,0 +1,44 @@
+{
+  "schema": "local-q4000-exploratory-continuation-override-v1",
+  "registered_at_utc": "2026-08-18T10:00:42Z",
+  "authorization": "User explicitly requested that the technical problems be fixed and Q40-1 continue.",
+  "classification": "exploratory_only_after_failed_q20_gate",
+  "not_eligible_for": [
+    "clean-gate Q4000 claims",
+    "DKT72-v2 checkpoint eligibility",
+    "paper-ready promotion without a separately registered analysis"
+  ],
+  "q20_audit": {
+    "technical_bank_hash_failure_was_audit_bug": true,
+    "frozen_bank_file_sha256": "e9a25901ee49373d10ec07ea5b1cccddc7556947f269f4e304fe6f06f8eb89ae",
+    "remaining_scientific_failures": [
+      "retention 0.725000 < 0.800000",
+      "no native self-play success on a 6+ strand representation"
+    ],
+    "cyclic_memory_q20_state_sha256": "88a2a4c55bee11ba5597005a00954c60524b1f0655932790e089520a8f23431c",
+    "cyclic_memory_q20_report_sha256": "b3471f6cc1d36289efd07ff24f990c2d665eb3e68058237de8e8dec9d99847b3"
+  },
+  "new_scientist": {
+    "name": "cyclic-graph-dual-v3",
+    "checkpoint_stage": "function-preserving migration",
+    "checkpoint_sha256": "bf8889112808f60c2289396b15470d3ae46a057641d024ae09b1cbb85a18afa4",
+    "rationale": "It is the only other implemented 12-strand v3 architecture, adds graph and dual-invariant capacity, and starts function-equivalent to the same cyclic-memory-12 parent.",
+    "catch_up_requirement": "Complete the identical Q20 bank, seed, order, dose, denominators, and no-sharing protocol before joining Q40-1."
+  },
+  "control_scientist": {
+    "name": "cyclic-memory-deep-v3",
+    "checkpoint_sha256": "905ef1cb0b67a66b7b8a479ceb79685a4e0d51c135d02e0fc24ae0d21a1a4f05"
+  },
+  "q40_1": {
+    "manifest_sha256": "43b64ea3035f116a2f25391aaedd574126937d2d0b19248b5aa672578d0a8322",
+    "bank_sha256": "488340fbfd925f1e73c68cc8eb0e46c0c789315711bfd75af7623b49461ea879",
+    "prior_bank_sha256": "db526211dd3a737b4c36b67484e049c0b83982479fac6f125ae5c6e3b66ad42d",
+    "arm": "static-no-sharing",
+    "ratios": [10, 1000],
+    "seed": 2026081823,
+    "parallel_scientists": false,
+    "torch_threads": 6,
+    "failures_and_skips_remain_in_denominators": true
+  },
+  "source_base_commit": "3ce1bc6caa54e9d746bc104595db004ba65aee50"
+}

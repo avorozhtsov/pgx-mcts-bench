@@ -58,10 +58,17 @@ if [[ "$process" == q ]]; then
       resume_args=(--resume)
     fi
     if [[ ! -f "$output/report.json" ]]; then
+      prior_count=$(uv run python -c \
+        'import json,sys; payload=json.load(open(sys.argv[1])); print(len(payload.get("rows", [])))' \
+        "$qroot/$prior_name")
+      prior_args=()
+      if (( prior_count > 0 )); then
+        prior_args=(--prior-bank "$qroot/$prior_name")
+      fi
       uv run pgx-mcts-bench braid-sv2-coordinated \
         --output "$output" \
         --bank "$qroot/$bank_name" \
-        --prior-bank "$qroot/$prior_name" \
+        "${prior_args[@]}" \
         --scientist "cyclic-memory-deep-v3=$checkpoint" \
         --arm static-no-sharing \
         --ratios 10,1000 \

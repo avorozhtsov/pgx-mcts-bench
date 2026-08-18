@@ -121,6 +121,7 @@ if [[ ! -f "$skm_output/program-state.json" ]] || [[ ! -f "$skm_output/process-p
     --simulations 32 \
     --action-horizon 128 \
     --max-heap 40 \
+    --task-attempt-limit 3 \
     --challenge-attempt-limit 3 \
     --challenge-seconds-limit 120 \
     --seed 2026081812 \
