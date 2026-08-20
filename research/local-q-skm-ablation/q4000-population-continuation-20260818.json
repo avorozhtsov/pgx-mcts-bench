@@ -1,0 +1,30 @@
+{
+  "schema": "q4000-local-population-continuation-v1",
+  "purpose": "Train every promising architecture-distinct or training-history-distinct scientist to a common Q60 milestone; this is capability growth, not a tournament.",
+  "objectives": [10, 1000],
+  "milestone": "Q20 plus Q40-1 equals 60 cumulative representations",
+  "launch_policy": "Agreement means implement, launch, verify live workers and fresh artifacts in the same turn, then monitor; prepared or queued work must never be reported as running.",
+  "active_or_queued": [
+    "cyclic-memory-deep-v3",
+    "cyclic-graph-dual-v3",
+    "q-grown:raster-axial-12",
+    "q-grown:raster-invariant-combined-dual-12",
+    "q-grown:strand-graph-12",
+    "q-grown:cyclic-memory-12",
+    "skm-v2:raster-invariant-combined-dual-12",
+    "skm-v2:cyclic-memory-12",
+    "skm-v1:raster-axial-12",
+    "skm-v1:strand-graph-12"
+  ],
+  "deferred": {
+    "raster-invariant-jones-12": "Low frozen-panel retention and no demonstrated compensating capability.",
+    "cyclic-band-bstar": "Different schema; requires a fresh checkpoint and buffer before admission."
+  },
+  "recovery": {
+    "source": "the exact saved four-scientist Q20 state after 10 completed identities",
+    "next": "finish the exact 10 unprocessed Q20 identities, then run the frozen Q40-1 bank",
+    "execution": "three one-thread Q-grown persistent workers run alongside the immutable v3 worker; the remaining cyclic-memory and four SKM lineages then run as a five-process one-thread wave; at most six experiment CPU cores total"
+  },
+  "promotion": "After every candidate has completed common Q40-1 identities, prune using the final 10 identities: new solves and coverage, capped L10/L1000 improvement, network evaluations and wall time needed to cross the block, retention, high-strand capability, and architecture or lineage diversity.",
+  "dkt72": "Keep DKT72 out of training and selection until a checkpoint is ready for the registered frozen evaluation; use separate SKM challenge targets for training."
+}

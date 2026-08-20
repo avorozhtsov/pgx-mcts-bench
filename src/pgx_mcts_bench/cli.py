@@ -146,8 +146,8 @@ def braid_sv2_coordinated(
         str,
         typer.Option(
             help=(
-                "static-no-sharing, static-random-no-sharing, adaptive-no-sharing, "
-                "static-sharing, or adaptive-sharing"
+                "static-no-sharing, scheduled-no-sharing, static-random-no-sharing, "
+                "adaptive-no-sharing, static-sharing, or adaptive-sharing"
             )
         ),
     ],
@@ -175,8 +175,17 @@ def braid_sv2_coordinated(
     seed: int = 20262020,
     torch_threads: Annotated[int, typer.Option(min=1)] = 2,
     parallel_scientists: bool = True,
+    scientist_task_timeout_seconds: Annotated[
+        float | None,
+        typer.Option(
+            min=0.001,
+            help="Hard native/rehearsal deadline; timeout is retained as unsolved",
+        ),
+    ] = None,
     pipelined_static_no_sharing: bool = False,
     adaptive_compute: bool = False,
+    f_native_levels: str | None = None,
+    simulation_levels: str | None = None,
     device: str = "cpu",
     resume: bool = False,
 ) -> None:
@@ -184,9 +193,7 @@ def braid_sv2_coordinated(
     from pgx_mcts_bench.sv2_curriculum import COORDINATED_ARMS, run_coordinated_arm
 
     if arm not in COORDINATED_ARMS:
-        raise typer.BadParameter(
-            f"--arm must be one of {', '.join(COORDINATED_ARMS)}"
-        )
+        raise typer.BadParameter(f"--arm must be one of {', '.join(COORDINATED_ARMS)}")
     checkpoints: dict[str, Path] = {}
     for value in scientist:
         if "=" not in value:
@@ -216,11 +223,7 @@ def braid_sv2_coordinated(
         initial_states=initial_states or None,
         ratios=tuple(float(value) for value in ratios.split(",") if value.strip()),
         training_ratios=(
-            tuple(
-                float(value)
-                for value in training_ratios.split(",")
-                if value.strip()
-            )
+            tuple(float(value) for value in training_ratios.split(",") if value.strip())
             if training_ratios is not None
             else None
         ),
@@ -241,8 +244,19 @@ def braid_sv2_coordinated(
         seed=seed,
         torch_threads=torch_threads,
         parallel_scientists=parallel_scientists,
+        scientist_task_timeout_seconds=scientist_task_timeout_seconds,
         pipelined_static_no_sharing=pipelined_static_no_sharing,
         adaptive_compute=adaptive_compute,
+        f_native_levels=(
+            tuple(int(value) for value in f_native_levels.split(",") if value.strip())
+            if f_native_levels is not None
+            else None
+        ),
+        simulation_levels=(
+            tuple(int(value) for value in simulation_levels.split(",") if value.strip())
+            if simulation_levels is not None
+            else None
+        ),
         device=device,
         resume=resume,
     )
@@ -1256,9 +1270,7 @@ def braid_assessor_gate(
     minimum_scan_coverage: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.90,
     minimum_auc: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.70,
     maximum_brier_ratio: Annotated[float, typer.Option(min=0.0)] = 1.0,
-    minimum_top_quartile_solve_rate: Annotated[
-        float, typer.Option(min=0.0, max=1.0)
-    ] = 0.70,
+    minimum_top_quartile_solve_rate: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.70,
     minimum_cost_spearman: Annotated[float, typer.Option(min=-1.0, max=1.0)] = 0.20,
 ) -> None:
     """Certify post-scan solve/cost assessors before adaptive scheduling."""
@@ -2340,9 +2352,7 @@ def strand_architecture_gate(
     candidates_only: Annotated[
         str,
         typer.Option("--only", help="Comma-separated candidate names"),
-    ] = (
-        "window-local,raster-axial,cyclic-memory,strand-graph"
-    ),
+    ] = ("window-local,raster-axial,cyclic-memory,strand-graph"),
     seeds: str = "71",
     workers: Annotated[int, typer.Option(min=1)] = 1,
     simulations: Annotated[int, typer.Option(min=1)] = 32,
@@ -2357,9 +2367,7 @@ def strand_architecture_gate(
     rehearsal_target: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.8,
     max_rehearsal_games_per_stage: Annotated[int, typer.Option(min=1)] = 8,
     max_consecutive_caps: Annotated[int, typer.Option(min=1)] = 1,
-    retry_capped: Annotated[
-        bool, typer.Option("--retry-capped/--no-retry-capped")
-    ] = False,
+    retry_capped: Annotated[bool, typer.Option("--retry-capped/--no-retry-capped")] = False,
     retro_games: Annotated[int, typer.Option(min=1)] = 24,
     promote_at: Annotated[float, typer.Option(min=0.0, max=1.0)] = 0.8,
     stage_limit: Annotated[int, typer.Option(min=1, max=6)] = 6,

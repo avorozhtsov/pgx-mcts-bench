@@ -1,0 +1,51 @@
+{
+  "schema": "q50-1-updated-policy-v2",
+  "status": "REGISTERED",
+  "registered_at": "2026-08-19T17:16:00Z",
+  "source_pool": {
+    "bank": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/local-q-skm-ablation-20260817/inputs/q4000-v1/q200-1.json",
+    "byte_sha256": "1c1fc18aeb7717f7a1bb036eca014d2896a7ebbdadeda624d0913d3959cf903d",
+    "immutable": true,
+    "role": "source pool only; never launch as one monolithic stage"
+  },
+  "trigger": {
+    "required_marker": "q104-updated-20260819/ALL_REGISTERED_LINEAGES_Q104_COMPLETE",
+    "required_lineages": 10,
+    "all_q104_reports_required": true
+  },
+  "output": {
+    "name": "q50-1-updated",
+    "size": 50,
+    "cumulative_representations": 154,
+    "execution_arm": "scheduled-no-sharing",
+    "base_rows": 40,
+    "simple_bridge_rows": 10,
+    "bridge_fraction": 0.20
+  },
+  "base_selection": {
+    "source": "q200-1 rows with strands < 6",
+    "ordering": ["acs10", "strands", "presentation_crossings", "id"],
+    "take": 40
+  },
+  "bridge_schedule": {
+    "mode": "fixed balanced coverage; Q104 has no direct evidence for strands 9 through 11",
+    "counts": {"7": 2, "8": 2, "9": 2, "10": 2, "11": 2},
+    "allowed_strands": [7, 8, 9, 10, 11],
+    "forbidden_strands": [5, 6, 12]
+  },
+  "schedule": "repeat: one balanced simple bridge followed by four base rows",
+  "quarantine": {
+    "q200_1_original_rows_strands_ge_6": 50,
+    "strand_counts": {"6": 30, "9": 19, "10": 1},
+    "release_condition": "never release these original complex rows into Q50-1-updated; only simple Markov variants at strands 7 through 11 are admitted"
+  },
+  "safety": {
+    "dkt72_training_or_selection": false,
+    "replayable_markov_certificates_required": true,
+    "alexander_jones_component_audit_required": true,
+    "separate_artifact_root_per_lineage": true,
+    "maximum_experiment_workers": 6,
+    "threads_per_worker": 1,
+    "automatic_launch_after_passed_build_audit": true
+  }
+}

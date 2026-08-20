@@ -16,7 +16,15 @@ import multiprocessing
 import os
 import tempfile
 import time
-from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    Future,
+    ProcessPoolExecutor,
+    wait,
+)
+from concurrent.futures import (
+    TimeoutError as FutureTimeoutError,
+)
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -65,8 +73,10 @@ F_OLD_LEVELS = (1, 2, 4, 8)
 F_NATIVE_LEVELS = (5, 8, 12, 16)
 SIMULATION_LEVELS = (64, 128, 256, 512)
 DONATION_DOSES = (1, 2, 3)
+REHEARSAL_CHECKPOINT_INTERVAL_SECONDS = 600.0
 COORDINATED_ARMS = (
     "static-no-sharing",
+    "scheduled-no-sharing",
     "static-random-no-sharing",
     "adaptive-no-sharing",
     "static-sharing",
@@ -74,6 +84,7 @@ COORDINATED_ARMS = (
 )
 CoordinatedArm = Literal[
     "static-no-sharing",
+    "scheduled-no-sharing",
     "static-random-no-sharing",
     "adaptive-no-sharing",
     "static-sharing",
@@ -402,10 +413,15 @@ def next_compute_dose(
     target: float,
 ) -> int:
     """Raise one declared compute level after a deficient completed block."""
-    if current not in levels:
-        raise ValueError(f"compute dose {current} must be one of {levels}")
     if not 0.0 <= observed_rate <= 1.0 or not 0.0 <= target <= 1.0:
         raise ValueError("compute adaptation rates must lie in 0..1")
+    if current not in levels:
+        # Archived Q4000 combined-dual states used F_native=10 before the
+        # declared 5/8/12/16 controller was introduced. Preserve that exact
+        # dose while healthy and move it to the next declared level when weak.
+        if levels == F_NATIVE_LEVELS and current == 10:
+            return 10 if observed_rate >= target else 12
+        raise ValueError(f"compute dose {current} must be one of {levels}")
     if observed_rate >= target:
         return current
     index = levels.index(current)
@@ -648,6 +664,112 @@ def _retention_summary(
         "mean_capped_cost": capped / attempts if attempts else 0.0,
         "cells": cells,
     }
+
+
+def _retention_cell_count(cells: dict[str, dict[str, Any]]) -> int:
+    return sum(len(by_ratio) for by_ratio in cells.values())
+
+
+def _retention_summary_from_cells(
+    scientist: Any,
+    items: list[KnotItem] | list[BankItem],
+    *,
+    ratios: tuple[float, ...],
+    cells: dict[str, dict[str, Any]],
+    fill_missing_as_timeout: bool = False,
+    action_horizon: int | None = None,
+) -> dict[str, Any]:
+    """Summarize a complete or censored set of retention cells."""
+
+    representations = _retention_representations(items)
+    normalized = {item.id: dict(cells.get(item.id, {})) for item in representations}
+    solved = 0
+    capped = 0.0
+    for item in representations:
+        for ratio in ratios:
+            key = str(ratio)
+            if key not in normalized[item.id]:
+                if not fill_missing_as_timeout:
+                    raise RuntimeError(f"missing retention cell: {item.id} ratio={ratio}")
+                normalized[item.id][key] = {
+                    "solve_rate": 0.0,
+                    "best_objective": None,
+                    "best_witness": None,
+                    "attempts": [
+                        {
+                            "attempt": 0,
+                            "solved": False,
+                            "crossing_changes": None,
+                            "semantic_moves": None,
+                            "objective": None,
+                            "scheduled_network_evaluations": 0,
+                            "hard_timeout": True,
+                        }
+                    ],
+                }
+            row = normalized[item.id][key]
+            solved += int(row["best_objective"] is not None)
+            horizon = (
+                int(action_horizon)
+                if action_horizon is not None
+                else int(scientist.config.game.simplify_budget)
+            )
+            failure = ratio * 20.0 + horizon
+            capped += min(
+                failure,
+                float(row["best_objective"]) if row["best_objective"] is not None else failure,
+            )
+    attempts = len(representations) * len(ratios)
+    return {
+        "attempts": attempts,
+        "solved": solved,
+        "solve_rate": solved / attempts if attempts else 0.0,
+        "capped_cost": capped,
+        "mean_capped_cost": capped / attempts if attempts else 0.0,
+        "cells": normalized,
+    }
+
+
+def _retention_summary_resumable(
+    scientist: Any,
+    items: list[KnotItem] | list[BankItem],
+    *,
+    ratios: tuple[float, ...],
+    simulations: int,
+    seed: int,
+    identity_indices: dict[str, int] | None = None,
+    add_root_noise: bool = True,
+    partial_cells: dict[str, dict[str, Any]] | None = None,
+    progress: Any | None = None,
+) -> dict[str, Any]:
+    """Evaluate retention one atomic cell at a time and resume by cell identity."""
+
+    representations = _retention_representations(items)
+    cells = {item.id: dict((partial_cells or {}).get(item.id, {})) for item in representations}
+    for ratio_index, ratio in enumerate(ratios):
+        for item_index, item in enumerate(representations):
+            key = str(ratio)
+            if key in cells[item.id]:
+                continue
+            stable_index = identity_indices[item.id] if identity_indices is not None else item_index
+            evaluated = _evaluation_tasks(
+                scientist,
+                [item.knot],
+                ratio,
+                simulations,
+                [seed + ratio_index * 10_000 + stable_index * 100_000],
+                add_root_noise=add_root_noise,
+            )
+            verified, measured = evaluated[0]
+            cells[item.id][key] = _single_evaluation_cell(ratio, verified, measured)
+            if progress is not None:
+                progress(cells)
+    return _retention_summary_from_cells(
+        scientist,
+        items,
+        ratios=ratios,
+        cells=cells,
+    )
 
 
 def _rehearsal_priority(
@@ -1003,9 +1125,7 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
             seed=int(payload["seed"]) + 500_000_000 + int(payload["static_index"]) * 100_000,
             add_root_noise=evaluation_root_noise,
         )
-        witnesses = _native_witnesses(
-            scientist, selected.knot, evaluation_ratios, evaluation
-        )
+        witnesses = _native_witnesses(scientist, selected.knot, evaluation_ratios, evaluation)
         qualification_witness = payload.get("qualification_witness")
         if qualification_witness is not None:
             scientist.replay.record_native_objective(
@@ -1083,30 +1203,104 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
         identity_indices = payload["identity_indices"]
         seed = int(payload["seed"])
         round_index = int(payload["round_index"])
-        before = _retention_summary(
-            scientist,
-            processed_items,
-            ratios=evaluation_ratios,
-            simulations=int(payload["simulations"]),
-            seed=seed + 700_000_000 + round_index * 100_000,
-            identity_indices=identity_indices,
-            add_root_noise=evaluation_root_noise,
-        )
         dose_before = int(payload["f_old"])
-        exposure = dict(payload["rehearsal_exposure"])
-        priority = _rehearsal_priority(
-            processed_items, before, evaluation_ratios
+        scientist_name = str(payload.get("scientist", scientist.name))
+        representations = {item.id: item for item in _retention_representations(processed_items)}
+        checkpoint_interval = float(
+            payload.get(
+                "checkpoint_interval_seconds",
+                REHEARSAL_CHECKPOINT_INTERVAL_SECONDS,
+            )
         )
-        priority_rank = {item.id: index for index, item in enumerate(priority)}
-        selected_old = sorted(
-            priority,
-            key=lambda item: (
-                exposure.get(item.id, 0),
-                priority_rank[item.id],
-            ),
-        )[:dose_before]
-        rehearsal_rows = []
-        for old in selected_old:
+        checkpoint = _load_rehearsal_checkpoint(payload, scientist=scientist_name)
+        if checkpoint is not None:
+            _restore_scientist(scientist, checkpoint["scientist_state"])
+            exposure = dict(checkpoint["rehearsal_exposure"])
+            phase = str(checkpoint.get("phase", "train"))
+            before = checkpoint.get("before")
+            before_cells = dict(checkpoint.get("retention_before_cells", {}))
+            after_cells = dict(checkpoint.get("retention_after_cells", {}))
+            selected_old = [
+                representations[item_id] for item_id in checkpoint.get("selected_order", [])
+            ]
+            rehearsal_rows = list(checkpoint["iterations"])
+        else:
+            phase = "retention_before"
+            before = None
+            before_cells = {}
+            after_cells = {}
+            exposure = dict(payload["rehearsal_exposure"])
+            selected_old = []
+            rehearsal_rows = []
+
+        last_checkpoint_at = time.monotonic()
+
+        def persist_checkpoint() -> None:
+            nonlocal last_checkpoint_at
+            checkpoint_path = _rehearsal_checkpoint_path(payload)
+            if checkpoint_path is None:
+                return
+            _save_state(
+                checkpoint_path,
+                {
+                    "schema": "semantic-v2-rehearsal-checkpoint-v2",
+                    "scientist": scientist_name,
+                    "round_index": round_index,
+                    "checkpointed_at_unix": time.time(),
+                    "phase": phase,
+                    "selected_order": [item.id for item in selected_old],
+                    "selected": [row["representation"] for row in rehearsal_rows],
+                    "iterations": rehearsal_rows,
+                    "completed_iterations": len(rehearsal_rows),
+                    "before": before,
+                    "retention_before_cells": before_cells,
+                    "retention_after_cells": after_cells,
+                    "completed_retention_before_cells": _retention_cell_count(before_cells),
+                    "completed_retention_after_cells": _retention_cell_count(after_cells),
+                    "rehearsal_exposure": exposure,
+                    "scientist_state": _scientist_state(scientist),
+                },
+            )
+            last_checkpoint_at = time.monotonic()
+
+        if checkpoint is None:
+            # Establish the post-native transaction boundary before any
+            # retention evaluation or rehearsal optimizer update is attempted.
+            persist_checkpoint()
+
+        if phase == "retention_before":
+
+            def before_progress(cells: dict[str, dict[str, Any]]) -> None:
+                nonlocal before_cells
+                before_cells = cells
+                if time.monotonic() - last_checkpoint_at >= checkpoint_interval:
+                    persist_checkpoint()
+
+            before = _retention_summary_resumable(
+                scientist,
+                processed_items,
+                ratios=evaluation_ratios,
+                simulations=int(payload["simulations"]),
+                seed=seed + 700_000_000 + round_index * 100_000,
+                identity_indices=identity_indices,
+                add_root_noise=evaluation_root_noise,
+                partial_cells=before_cells,
+                progress=before_progress,
+            )
+            before_cells = before["cells"]
+            priority = _rehearsal_priority(processed_items, before, evaluation_ratios)
+            priority_rank = {item.id: index for index, item in enumerate(priority)}
+            selected_old = sorted(
+                priority,
+                key=lambda item: (
+                    exposure.get(item.id, 0),
+                    priority_rank[item.id],
+                ),
+            )[:dose_before]
+            phase = "train"
+            persist_checkpoint()
+
+        for old in selected_old[len(rehearsal_rows) :]:
             previous_exposures = exposure.get(old.id, 0)
             rehearsal_rows.append(
                 {
@@ -1127,7 +1321,23 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
                 }
             )
             exposure[old.id] = previous_exposures + 1
-        after = _retention_summary(
+            if time.monotonic() - last_checkpoint_at >= checkpoint_interval:
+                persist_checkpoint()
+
+        # The trailing retention evaluation can itself consume most of the
+        # deadline. Persist all completed optimizer work and its phase cursor
+        # before entering it, even when ten minutes have not elapsed.
+        if phase == "train":
+            phase = "retention_after"
+            persist_checkpoint()
+
+        def after_progress(cells: dict[str, dict[str, Any]]) -> None:
+            nonlocal after_cells
+            after_cells = cells
+            if time.monotonic() - last_checkpoint_at >= checkpoint_interval:
+                persist_checkpoint()
+
+        after = _retention_summary_resumable(
             scientist,
             processed_items,
             ratios=evaluation_ratios,
@@ -1135,7 +1345,12 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
             seed=seed + 700_000_000 + round_index * 100_000,
             identity_indices=identity_indices,
             add_root_noise=evaluation_root_noise,
+            partial_cells=after_cells,
+            progress=after_progress,
         )
+        after_cells = after["cells"]
+        phase = "complete"
+        persist_checkpoint()
         worsened = after["capped_cost"] > before["capped_cost"] + 1e-9
         next_f_old = next_rehearsal_dose(
             dose_before,
@@ -1186,6 +1401,202 @@ def _sv2_phase_worker(job: dict[str, Any]) -> dict[str, Any]:
         _restore_scientist(scientist, _state_from_blob(job["restore_state_blob"]))
     result = _sv2_phase_operation(scientist, str(job["operation"]), job["payload"])
     return {"result": result, "state_blob": _state_blob(_scientist_state(scientist))}
+
+
+def _rehearsal_checkpoint_path(payload: dict[str, Any]) -> Path | None:
+    value = payload.get("checkpoint_path")
+    return Path(value) if value is not None else None
+
+
+def _load_rehearsal_checkpoint(payload: dict[str, Any], *, scientist: str) -> dict[str, Any] | None:
+    path = _rehearsal_checkpoint_path(payload)
+    if path is None or not path.is_file():
+        return None
+    checkpoint = _load_state(path)
+    expected_round = int(payload["round_index"])
+    schema = checkpoint.get("schema")
+    if schema not in {
+        "semantic-v2-rehearsal-checkpoint-v1",
+        "semantic-v2-rehearsal-checkpoint-v2",
+    }:
+        raise RuntimeError(f"invalid rehearsal checkpoint schema: {path}")
+    if checkpoint.get("scientist") != scientist:
+        raise RuntimeError(f"rehearsal checkpoint scientist mismatch: {path}")
+    if int(checkpoint.get("round_index", -1)) != expected_round:
+        # A successfully committed older block may leave one audit checkpoint.
+        # It is not a valid resume cursor for the next block.
+        return None
+    if int(checkpoint.get("completed_iterations", -1)) != len(checkpoint.get("iterations", [])):
+        raise RuntimeError(f"rehearsal checkpoint cursor mismatch: {path}")
+    if checkpoint.get("selected") != [
+        row.get("representation") for row in checkpoint.get("iterations", [])
+    ]:
+        raise RuntimeError(f"rehearsal checkpoint iteration order mismatch: {path}")
+    if schema == "semantic-v2-rehearsal-checkpoint-v2":
+        phase = checkpoint.get("phase")
+        if phase not in {"retention_before", "train", "retention_after", "complete"}:
+            raise RuntimeError(f"invalid rehearsal checkpoint phase: {path}")
+        for key in ("retention_before_cells", "retention_after_cells"):
+            cells = checkpoint.get(key, {})
+            expected = checkpoint.get(f"completed_{key}", _retention_cell_count(cells))
+            if int(expected) != _retention_cell_count(cells):
+                raise RuntimeError(f"rehearsal checkpoint retention cursor mismatch: {path}")
+    return checkpoint
+
+
+def _discard_rehearsal_checkpoint(payload: dict[str, Any]) -> None:
+    path = _rehearsal_checkpoint_path(payload)
+    if path is not None:
+        path.unlink(missing_ok=True)
+
+
+def _phase_timeout_result(
+    scientist: str,
+    operation: str,
+    payload: dict[str, Any],
+    *,
+    timeout_seconds: float | None,
+    partial_checkpoint: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Represent a hard compute deadline as an auditable unsolved outcome."""
+    if timeout_seconds is None:
+        raise ValueError("a timeout result requires a finite deadline")
+    completed_rehearsal_iterations = (
+        len(partial_checkpoint.get("iterations", [])) if partial_checkpoint is not None else 0
+    )
+    marker = {
+        "phase": operation,
+        "seconds": float(timeout_seconds),
+        "retained_in_denominators": True,
+        "state_advanced": completed_rehearsal_iterations > 0,
+    }
+    if operation == "rehearse":
+        checkpoint_stage = (
+            str(partial_checkpoint.get("phase", "train"))
+            if partial_checkpoint is not None
+            else "none"
+        )
+        marker.update(
+            {
+                "checkpoint_recovered": partial_checkpoint is not None,
+                "completed_rehearsal_iterations": completed_rehearsal_iterations,
+                "checkpoint_stage": checkpoint_stage,
+                "completed_retention_before_cells": (
+                    _retention_cell_count(partial_checkpoint.get("retention_before_cells", {}))
+                    if partial_checkpoint is not None
+                    else 0
+                ),
+                "completed_retention_after_cells": (
+                    _retention_cell_count(partial_checkpoint.get("retention_after_cells", {}))
+                    if partial_checkpoint is not None
+                    else 0
+                ),
+                "controller_update": "held-censored-timeout",
+            }
+        )
+    ratios = tuple(float(value) for value in payload["ratios"])
+
+    if operation == "native":
+        attempts = int(payload["evaluation_attempts"])
+        evaluation = {
+            str(ratio): {
+                "solve_rate": 0.0,
+                "best_objective": None,
+                "best_witness": None,
+                "attempts": [
+                    {
+                        "attempt": attempt,
+                        "solved": False,
+                        "crossing_changes": None,
+                        "semantic_moves": None,
+                        "objective": None,
+                        "scheduled_network_evaluations": 0,
+                        "hard_timeout": True,
+                    }
+                    for attempt in range(attempts)
+                ],
+            }
+            for ratio in ratios
+        }
+        return {
+            "scientist_event": {
+                "iterations": [],
+                "evaluation": evaluation,
+                "native_best": {str(ratio): None for ratio in ratios},
+                "rehearsal": None,
+                "hard_timeout": marker,
+            },
+            "native_witnesses": {str(ratio): None for ratio in ratios},
+        }
+
+    if operation == "rehearse":
+        action_horizon = int(payload["action_horizon"])
+        before_cells = (
+            partial_checkpoint.get("retention_before_cells", {})
+            if partial_checkpoint is not None
+            else {}
+        )
+        after_cells = (
+            partial_checkpoint.get("retention_after_cells", {})
+            if partial_checkpoint is not None
+            else {}
+        )
+        failed = _retention_summary_from_cells(
+            None,
+            payload["processed_items"],
+            ratios=ratios,
+            cells=after_cells,
+            fill_missing_as_timeout=True,
+            action_horizon=action_horizon,
+        )
+        failed["hard_timeout"] = marker
+        before = (
+            partial_checkpoint.get("before")
+            if partial_checkpoint is not None and partial_checkpoint.get("before") is not None
+            else _retention_summary_from_cells(
+                None,
+                payload["processed_items"],
+                ratios=ratios,
+                cells=before_cells,
+                fill_missing_as_timeout=True,
+                action_horizon=action_horizon,
+            )
+        )
+        dose_before = int(payload["f_old"])
+        # A hard timeout is a censored measurement, not evidence of poor
+        # retention. Increasing F_old here creates a harmful positive-feedback
+        # loop: the lineages that need more wall time receive a larger dose
+        # under the same deadline. Hold the controller until a complete
+        # retention_after measurement exists.
+        next_f_old = dose_before
+        return {
+            "next_F_old": next_f_old,
+            "rehearsal_exposure": dict(
+                partial_checkpoint.get("rehearsal_exposure", {})
+                if partial_checkpoint is not None
+                else payload["rehearsal_exposure"]
+            ),
+            "retention_after": failed,
+            "event": {
+                "F_old": dose_before,
+                "next_F_old": next_f_old,
+                "selected": list(
+                    partial_checkpoint.get("selected", []) if partial_checkpoint is not None else []
+                ),
+                "iterations": list(
+                    partial_checkpoint.get("iterations", [])
+                    if partial_checkpoint is not None
+                    else []
+                ),
+                "before": before,
+                "after": failed,
+                "capped_cost_worsened": False,
+                "controller_update": "held-censored-timeout",
+                "hard_timeout": marker,
+            },
+        }
+
+    raise RuntimeError(f"hard timeout is unsupported for SV2 phase {operation}")
 
 
 class _ScientistPhaseCoordinator:
@@ -1253,14 +1664,39 @@ class _ScientistPhaseCoordinator:
                 self.states[name] = _scientist_state(self.local[name])
                 self._restore_next[name] = False
 
-    def run(self, operation: str, payloads: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    def run(
+        self,
+        operation: str,
+        payloads: dict[str, dict[str, Any]],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
         if self.parallel:
-            futures = {
-                name: self.submit(name, operation, payloads[name]) for name in self.names
-            }
-            return {
-                name: self.collect(name, future) for name, future in futures.items()
-            }
+            futures = {name: self.submit(name, operation, payloads[name]) for name in self.names}
+            result = {}
+            for name, future in futures.items():
+                try:
+                    result[name] = self.collect(
+                        name,
+                        future,
+                        timeout_seconds=timeout_seconds,
+                    )
+                except FutureTimeoutError:
+                    self._reset_executor(name)
+                    partial_checkpoint = _load_rehearsal_checkpoint(payloads[name], scientist=name)
+                    if partial_checkpoint is not None:
+                        self.states[name] = partial_checkpoint["scientist_state"]
+                        self._restore_next[name] = True
+                    result[name] = _phase_timeout_result(
+                        name,
+                        operation,
+                        payloads[name],
+                        timeout_seconds=timeout_seconds,
+                        partial_checkpoint=partial_checkpoint,
+                    )
+                else:
+                    _discard_rehearsal_checkpoint(payloads[name])
+            return result
 
         result = {}
         for name in self.names:
@@ -1269,9 +1705,7 @@ class _ScientistPhaseCoordinator:
             self.states[name] = _scientist_state(scientist)
         return result
 
-    def submit(
-        self, name: str, operation: str, payload: dict[str, Any]
-    ) -> Future[dict[str, Any]]:
+    def submit(self, name: str, operation: str, payload: dict[str, Any]) -> Future[dict[str, Any]]:
         """Submit one state-mutating phase to a scientist's persistent worker."""
         if not self.parallel:
             raise RuntimeError("asynchronous scientist submission requires parallel execution")
@@ -1287,12 +1721,37 @@ class _ScientistPhaseCoordinator:
             },
         )
 
-    def collect(self, name: str, future: Future[dict[str, Any]]) -> Any:
+    def collect(
+        self,
+        name: str,
+        future: Future[dict[str, Any]],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> Any:
         """Install a completed worker state before scheduling its next phase."""
-        row = future.result()
+        row = future.result(timeout=timeout_seconds)
         self.states[name] = _state_from_blob(row["state_blob"])
         self._restore_next[name] = False
         return row["result"]
+
+    def _reset_executor(self, name: str) -> None:
+        """Kill one timed-out scientist and recreate only its private worker."""
+        executor = self.executors[name]
+        processes = list(getattr(executor, "_processes", {}).values())
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+        for process in processes:
+            process.join(timeout=5)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=5)
+        executor.shutdown(wait=False, cancel_futures=True)
+        self.executors[name] = ProcessPoolExecutor(
+            max_workers=1,
+            mp_context=multiprocessing.get_context("spawn"),
+        )
+        self._restore_next[name] = self.states[name] is not None
 
     def restore_full_state(self, name: str, state: dict[str, Any]) -> None:
         """Restore a durable per-scientist cursor before resuming a pipeline."""
@@ -1341,9 +1800,18 @@ def _pipeline_slug(scientist: str) -> str:
     return hashlib.sha256(scientist.encode()).hexdigest()[:16]
 
 
+def _rehearsal_checkpoint_file(output: Path, scientist: str) -> Path:
+    """Return the one atomically overwritten rehearsal cursor per scientist."""
+    return output / "phase-checkpoints" / f"{_pipeline_slug(scientist)}.pt.gz"
+
+
 def _pipeline_fragment_path(output: Path, round_index: int, scientist: str) -> Path:
-    return output / "pipeline" / "fragments" / f"{round_index:03d}" / (
-        _pipeline_slug(scientist) + ".json"
+    return (
+        output
+        / "pipeline"
+        / "fragments"
+        / f"{round_index:03d}"
+        / (_pipeline_slug(scientist) + ".json")
     )
 
 
@@ -1478,22 +1946,16 @@ def _run_pipelined_native_block(
     if any(set(payloads_by_round[index]) != set(names) for index in rounds):
         raise ValueError("every pipelined round must contain every scientist")
 
-    completed: dict[int, dict[str, dict[str, Any]]] = {
-        index: {} for index in rounds
-    }
+    completed: dict[int, dict[str, dict[str, Any]]] = {index: {} for index in rounds}
     cursor_round = {name: start_round - 1 for name in names}
     final_round = rounds[-1]
     for name in names:
-        cursor = _load_pipeline_cursor(
-            output, protocol_sha256=protocol_sha256, scientist=name
-        )
+        cursor = _load_pipeline_cursor(output, protocol_sha256=protocol_sha256, scientist=name)
         if cursor is None or int(cursor["round"]) < start_round:
             continue
         restored_round = int(cursor["round"])
         if restored_round > final_round:
-            raise RuntimeError(
-                f"pipelined scientist cursor crossed the active block: {name}"
-            )
+            raise RuntimeError(f"pipelined scientist cursor crossed the active block: {name}")
         if str(cursor["selected"]) != selected_by_round[restored_round]:
             raise RuntimeError(f"pipelined scientist cursor selected identity differs: {name}")
         coordinator.restore_full_state(name, cursor["scientist_state"])
@@ -1512,9 +1974,7 @@ def _run_pipelined_native_block(
     def submit_next(name: str) -> None:
         round_index = cursor_round[name] + 1
         if round_index <= final_round:
-            future = coordinator.submit(
-                name, "native", payloads_by_round[round_index][name]
-            )
+            future = coordinator.submit(name, "native", payloads_by_round[round_index][name])
             futures[future] = (name, round_index)
 
     for name in names:
@@ -1564,6 +2024,8 @@ def _coordinated_name(
     schedule = (
         "ADAPTIVE-"
         if arm.startswith("adaptive")
+        else "SCHEDULED-"
+        if arm == "scheduled-no-sharing"
         else "RANDOM-"
         if arm == "static-random-no-sharing"
         else ""
@@ -1580,6 +2042,24 @@ def _frozen_static_random_order(ids: list[str], seed: int) -> list[str]:
     order = sorted(ids)
     np.random.default_rng(seed).shuffle(order)
     return order
+
+
+def _fixed_no_sharing_order(
+    remaining: list[BankItem],
+    *,
+    arm: CoordinatedArm,
+    bank_order: list[str],
+    static_random_order: list[str] | None,
+) -> list[BankItem]:
+    """Return the protocol-defined order for a fixed no-sharing arm."""
+    by_id = {item.id: item for item in remaining}
+    if arm == "scheduled-no-sharing":
+        return [by_id[item_id] for item_id in bank_order if item_id in by_id]
+    if arm == "static-random-no-sharing":
+        if static_random_order is None:
+            raise ValueError("static-random-no-sharing requires its frozen order")
+        return [by_id[item_id] for item_id in static_random_order if item_id in by_id]
+    return sorted(remaining, key=lambda item: (item.cheap_score, item.id))
 
 
 def _initial_controller_values(
@@ -1640,8 +2120,11 @@ def run_coordinated_arm(
     seed: int = 20262020,
     torch_threads: int = 2,
     parallel_scientists: bool = True,
+    scientist_task_timeout_seconds: float | None = None,
     pipelined_static_no_sharing: bool = False,
     adaptive_compute: bool = False,
+    f_native_levels: tuple[int, ...] | None = None,
+    simulation_levels: tuple[int, ...] | None = None,
     acquisition_target: float = 0.80,
     evaluation_target: float = 0.70,
     device: str = "cpu",
@@ -1661,6 +2144,13 @@ def run_coordinated_arm(
         raise ValueError("training objective ratios must be positive")
     if rungs < 0:
         raise ValueError("rungs must be non-negative")
+    if scientist_task_timeout_seconds is not None:
+        if scientist_task_timeout_seconds <= 0:
+            raise ValueError("scientist task timeout must be positive")
+        if not parallel_scientists:
+            raise ValueError("scientist task timeout requires parallel scientist execution")
+        if initial_states is None:
+            raise ValueError("scientist task timeout requires durable initial states")
     if (
         min(
             simulations,
@@ -1685,18 +2175,30 @@ def run_coordinated_arm(
     if arm != "static-random-no-sharing" and static_random_seed is not None:
         raise ValueError("static_random_seed is exclusive to static-random-no-sharing")
     if pipelined_static_no_sharing and (
-        not parallel_scientists
-        or arm.startswith("adaptive")
-        or "no-sharing" not in arm
+        not parallel_scientists or arm.startswith("adaptive") or "no-sharing" not in arm
     ):
         raise ValueError(
             "pipelined execution is restricted to parallel fixed-order no-sharing arms"
         )
+    adaptive_f_native_levels = F_NATIVE_LEVELS if f_native_levels is None else f_native_levels
+    adaptive_simulation_levels = (
+        SIMULATION_LEVELS if simulation_levels is None else simulation_levels
+    )
+    for label, levels in (
+        ("F_native", adaptive_f_native_levels),
+        ("simulations", adaptive_simulation_levels),
+    ):
+        if not levels or any(value < 1 for value in levels):
+            raise ValueError(f"adaptive {label} levels must be positive and non-empty")
+        if tuple(sorted(set(levels))) != levels:
+            raise ValueError(f"adaptive {label} levels must be strictly increasing")
+    if not adaptive_compute and (f_native_levels is not None or simulation_levels is not None):
+        raise ValueError("custom adaptive compute levels require adaptive_compute")
     if adaptive_compute:
-        if f_native not in F_NATIVE_LEVELS:
-            raise ValueError(f"adaptive F_native must start in {F_NATIVE_LEVELS}")
-        if simulations not in SIMULATION_LEVELS:
-            raise ValueError(f"adaptive simulations must start in {SIMULATION_LEVELS}")
+        if f_native not in adaptive_f_native_levels:
+            raise ValueError(f"adaptive F_native must start in {adaptive_f_native_levels}")
+        if simulations not in adaptive_simulation_levels:
+            raise ValueError(f"adaptive simulations must start in {adaptive_simulation_levels}")
         if not 0.0 <= acquisition_target <= 1.0:
             raise ValueError("acquisition target must lie in 0..1")
         if not 0.0 <= evaluation_target <= 1.0:
@@ -1765,14 +2267,14 @@ def run_coordinated_arm(
         "static_random_seed": static_random_seed,
         "static_random_order": static_random_order,
         "static_random_order_sha256": (
-            _json_hash({"order": static_random_order})
-            if static_random_order is not None
-            else None
+            _json_hash({"order": static_random_order}) if static_random_order is not None else None
         ),
         "scheduling_objective": 10.0 if arm.startswith("adaptive") else None,
         "adaptive_selection": (
             "minimum actual L10 qualification evidence among scientist proposals"
             if arm.startswith("adaptive")
+            else "registered bank row order"
+            if arm == "scheduled-no-sharing"
             else "frozen uniform random permutation over sorted representation IDs"
             if arm == "static-random-no-sharing"
             else "global ACS"
@@ -1797,8 +2299,10 @@ def run_coordinated_arm(
         "evaluation_root_noise": evaluation_root_noise,
         "adaptive_compute": adaptive_compute,
         "adaptive_rehearsal_only": not adaptive_compute,
-        "F_native_levels": list(F_NATIVE_LEVELS) if adaptive_compute else [f_native],
-        "simulation_levels": (list(SIMULATION_LEVELS) if adaptive_compute else [simulations]),
+        "F_native_levels": (list(adaptive_f_native_levels) if adaptive_compute else [f_native]),
+        "simulation_levels": (
+            list(adaptive_simulation_levels) if adaptive_compute else [simulations]
+        ),
         "acquisition_target": acquisition_target,
         "evaluation_target": evaluation_target,
         "F_old_levels": list(F_OLD_LEVELS),
@@ -1822,6 +2326,17 @@ def run_coordinated_arm(
         "seed": seed,
         "torch_threads": torch_threads,
         "parallel_scientists": parallel_scientists,
+        "scientist_task_timeout_seconds": scientist_task_timeout_seconds,
+        "rehearsal_checkpoint_interval_seconds": (
+            REHEARSAL_CHECKPOINT_INTERVAL_SECONDS
+            if scientist_task_timeout_seconds is not None
+            else None
+        ),
+        "rehearsal_timeout_state_policy": (
+            "recover-latest-atomic-checkpoint"
+            if scientist_task_timeout_seconds is not None
+            else None
+        ),
         "scientist_execution": (
             "one persistent process per scientist"
             if parallel_scientists
@@ -1970,23 +2485,16 @@ def run_coordinated_arm(
                 ((round_index // block_size) + 1) * block_size,
                 target_rungs,
             )
-            if static_random_order is not None:
-                remaining_ids = {item.id for item in remaining}
-                fixed_remaining = [
-                    by_id[item_id]
-                    for item_id in static_random_order
-                    if item_id in remaining_ids
-                ]
-            else:
-                fixed_remaining = sorted(
-                    remaining, key=lambda item: (item.cheap_score, item.id)
-                )
+            fixed_remaining = _fixed_no_sharing_order(
+                remaining,
+                arm=arm,
+                bank_order=list(by_id),
+                static_random_order=static_random_order,
+            )
             block_items = fixed_remaining[: block_end - round_index]
             pipelined_selected = {
                 index: item.id
-                for index, item in zip(
-                    range(round_index, block_end), block_items, strict=True
-                )
+                for index, item in zip(range(round_index, block_end), block_items, strict=True)
             }
             pipelined_rows = _run_pipelined_native_block(
                 coordinator,
@@ -1996,9 +2504,7 @@ def run_coordinated_arm(
                 selected_by_round=pipelined_selected,
                 payloads_by_round={
                     index: native_payloads(item)
-                    for index, item in zip(
-                        range(round_index, block_end), block_items, strict=True
-                    )
+                    for index, item in zip(range(round_index, block_end), block_items, strict=True)
                 },
             )
 
@@ -2040,6 +2546,13 @@ def run_coordinated_arm(
             selected_id = next(
                 item_id for item_id in static_random_order if item_id not in processed_ids
             )
+        elif arm == "scheduled-no-sharing":
+            selected_id = _fixed_no_sharing_order(
+                remaining,
+                arm=arm,
+                bank_order=list(by_id),
+                static_random_order=None,
+            )[0].id
         else:
             selected_id = min(remaining, key=lambda item: (item.cheap_score, item.id)).id
         selected = by_id[selected_id]
@@ -2061,7 +2574,11 @@ def run_coordinated_arm(
             payloads = native_payloads(selected)
             for name in coordinator.names:
                 payloads[name]["qualification_witness"] = qualification_witnesses[name]
-            native_rows = coordinator.run("native", payloads)
+            native_rows = coordinator.run(
+                "native",
+                payloads,
+                timeout_seconds=scientist_task_timeout_seconds,
+            )
         scientist_events = {
             name: native_rows[name]["scientist_event"] for name in coordinator.names
         }
@@ -2069,8 +2586,7 @@ def run_coordinated_arm(
             scientist_events[name]["F_native"] = current_f_native[name]
             scientist_events[name]["simulations"] = current_simulations[name]
             prior_skips = sum(
-                event["scientists"][name].get("curriculum_skip") is not None
-                for event in events
+                event["scientists"][name].get("curriculum_skip") is not None for event in events
             )
             scientist_events[name]["curriculum_skip"] = curriculum_skip_event(
                 scientist_events[name]["evaluation"],
@@ -2152,6 +2668,7 @@ def run_coordinated_arm(
                 "rehearse",
                 {
                     name: {
+                        "scientist": name,
                         "processed_items": processed_items,
                         "ratios": ratios,
                         "training_ratios": training_ratios,
@@ -2165,10 +2682,18 @@ def run_coordinated_arm(
                         "train_steps": train_steps,
                         "batch_size": batch_size,
                         "retention_target": retention_target,
+                        "action_horizon": action_horizon,
                         "evaluation_root_noise": evaluation_root_noise,
+                        "checkpoint_path": (
+                            str(_rehearsal_checkpoint_file(output, name))
+                            if scientist_task_timeout_seconds is not None
+                            else None
+                        ),
+                        "checkpoint_interval_seconds": (REHEARSAL_CHECKPOINT_INTERVAL_SECONDS),
                     }
                     for name in coordinator.names
                 },
+                timeout_seconds=scientist_task_timeout_seconds,
             )
             retention_after = {
                 name: rehearsal_rows[name]["retention_after"] for name in coordinator.names
@@ -2279,13 +2804,13 @@ def run_coordinated_arm(
                 if adaptive_compute:
                     current_f_native[name] = next_compute_dose(
                         used_f_native,
-                        levels=F_NATIVE_LEVELS,
+                        levels=adaptive_f_native_levels,
                         observed_rate=acquisition_rate,
                         target=acquisition_target,
                     )
                     current_simulations[name] = next_compute_dose(
                         used_simulations,
-                        levels=SIMULATION_LEVELS,
+                        levels=adaptive_simulation_levels,
                         observed_rate=evaluation_rate,
                         target=evaluation_target,
                     )
@@ -2359,8 +2884,7 @@ def run_coordinated_arm(
         "final_donation_dose": donation_dose,
         "curriculum_skips": {
             name: sum(
-                event["scientists"][name].get("curriculum_skip") is not None
-                for event in events
+                event["scientists"][name].get("curriculum_skip") is not None for event in events
             )
             for name in coordinator.names
         },
@@ -2406,6 +2930,10 @@ def coordinated_block_report(
         rehearsal = block[-1]["scientists"][name].get("rehearsal")
         compute = block[-1]["scientists"][name].get("compute_adaptation")
         scientists[name] = {
+            "hard_timeouts": sum(
+                event["scientists"][name].get("hard_timeout") is not None for event in block
+            )
+            + int(rehearsal is not None and rehearsal.get("hard_timeout") is not None),
             "native_selfplay_solved": sum(int(row["selfplay_solved"]) for row in native_iterations),
             "native_selfplay_games": sum(int(row["selfplay_games"]) for row in native_iterations),
             "native_network_evaluations": sum(
