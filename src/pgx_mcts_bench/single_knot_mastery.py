@@ -54,6 +54,7 @@ from pgx_mcts_bench.gpu_inference import (
     CoordinatedPolicyValueNet,
     PersistentInferenceCoordinator,
 )
+from pgx_mcts_bench.mastery_v2 import admissible_negative
 from pgx_mcts_bench.search import NeuralMCTS
 from pgx_mcts_bench.training import train_alphazero_step
 
@@ -199,10 +200,17 @@ class RepresentationNode:
     last_scored_step: int = -1
     attempts: int = 0
     priority_bonus: float = 0.0
+    raw_probability: float = float("nan")
+    calibration_samples: int = 0
+    score_uncertainty: float = 0.0
+    expected_cpu_seconds: float = 0.0
+    scheduling_priority: float = float("nan")
 
     @property
     def science_priority(self) -> float:
         """Scheduling key without corrupting calibrated solve probability."""
+        if np.isfinite(self.scheduling_priority):
+            return float(self.scheduling_priority)
         return float(self.probability + self.priority_bonus)
 
     @classmethod
@@ -332,9 +340,7 @@ class AdaptiveOutcomeController:
         self.warmup = int(warmup)
         self.max_slack = int(max_slack)
         self.slack = int(slack)
-        self.outcomes: deque[bool] = deque(
-            (bool(value) for value in outcomes), maxlen=self.window
-        )
+        self.outcomes: deque[bool] = deque((bool(value) for value in outcomes), maxlen=self.window)
 
     @property
     def positive_fraction(self) -> float | None:
@@ -417,6 +423,8 @@ class SimulationDoseController:
                     "high_solved": bool(right.solved),
                     "low_l1000": self._cost(left),
                     "high_l1000": self._cost(right),
+                    "low_wall_seconds": float(left.wall_seconds),
+                    "high_wall_seconds": float(right.wall_seconds),
                 }
             )
         rows = bucket[-max(self.min_pairs * 4, self.min_pairs) :]
@@ -424,16 +432,11 @@ class SimulationDoseController:
         low_rate = sum(bool(row["low_solved"]) for row in rows) / n
         high_rate = sum(bool(row["high_solved"]) for row in rows) / n
         success_deltas = np.asarray(
-            [
-                int(bool(row["high_solved"])) - int(bool(row["low_solved"]))
-                for row in rows
-            ],
+            [int(bool(row["high_solved"])) - int(bool(row["low_solved"])) for row in rows],
             dtype=np.float64,
         )
         success_gain = float(success_deltas.mean())
-        success_se = (
-            float(success_deltas.std(ddof=1) / math.sqrt(n)) if n > 1 else 0.0
-        )
+        success_se = float(success_deltas.std(ddof=1) / math.sqrt(n)) if n > 1 else 0.0
         success_lower_95 = success_gain - 1.96 * success_se
         paired_costs = [
             float(row["low_l1000"]) - float(row["high_l1000"])
@@ -451,10 +454,24 @@ class SimulationDoseController:
             else 0.0
         )
         cost_lower_95 = cost_gain - 1.96 * cost_se
+        low_wall = sum(float(row.get("low_wall_seconds", 0.0)) for row in rows)
+        high_wall = sum(float(row.get("high_wall_seconds", 0.0)) for row in rows)
+        low_success_per_second = (
+            sum(bool(row["low_solved"]) for row in rows) / low_wall if low_wall else None
+        )
+        high_success_per_second = (
+            sum(bool(row["high_solved"]) for row in rows) / high_wall if high_wall else None
+        )
+        throughput_not_worse = (
+            low_success_per_second is None
+            or high_success_per_second is None
+            or high_success_per_second >= low_success_per_second
+        )
         promoted = False
-        if n >= self.min_pairs and (
-            success_lower_95 > self.success_margin
-            or cost_lower_95 > self.l1000_tolerance
+        if (
+            n >= self.min_pairs
+            and (success_lower_95 > self.success_margin or cost_lower_95 > self.l1000_tolerance)
+            and throughput_not_worse
         ):
             self.current = high_dose
             promoted = True
@@ -467,6 +484,9 @@ class SimulationDoseController:
             "paired_success_gain_lower_95": success_lower_95,
             "paired_l1000_gain": cost_gain,
             "paired_l1000_gain_lower_95": cost_lower_95,
+            "low_successes_per_cpu_second": low_success_per_second,
+            "high_successes_per_cpu_second": high_success_per_second,
+            "throughput_not_worse": throughput_not_worse,
             "low_scheduled_network_evaluations": sum(
                 row.scheduled_network_evaluations for row in low
             ),
@@ -501,8 +521,13 @@ class MutableProbabilityHeap:
         )
         heapq.heappush(
             self._heap,
-            (-node.science_priority, predicted_l1000, node.last_scored_step, node.node_id,
-             node.score_version),
+            (
+                -node.science_priority,
+                predicted_l1000,
+                node.last_scored_step,
+                node.node_id,
+                node.score_version,
+            ),
         )
 
     def pop(self, nodes: dict[str, RepresentationNode]) -> RepresentationNode:
@@ -611,9 +636,7 @@ def one_crossing_change_children(
         for position in range(len(diagram.word)):
             action = spec.encode(CROSSING_CHANGE, position)
             word = (
-                diagram.word[:position]
-                + (-diagram.word[position],)
-                + diagram.word[position + 1 :]
+                diagram.word[:position] + (-diagram.word[position],) + diagram.word[position + 1 :]
             )
             state = (word, diagram.strands)
             if state in seen:
@@ -771,9 +794,7 @@ class MasteryCoordinator:
         coordinator.heap = MutableProbabilityHeap()
         coordinator.heap.rebuild(coordinator.nodes)
         coordinator.refresh = FairRefreshScheduler()
-        coordinator.distillation = sorted(
-            distillation, key=lambda item: (item.l10, item.source)
-        )
+        coordinator.distillation = sorted(distillation, key=lambda item: (item.l10, item.source))
         coordinator.events = list(payload.get("events", []))
         outcome = payload.get("outcome_controller", {})
         coordinator.outcome_controller = AdaptiveOutcomeController(
@@ -861,9 +882,7 @@ class MasteryCoordinator:
             ),
         )
         keep = {node.node_id for node in ordered[: self.config.max_live_nodes]}
-        self.nodes = {
-            node_id: node for node_id, node in self.nodes.items() if node_id in keep
-        }
+        self.nodes = {node_id: node for node_id, node in self.nodes.items() if node_id in keep}
         # Removed states remain in ``seen_states``. Eviction is a bounded-search
         # decision, not permission to regenerate the same low-priority branch.
         self.heap.rebuild(self.nodes)
@@ -931,6 +950,8 @@ class MasteryCoordinator:
         for result in attempts:
             if result.solved:
                 admitted.append(result)
+                continue
+            if not admissible_negative(result.reason):
                 continue
             key = self._negative_key(result)
             if result.seed is not None:
@@ -1021,11 +1042,7 @@ class MasteryCoordinator:
             self.config.seed + self.step_index * 1_000_003 + index * 100_003
             for index in range(len(selected) * self.config.attempts_per_node)
         ]
-        lanes = [
-            node
-            for node in selected
-            for _ in range(self.config.attempts_per_node)
-        ]
+        lanes = [node for node in selected for _ in range(self.config.attempts_per_node)]
         scientific_target = self.target_u
         targets = self.outcome_controller.targets(
             scientific_target,
@@ -1149,9 +1166,7 @@ class MasteryCoordinator:
             "pruned_nodes": pruned_nodes,
             "live_nodes": len(self.nodes),
             "native_train_steps": trained,
-            "training_metrics": dict(
-                getattr(self.backend, "last_train_metrics", {})
-            ),
+            "training_metrics": dict(getattr(self.backend, "last_train_metrics", {})),
             "distilled_train_steps": distilled,
         }
         self.events.append(event)
@@ -1177,8 +1192,7 @@ class MasteryCoordinator:
                 root_id: state.to_dict() for root_id, state in sorted(self.root_states.items())
             },
             "nodes": [
-                asdict(node)
-                for node in sorted(self.nodes.values(), key=lambda node: node.node_id)
+                asdict(node) for node in sorted(self.nodes.values(), key=lambda node: node.node_id)
             ],
             "best_witness": self.best_witness.to_dict() if self.best_witness else None,
             "events": self.events,
@@ -1238,6 +1252,7 @@ class ScientistMasteryBackend:
         self.inference_timeout_seconds = inference_timeout_seconds
         self.rehearsal_ids: set[str] = set()
         self.last_train_metrics: dict[str, float] = {}
+        self.last_retention_report: dict[str, Any] | None = None
         self._seed_rehearsal()
 
     def _seed_rehearsal(self) -> None:
@@ -1401,9 +1416,7 @@ class ScientistMasteryBackend:
         started = time.perf_counter()
         while True:
             active = [
-                index
-                for index, transition in enumerate(transitions)
-                if not transition.terminated
+                index for index, transition in enumerate(transitions) if not transition.terminated
             ]
             if not active:
                 break
@@ -1529,8 +1542,8 @@ class ScientistMasteryBackend:
                 self.scientist.replay.add(
                     attempt.native_record,
                     representation_id=attempt.node_id,
-                objective_ratio=self.config.ratio,
-            )
+                    objective_ratio=self.config.ratio,
+                )
         if self.config.protocol_version == 1:
             return self._train(self.config.train_steps_per_batch)
         completed = 0
@@ -1556,8 +1569,10 @@ class ScientistMasteryBackend:
 
     def retention_rate(self, *, simulations: int, seed: int) -> float | None:
         if not self.rehearsal:
+            self.last_retention_report = None
             return None
         solved = 0
+        rows = []
         for index, example in enumerate(self.rehearsal):
             witness = example.witness
             node = RepresentationNode.create(
@@ -1575,7 +1590,33 @@ class ScientistMasteryBackend:
                 simulations=simulations,
             )[0]
             solved += int(result.solved)
-        return solved / len(self.rehearsal)
+            rows.append(
+                {
+                    "source": example.source,
+                    "instance_id": witness.instance_id,
+                    "strands": witness.start.strands,
+                    "historical_target_u": witness.crossing_changes,
+                    "solved": bool(result.solved),
+                    "reason": result.reason,
+                }
+            )
+        by_strands = {}
+        for strands in sorted({int(row["strands"]) for row in rows}):
+            group = [row for row in rows if int(row["strands"]) == strands]
+            by_strands[str(strands)] = {
+                "solved": sum(bool(row["solved"]) for row in group),
+                "total": len(group),
+                "rate": sum(bool(row["solved"]) for row in group) / len(group),
+            }
+        rate = solved / len(self.rehearsal)
+        self.last_retention_report = {
+            "rate": rate,
+            "solved": solved,
+            "total": len(rows),
+            "by_strands": by_strands,
+            "rows": rows,
+        }
+        return rate
 
     def distill(self, examples: Sequence[DistillationExample], max_steps: int) -> int:
         admitted = 0
@@ -1795,8 +1836,16 @@ def main() -> int:
         event = coordinator.step()
         print(json.dumps(event, sort_keys=True), flush=True)
         coordinator.save(args.output)
-    print(json.dumps({"output": str(args.output), "target_u": coordinator.target_u,
-                      "finished": coordinator.finished}, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "output": str(args.output),
+                "target_u": coordinator.target_u,
+                "finished": coordinator.finished,
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 

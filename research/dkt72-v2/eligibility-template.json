@@ -1,0 +1,38 @@
+{
+  "architecture": "replace-with-architecture-id",
+  "capacity_probe_supported": 0,
+  "capacity_probe_total": 72,
+  "checkpoint": "/absolute/path/to/checkpoint.pt",
+  "cyclic_band_generators": false,
+  "max_strands": 12,
+  "native_high_strand_successes": 0,
+  "q_gate_passed": false,
+  "retention_by_strand": {
+    "10": 0.0,
+    "11": 0.0,
+    "12": 0.0,
+    "6": 0.0,
+    "7": 0.0,
+    "8": 0.0,
+    "9": 0.0
+  },
+  "scientist": "replace-with-scientist-id",
+  "selection_metrics": {
+    "capped_l1000": null,
+    "network_evaluations": null,
+    "strict_high_strand_successes": 0
+  },
+  "solver_version": "replace-with-version-and-source-hash",
+  "source_reports": {},
+  "training_knot_ids": [],
+  "training_representation_ids": [],
+  "training_strand_counts": {
+    "10": 0,
+    "11": 0,
+    "12": 0,
+    "6": 0,
+    "7": 0,
+    "8": 0,
+    "9": 0
+  }
+}

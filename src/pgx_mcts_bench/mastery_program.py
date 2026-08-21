@@ -15,6 +15,7 @@ import json
 import math
 import os
 import shutil
+import time
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, replace
@@ -27,20 +28,33 @@ from rf_knots.evidence import BraidState, UnknotWitness, braid_instance_id
 
 from pgx_mcts_bench.adaptive_scientists import load_scientist
 from pgx_mcts_bench.game import make_game
+from pgx_mcts_bench.mastery_v2 import (
+    AttemptDeadlineExceeded,
+    CertificationEngine,
+    DoseCalibrationTable,
+    EvidenceSnapshot,
+    admissible_negative,
+    atomic_json,
+    hard_deadline,
+    outcome_class,
+)
 from pgx_mcts_bench.single_knot_mastery import (
     AdaptiveOutcomeController,
     AttemptResult,
+    DistillationExample,
     FairRefreshScheduler,
     MasteryConfig,
     MutableProbabilityHeap,
     RepresentationNode,
     ScientistMasteryBackend,
+    SimulationDoseController,
     equivalent_representations,
     load_distillation,
     one_crossing_change_children,
 )
 
-SCHEMA = "multi-knot-mastery-program-v1"
+SCHEMA_V1 = "multi-knot-mastery-program-v1"
+SCHEMA = "multi-knot-mastery-program-v2"
 
 
 def _sha256(path: Path) -> str:
@@ -91,8 +105,22 @@ class ProgramConfig:
     reservoir_probe_batch: int = 16
     reservoir_injections_per_group: int = 1
     seed: int = 20260815
+    protocol_version: int = 2
+    attempt_wall_seconds_limit: float = 900.0
+    simulation_levels: tuple[int, ...] = ()
+    simulation_probe_interval: int = 20
+    simulation_probe_lanes: int = 2
+    simulation_probe_min_pairs: int = 12
+    simulation_success_margin: float = 0.05
+    simulation_l1000_tolerance: float = 5.0
+    heap_uncertainty_bonus: float = 0.10
+    heap_age_bonus: float = 0.02
+    heap_cost_penalty: float = 0.01
+    max_snapshot_distillation_fraction: float = 0.05
 
     def __post_init__(self) -> None:
+        if self.protocol_version not in (1, 2):
+            raise ValueError("protocol_version must be 1 or 2")
         if self.max_heap < self.parallel_searches:
             raise ValueError("max_heap must cover every search lane")
         if self.group_size < 1 or self.bootstrap_challenges < 1:
@@ -109,6 +137,13 @@ class ProgramConfig:
             <= 0.50
         ):
             raise ValueError("rehearsal fractions must satisfy 0 <= min <= initial <= max <= 0.5")
+        levels = tuple(int(value) for value in self.simulation_levels)
+        if levels and (levels != tuple(sorted(set(levels))) or min(levels) < 1):
+            raise ValueError("simulation_levels must be sorted unique positive integers")
+        if self.attempt_wall_seconds_limit <= 0:
+            raise ValueError("attempt wall-clock limit must be positive")
+        if not 0.0 <= self.max_snapshot_distillation_fraction < 0.5:
+            raise ValueError("snapshot distillation fraction must be in [0, 0.5)")
 
 
 @dataclass(frozen=True)
@@ -212,13 +247,18 @@ def load_reservoir(path: Path) -> tuple[str, list[SequenceChallenge]]:
 class EvidenceInventory:
     """Concurrency-safe append-only witness directory shared by scientists."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, snapshot: EvidenceSnapshot | None = None) -> None:
         self.root = root
+        self.snapshot = snapshot
         self.witnesses = root / "witnesses"
         self.witnesses.mkdir(parents=True, exist_ok=True)
 
     def best_upper(self, knot_name: str, default: int) -> int:
-        best = int(default)
+        best = (
+            self.snapshot.best_upper(knot_name, default)
+            if self.snapshot is not None
+            else int(default)
+        )
         for path in self.witnesses.glob("*.json"):
             try:
                 row = json.loads(path.read_text())
@@ -238,13 +278,15 @@ class EvidenceInventory:
         sequence_name: str,
         challenge_id: str,
         previous_upper_bound: int,
+        solver_metadata: dict[str, Any] | None = None,
+        search_parameters: dict[str, Any] | None = None,
     ) -> str:
         witness.verify()
         evidence_id = hashlib.sha256(
             json.dumps(witness.to_dict(), sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
         payload = {
-            "schema": "mastery-evidence-inventory-row-v1",
+            "schema": "mastery-evidence-inventory-row-v2",
             "evidence_id": evidence_id,
             "knot_name": knot_name,
             "representation_id": representation_id,
@@ -256,6 +298,9 @@ class EvidenceInventory:
             "moves": witness.moves,
             "l1000": 1000 * witness.crossing_changes + witness.moves,
             "witness": witness.to_dict(),
+            "solver_metadata": dict(solver_metadata or {}),
+            "search_parameters": dict(search_parameters or {}),
+            "evidence_snapshot": (self.snapshot.manifest() if self.snapshot is not None else None),
         }
         path = self.witnesses / f"{evidence_id}.json"
         encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
@@ -284,6 +329,7 @@ class MasteryProgram:
         sequence_sha256: str,
         reservoir: Sequence[SequenceChallenge] = (),
         reservoir_sha256: str | None = None,
+        runtime_root: Path | None = None,
     ) -> None:
         self.config = config
         self.backend = backend
@@ -292,6 +338,12 @@ class MasteryProgram:
         self.sequence_sha256 = sequence_sha256
         self.reservoir = tuple(reservoir)
         self.reservoir_sha256 = reservoir_sha256
+        self.runtime_root = runtime_root
+        self.certification = (
+            CertificationEngine(runtime_root / "certificates")
+            if runtime_root is not None and config.protocol_version >= 2
+            else None
+        )
         self.reservoir_cursor = 0
         self.reservoir_used: set[str] = set()
         self.reservoir_injections_by_group: dict[int, int] = defaultdict(int)
@@ -316,6 +368,18 @@ class MasteryProgram:
             warmup=config.outcome_warmup,
             max_slack=config.max_training_budget_slack,
         )
+        levels = config.simulation_levels or (int(backend.config.simulations),)
+        self.dose_controller = SimulationDoseController(
+            levels,
+            current=int(backend.config.simulations),
+            min_pairs=config.simulation_probe_min_pairs,
+            success_margin=config.simulation_success_margin,
+            l1000_tolerance=config.simulation_l1000_tolerance,
+        )
+        self.dose_calibration = DoseCalibrationTable()
+        self.outcome_totals: dict[str, int] = defaultdict(int)
+        self.snapshot_distilled_train_steps = 0
+        self.consumed_snapshot_evidence: set[str] = set()
         self.events: list[dict[str, Any]] = []
         for _ in range(config.bootstrap_challenges):
             if not self._admit_next():
@@ -332,22 +396,36 @@ class MasteryProgram:
         sequence_sha256: str,
         reservoir: Sequence[SequenceChallenge] = (),
         reservoir_sha256: str | None = None,
+        runtime_root: Path | None = None,
     ) -> MasteryProgram:
         payload = json.loads(path.read_text())
-        if payload.get("schema") != SCHEMA:
+        if payload.get("schema") not in (SCHEMA_V1, SCHEMA):
             raise ValueError(f"unsupported mastery program state in {path}")
         if payload["sequence_sha256"] != sequence_sha256:
             raise ValueError("saved state belongs to a different sequence")
         if payload.get("reservoir_sha256") != reservoir_sha256:
             raise ValueError("saved state belongs to a different challenge reservoir")
+        saved_snapshot = payload.get("evidence_snapshot_sha256")
+        live_snapshot = inventory.snapshot.sha256 if inventory.snapshot is not None else None
+        if saved_snapshot != live_snapshot:
+            raise ValueError("saved state belongs to a different evidence snapshot")
         program = cls.__new__(cls)
-        program.config = ProgramConfig(**payload["config"])
+        saved_config = dict(payload["config"])
+        if payload.get("schema") == SCHEMA_V1:
+            saved_config.setdefault("protocol_version", 1)
+        program.config = ProgramConfig(**saved_config)
         program.backend = backend
         program.sequence = tuple(sequence)
         program.inventory = inventory
         program.sequence_sha256 = sequence_sha256
         program.reservoir = tuple(reservoir)
         program.reservoir_sha256 = reservoir_sha256
+        program.runtime_root = runtime_root
+        program.certification = (
+            CertificationEngine(runtime_root / "certificates")
+            if runtime_root is not None and program.config.protocol_version >= 2
+            else None
+        )
         program.reservoir_cursor = int(payload.get("reservoir_cursor", 0))
         program.reservoir_used = set(payload.get("reservoir_used", []))
         program.reservoir_injections_by_group = defaultdict(
@@ -400,6 +478,25 @@ class MasteryProgram:
             slack=int(outcome.get("slack", 0)),
             outcomes=outcome.get("outcomes", ()),
         )
+        levels = program.config.simulation_levels or (int(backend.config.simulations),)
+        dose = payload.get("dose_controller", {})
+        program.dose_controller = SimulationDoseController(
+            levels,
+            current=int(dose.get("current", backend.config.simulations)),
+            min_pairs=program.config.simulation_probe_min_pairs,
+            success_margin=program.config.simulation_success_margin,
+            l1000_tolerance=program.config.simulation_l1000_tolerance,
+            observations=dose.get("observations", {}),
+        )
+        program.dose_calibration = DoseCalibrationTable.from_dict(payload.get("dose_calibration"))
+        program.outcome_totals = defaultdict(
+            int,
+            {str(key): int(value) for key, value in payload.get("outcome_totals", {}).items()},
+        )
+        program.snapshot_distilled_train_steps = int(
+            payload.get("snapshot_distilled_train_steps", 0)
+        )
+        program.consumed_snapshot_evidence = set(payload.get("consumed_snapshot_evidence", []))
         program.events = list(payload.get("recent_events", []))
         return program
 
@@ -517,9 +614,28 @@ class MasteryProgram:
         for target, nodes in grouped.items():
             scores = self.backend.score(nodes, target)
             for node, score in zip(nodes, scores, strict=True):
-                node.probability = float(np.clip(score.probability, 0.0, 1.0))
+                raw_probability = float(np.clip(score.probability, 0.0, 1.0))
+                dose = self.dose_controller.current
+                calibrated, samples, uncertainty = self.dose_calibration.calibrate(
+                    dose, raw_probability
+                )
+                node.raw_probability = raw_probability
+                node.probability = calibrated
+                node.calibration_samples = samples
+                node.score_uncertainty = uncertainty
+                node.expected_cpu_seconds = float(
+                    self.dose_calibration.expected_wall_seconds(dose) or 0.0
+                )
                 node.predicted_crossings = float(score.predicted_crossings)
                 node.predicted_moves = float(score.predicted_moves)
+                age = max(self.step_index - node.last_scored_step, 0)
+                node.scheduling_priority = float(
+                    calibrated
+                    + node.priority_bonus
+                    + self.config.heap_uncertainty_bonus * uncertainty
+                    + self.config.heap_age_bonus * min(age / max(self.config.refresh_fair, 1), 1.0)
+                    - self.config.heap_cost_penalty * math.log1p(node.expected_cpu_seconds)
+                )
                 node.last_scored_step = self.step_index
                 self.heap.update(node)
 
@@ -642,6 +758,92 @@ class MasteryProgram:
             self._remove_node(node_id)
         self.heap.rebuild(self.nodes)
 
+    def _run_attempt_batch(
+        self,
+        nodes: Sequence[RepresentationNode],
+        target: int,
+        seeds: Sequence[int],
+        dose: int,
+        *,
+        purpose: str,
+    ) -> list[AttemptResult]:
+        started = time.monotonic()
+        journal = {
+            "schema": "mastery-attempt-journal-v1",
+            "status": "in-flight",
+            "step": self.step_index,
+            "purpose": purpose,
+            "node_ids": [node.node_id for node in nodes],
+            "target_u": int(target),
+            "seeds": [int(seed) for seed in seeds],
+            "simulations": int(dose),
+            "deadline_seconds": self.config.attempt_wall_seconds_limit,
+        }
+        journal_path = (
+            self.runtime_root / "attempt-journal" / "current.json"
+            if self.runtime_root is not None
+            else None
+        )
+        if journal_path is not None:
+            atomic_json(journal_path, journal)
+        try:
+            with hard_deadline(
+                self.config.attempt_wall_seconds_limit
+                if self.config.protocol_version >= 2
+                else None
+            ):
+                rows = self.backend.attempt_batch(
+                    nodes,
+                    target,
+                    seeds,
+                    simulations=dose,
+                )
+            status = "completed"
+        except AttemptDeadlineExceeded:
+            elapsed = time.monotonic() - started
+            rows = [
+                AttemptResult(
+                    node.node_id,
+                    False,
+                    reason="hard_timeout",
+                    attempt_target_u=target,
+                    simulations=dose,
+                    seed=int(seed),
+                    wall_seconds=elapsed / max(len(nodes), 1),
+                )
+                for node, seed in zip(nodes, seeds, strict=True)
+            ]
+            status = "hard-timeout"
+        if len(rows) != len(nodes):
+            raise ValueError("backend returned the wrong number of attempts")
+        rows = [
+            replace(
+                row,
+                attempt_target_u=int(target),
+                simulations=int(dose),
+                seed=int(seed),
+            )
+            for row, seed in zip(rows, seeds, strict=True)
+        ]
+        elapsed = time.monotonic() - started
+        if journal_path is not None:
+            atomic_json(
+                journal_path,
+                {
+                    **journal,
+                    "status": status,
+                    "elapsed_seconds": elapsed,
+                    "outcomes": [
+                        row.reason or ("solved" if row.solved else "failed") for row in rows
+                    ],
+                },
+            )
+            history = (
+                self.runtime_root / "attempt-journal" / f"{self.step_index:08d}-{purpose}.json"
+            )
+            atomic_json(history, json.loads(journal_path.read_text()))
+        return rows
+
     def _attempt(self, selected: Sequence[RepresentationNode]) -> list[AttemptResult]:
         output: list[AttemptResult | None] = [None] * len(selected)
         strict = max(1, math.ceil(len(selected) * self.config.strict_search_fraction))
@@ -663,15 +865,67 @@ class MasteryProgram:
                 self.config.seed + self.step_index * 1_000_003 + index * 100_003
                 for index in indexes
             ]
-            rows = self.backend.attempt_batch([selected[index] for index in indexes], target, seeds)
+            dose = self.dose_controller.current
+            rows = self._run_attempt_batch(
+                [selected[index] for index in indexes],
+                target,
+                seeds,
+                dose,
+                purpose=f"search-target-{target}",
+            )
             for index, seed, result in zip(indexes, seeds, rows, strict=True):
                 output[index] = replace(
                     result,
                     attempt_target_u=target,
-                    simulations=self.backend.config.simulations,
+                    simulations=dose,
                     seed=seed,
                 )
         return [row for row in output if row is not None]
+
+    def _dose_probe(
+        self, selected: Sequence[RepresentationNode]
+    ) -> tuple[list[AttemptResult], dict[str, Any] | None]:
+        pair = self.dose_controller.probe_pair
+        if (
+            self.config.protocol_version < 2
+            or pair is None
+            or self.step_index % self.config.simulation_probe_interval
+            or not selected
+        ):
+            return [], None
+        first_target = self.challenges[self.node_challenge[selected[0].node_id]].target_u
+        nodes = [
+            node
+            for node in selected
+            if self.challenges[self.node_challenge[node.node_id]].target_u == first_target
+        ][: self.config.simulation_probe_lanes]
+        if not nodes:
+            return [], None
+        low_dose, high_dose = pair
+        target = first_target
+        seeds = [
+            self.config.seed + 700_000_000 + self.step_index * 1009 + index
+            for index in range(len(nodes))
+        ]
+        low = self._run_attempt_batch(
+            nodes, target, seeds, low_dose, purpose=f"dose-probe-{low_dose}"
+        )
+        high = self._run_attempt_batch(
+            nodes, target, seeds, high_dose, purpose=f"dose-probe-{high_dose}"
+        )
+        for rows, dose in ((low, low_dose), (high, high_dose)):
+            for node, result in zip(nodes, rows, strict=True):
+                self.dose_calibration.observe(
+                    dose,
+                    (
+                        node.raw_probability
+                        if np.isfinite(node.raw_probability)
+                        else node.probability
+                    ),
+                    result.solved,
+                    result.wall_seconds,
+                )
+        return [*low, *high], self.dose_controller.observe(low_dose, high_dose, low, high)
 
     def _verified_witness(self, node: RepresentationNode, result: AttemptResult) -> UnknotWitness:
         root = self.roots[node.root_id]
@@ -694,6 +948,8 @@ class MasteryProgram:
             if result.solved:
                 admitted.append(result)
                 continue
+            if not admissible_negative(result.reason):
+                continue
             key = self._negative_key(result)
             if result.seed is not None:
                 self.negative_trials[key].add(int(result.seed))
@@ -703,6 +959,56 @@ class MasteryProgram:
                 self.admitted_negative_keys.add(key)
                 admitted.append(result)
         return admitted
+
+    def _distill_snapshot_after_give_up(self, challenge: ChallengeRuntime) -> dict[str, Any] | None:
+        snapshot = self.inventory.snapshot
+        fraction = self.config.max_snapshot_distillation_fraction
+        if snapshot is None or fraction <= 0.0 or self.native_train_steps <= 0:
+            return None
+        allowed_total = math.floor(fraction * self.native_train_steps / (1.0 - fraction))
+        if self.snapshot_distilled_train_steps >= allowed_total:
+            return None
+        candidates = [
+            row
+            for row in snapshot.replayable_rows
+            if row.get("mapped_knot") == challenge.knot_name
+            and row.get("evidence_id") not in self.consumed_snapshot_evidence
+            and row.get("witness") is not None
+        ]
+        candidates.sort(
+            key=lambda row: (
+                int(row.get("l10", 10**12)),
+                int(row.get("l1000", 10**12)),
+                str(row.get("evidence_id")),
+            )
+        )
+        for row in candidates:
+            try:
+                witness = UnknotWitness.from_dict(row["witness"])
+                witness.verify()
+            except (KeyError, TypeError, ValueError):
+                continue
+            if witness.start.strands > self.backend.scientist.config.game.max_strands:
+                continue
+            evidence_id = str(row["evidence_id"])
+            trained = self.backend.distill(
+                [DistillationExample(f"evidence-snapshot:{evidence_id}", witness)], 1
+            )
+            if not trained:
+                return None
+            self.snapshot_distilled_train_steps += trained
+            self.consumed_snapshot_evidence.add(evidence_id)
+            return {
+                "challenge_id": challenge.challenge_id,
+                "knot_name": challenge.knot_name,
+                "evidence_id": evidence_id,
+                "l10": int(row.get("l10", 10 * witness.crossing_changes + witness.moves)),
+                "l1000": int(row.get("l1000", 1000 * witness.crossing_changes + witness.moves)),
+                "train_steps": trained,
+                "snapshot_sha256": snapshot.sha256,
+                "trigger": "scientist-gave-up-before-distillation",
+            }
+        return None
 
     def _prune(self) -> int:
         excess = len(self.nodes) - self.config.max_heap
@@ -770,24 +1076,50 @@ class MasteryProgram:
                 admitted.append(self.sequence[self.next_sequence_index - 1].challenge_id)
                 selected = self._pop_eligible(self.config.parallel_searches)
         attempts = self._attempt(selected) if selected else []
+        probe_attempts, dose_probe = self._dose_probe(selected) if selected else ([], None)
         self.outcome.observe([result.solved for result in attempts])
+        for node, result in zip(selected, attempts, strict=True):
+            dose = int(result.simulations or self.dose_controller.current)
+            raw = node.raw_probability if np.isfinite(node.raw_probability) else node.probability
+            self.dose_calibration.observe(dose, raw, result.solved, result.wall_seconds)
+
+        classified_outcomes = []
+        for result in [*attempts, *probe_attempts]:
+            if result.node_id in self.node_challenge:
+                challenge = self.challenges[self.node_challenge[result.node_id]]
+                scientific_target = challenge.target_u
+            else:
+                scientific_target = int(result.attempt_target_u or 0)
+            category = outcome_class(
+                solved=result.solved,
+                reason=result.reason,
+                attempt_target_u=result.attempt_target_u,
+                scientific_target_u=scientific_target,
+            )
+            classified_outcomes.append(category)
+            self.outcome_totals[category] += 1
 
         improved = []
         completed = []
         touched = set()
-        for node, result in zip(selected, attempts, strict=True):
-            # A preceding lane may have solved this same challenge and removed
-            # all of its nodes.  Its completed MCTS result still belongs in
-            # replay, but it cannot mutate a challenge that is now closed.
-            if node.node_id not in self.node_challenge:
+        node_lookup = {node.node_id: node for node in selected}
+        owner_lookup = {
+            node.node_id: self.node_challenge[node.node_id]
+            for node in selected
+            if node.node_id in self.node_challenge
+        }
+        for result in [*attempts, *probe_attempts]:
+            node = node_lookup.get(result.node_id)
+            challenge_id = owner_lookup.get(result.node_id)
+            if node is None or challenge_id is None:
                 continue
-            challenge_id = self.node_challenge[node.node_id]
             challenge = self.challenges[challenge_id]
             touched.add(challenge_id)
             node.attempts += 1
             challenge.attempts += 1
             challenge.search_seconds += result.wall_seconds
-            self.cooldown_until[node.node_id] = self.step_index + self.config.cooldown_steps
+            if node.node_id in self.nodes:
+                self.cooldown_until[node.node_id] = self.step_index + self.config.cooldown_steps
             if result.solved:
                 witness = self._verified_witness(node, result)
                 evidence_id = self.inventory.record(
@@ -798,6 +1130,16 @@ class MasteryProgram:
                     sequence_name=self.config.sequence_name,
                     challenge_id=challenge_id,
                     previous_upper_bound=challenge.current_upper_bound,
+                    solver_metadata=dict(getattr(self.backend, "solver_metadata", {})),
+                    search_parameters={
+                        "simulations": result.simulations,
+                        "action_horizon": getattr(self.backend.config, "move_allowance", None),
+                        "attempt_target_u": result.attempt_target_u,
+                        "seed": result.seed,
+                        "scheduled_network_evaluations": result.scheduled_network_evaluations,
+                        "wall_seconds": result.wall_seconds,
+                        "protocol_version": self.config.protocol_version,
+                    },
                 )
                 if witness.crossing_changes < challenge.current_upper_bound:
                     previous = challenge.current_upper_bound
@@ -815,6 +1157,15 @@ class MasteryProgram:
                             "evidence_id": evidence_id,
                         }
                     )
+                    if self.certification is not None:
+                        certificate = self.certification.certify(
+                            evidence_id=evidence_id,
+                            knot_name=challenge.knot_name,
+                            root=self.roots[node.root_id],
+                            witness=witness,
+                            declared_lower_bound=challenge.certified_lower_bound,
+                        )
+                        improved[-1]["certification"] = certificate
                     if witness.crossing_changes <= challenge.certified_lower_bound:
                         challenge.status = "solved-to-lower-bound"
                         challenge.completed_step = self.step_index
@@ -837,7 +1188,7 @@ class MasteryProgram:
                         self.heap.rebuild(self.nodes)
                         self._rescore(list(self.nodes))
 
-        training_attempts = self._admit_training(attempts)
+        training_attempts = self._admit_training([*attempts, *probe_attempts])
         trained = self.backend.train_native(
             training_attempts, rehearsal_fraction=self.rehearsal_fraction
         )
@@ -871,6 +1222,7 @@ class MasteryProgram:
                 self._remove_node(node_id)
 
         gave_up = []
+        snapshot_distillation = []
         for challenge_id in touched:
             challenge = self.challenges[challenge_id]
             if challenge.status != "active":
@@ -889,16 +1241,31 @@ class MasteryProgram:
                 challenge.completed_step = self.step_index
                 gave_up.append(challenge_id)
                 self._remove_challenge_nodes(challenge_id)
+                distilled_row = self._distill_snapshot_after_give_up(challenge)
+                if distilled_row is not None:
+                    snapshot_distillation.append(distilled_row)
 
         pruned = self._prune()
         evicted = self._close_empty_challenges()
         retention = None
+        retention_timeout = False
+        retention_report = None
         rehearsal_adjustment = "not-probed"
         if self.step_index % self.config.retention_probe_interval == 0:
-            retention = self.backend.retention_rate(
-                simulations=self.backend.config.simulations,
-                seed=self.config.seed + 800_000_000 + self.step_index,
-            )
+            try:
+                with hard_deadline(
+                    self.config.attempt_wall_seconds_limit
+                    if self.config.protocol_version >= 2
+                    else None
+                ):
+                    retention = self.backend.retention_rate(
+                        simulations=self.dose_controller.current,
+                        seed=self.config.seed + 800_000_000 + self.step_index,
+                    )
+                retention_report = getattr(self.backend, "last_retention_report", None)
+            except AttemptDeadlineExceeded:
+                retention_timeout = True
+                rehearsal_adjustment = "retention-probe-hard-timeout"
             if retention is not None and retention < self.config.retention_target:
                 self.rehearsal_fraction = min(
                     self.config.max_rehearsal_fraction,
@@ -947,11 +1314,21 @@ class MasteryProgram:
                 for node in selected
             ],
             "attempts": len(attempts),
-            "solve_evaluations": len(attempts),
-            "verified_solutions": sum(result.solved for result in attempts),
+            "probe_attempts": len(probe_attempts),
+            "solve_evaluations": len(attempts) + len(probe_attempts),
+            "verified_solutions": sum(result.solved for result in [*attempts, *probe_attempts]),
+            "outcomes": {
+                category: classified_outcomes.count(category)
+                for category in sorted(set(classified_outcomes))
+            },
+            "outcome_totals": dict(sorted(self.outcome_totals.items())),
+            "strict_challenge_solutions": classified_outcomes.count("strict_challenge_success"),
+            "relaxed_training_solutions": classified_outcomes.count("relaxed_training_success"),
+            "genuine_upper_bound_improvements": len(improved),
             "improvements": improved,
             "completed": completed,
             "gave_up": gave_up,
+            "snapshot_distillation": snapshot_distillation,
             "heap_evicted_challenges": evicted,
             "admitted": admitted,
             "frontier_injections": ([frontier_injection] if frontier_injection is not None else []),
@@ -959,12 +1336,26 @@ class MasteryProgram:
             "pruned_tasks": pruned,
             "native_train_steps": trained,
             "total_native_train_steps": self.native_train_steps,
+            "snapshot_distilled_train_steps": self.snapshot_distilled_train_steps,
             "positive_fraction": self.outcome.positive_fraction,
             "training_budget_slack": self.outcome.slack,
             "recent_positive_budget_slack": max(self.outcome.slack, 1),
             "rehearsal_fraction": self.rehearsal_fraction,
             "retention_rate": retention,
+            "retention_report": retention_report,
+            "retention_probe_timeout": retention_timeout,
             "rehearsal_adjustment": rehearsal_adjustment,
+            "retention_capacity_alert": bool(
+                retention is not None
+                and retention < self.config.retention_target
+                and self.rehearsal_fraction >= self.config.max_rehearsal_fraction
+            ),
+            "simulations": self.dose_controller.current,
+            "simulation_probe": dose_probe,
+            "dose_calibration": self.dose_calibration.to_dict(),
+            "evidence_snapshot": (
+                self.inventory.snapshot.manifest() if self.inventory.snapshot is not None else None
+            ),
         }
         self.events.append(event)
         self.events = self.events[-200:]
@@ -972,10 +1363,13 @@ class MasteryProgram:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema": SCHEMA,
+            "schema": SCHEMA if self.config.protocol_version >= 2 else SCHEMA_V1,
             "config": asdict(self.config),
             "sequence_sha256": self.sequence_sha256,
             "reservoir_sha256": self.reservoir_sha256,
+            "evidence_snapshot_sha256": (
+                self.inventory.snapshot.sha256 if self.inventory.snapshot is not None else None
+            ),
             "reservoir_cursor": self.reservoir_cursor,
             "reservoir_used": sorted(self.reservoir_used),
             "reservoir_injections_by_group": dict(
@@ -985,8 +1379,13 @@ class MasteryProgram:
             "next_sequence_index": self.next_sequence_index,
             "introduced_count": self.introduced_count,
             "native_train_steps": self.native_train_steps,
+            "snapshot_distilled_train_steps": self.snapshot_distilled_train_steps,
+            "consumed_snapshot_evidence": sorted(self.consumed_snapshot_evidence),
             "rehearsal_fraction": self.rehearsal_fraction,
             "outcome": self.outcome.to_dict(),
+            "outcome_totals": dict(sorted(self.outcome_totals.items())),
+            "dose_controller": self.dose_controller.to_dict(),
+            "dose_calibration": self.dose_calibration.to_dict(),
             "roots": {key: value.to_dict() for key, value in sorted(self.roots.items())},
             "challenges": {key: asdict(value) for key, value in sorted(self.challenges.items())},
             "nodes": [
@@ -1039,11 +1438,21 @@ class MasteryProgram:
                 (staging / "manifest.json").write_text(
                     json.dumps(
                         {
-                            "schema": "mastery-group-checkpoint-v1",
+                            "schema": (
+                                "mastery-group-checkpoint-v2"
+                                if self.config.protocol_version >= 2
+                                else "mastery-group-checkpoint-v1"
+                            ),
                             "introduced": self.introduced_count,
                             "step": self.step_index,
                             "program_state_sha256": _sha256(staging / "program-state.json"),
                             "scientist_state_sha256": _sha256(staging / "scientist-state.pt.gz"),
+                            "evidence_snapshot": (
+                                self.inventory.snapshot.manifest()
+                                if self.inventory.snapshot is not None
+                                else None
+                            ),
+                            "simulation_dose": self.dose_controller.current,
                         },
                         indent=2,
                         sort_keys=True,
@@ -1061,12 +1470,17 @@ def main() -> int:
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--evidence-inventory", type=Path, required=True)
+    parser.add_argument("--evidence-snapshot", type=Path)
     parser.add_argument("--rehearsal-panel", type=Path)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--steps", type=int, default=100_000)
     parser.add_argument("--parallel-searches", type=int, default=2)
     parser.add_argument("--torch-threads", type=int, default=2)
     parser.add_argument("--simulations", type=int, default=128)
+    parser.add_argument("--simulation-levels", default="")
+    parser.add_argument("--simulation-probe-interval", type=int, default=20)
+    parser.add_argument("--attempt-wall-seconds-limit", type=float, default=900.0)
+    parser.add_argument("--protocol-version", type=int, choices=(1, 2), default=1)
     parser.add_argument("--action-horizon", type=int, default=256)
     parser.add_argument("--max-heap", type=int, default=200)
     parser.add_argument("--task-attempt-limit", type=int, default=6)
@@ -1080,6 +1494,24 @@ def main() -> int:
         help="require the registered 20-task Q-vs-SKM ablation schema",
     )
     args = parser.parse_args()
+
+    if args.protocol_version >= 2 and args.evidence_snapshot is None:
+        raise ValueError("mastery v2 requires a pinned --evidence-snapshot")
+    evidence_snapshot = (
+        EvidenceSnapshot.load(args.evidence_snapshot)
+        if args.evidence_snapshot is not None
+        else None
+    )
+    simulation_levels = tuple(
+        sorted(
+            set(
+                [args.simulations]
+                + [int(value) for value in args.simulation_levels.split(",") if value.strip()]
+            )
+        )
+    )
+    if simulation_levels[0] != args.simulations:
+        raise ValueError("--simulations must be the minimum simulation dose")
 
     sequence_name, sequence = (
         load_short_ablation_sequence(args.sequence)
@@ -1115,6 +1547,9 @@ def main() -> int:
         negative_confirmations=3,
         target_positive_fraction=0.50,
         strict_search_fraction=0.50,
+        protocol_version=args.protocol_version,
+        simulation_levels=simulation_levels if args.protocol_version >= 2 else (args.simulations,),
+        simulation_probe_interval=args.simulation_probe_interval,
     )
     torch.set_num_threads(args.torch_threads)
     torch.set_num_interop_threads(1)
@@ -1137,7 +1572,14 @@ def main() -> int:
         )
     rehearsal = load_distillation(args.rehearsal_panel)
     backend = ScientistMasteryBackend(scientist, backend_config, rehearsal=rehearsal)
-    inventory = EvidenceInventory(args.evidence_inventory)
+    backend.solver_metadata = {
+        "scientist": args.scientist,
+        "checkpoint": {
+            "path": str(args.checkpoint),
+            "sha256": _sha256(args.checkpoint),
+        },
+    }
+    inventory = EvidenceInventory(args.evidence_inventory, snapshot=evidence_snapshot)
     state_path = args.output / "program-state.json"
     scientist_state = args.output / "scientist-state.pt.gz"
     if args.resume:
@@ -1152,6 +1594,7 @@ def main() -> int:
             sequence_sha256=sequence_hash,
             reservoir=reservoir,
             reservoir_sha256=reservoir_hash,
+            runtime_root=args.output,
         )
     else:
         if state_path.exists() or scientist_state.exists():
@@ -1165,6 +1608,12 @@ def main() -> int:
             challenge_attempt_limit=args.challenge_attempt_limit,
             challenge_search_seconds_limit=args.challenge_seconds_limit,
             seed=args.seed,
+            protocol_version=args.protocol_version,
+            attempt_wall_seconds_limit=args.attempt_wall_seconds_limit,
+            simulation_levels=(
+                simulation_levels if args.protocol_version >= 2 else (args.simulations,)
+            ),
+            simulation_probe_interval=args.simulation_probe_interval,
         )
         program = MasteryProgram(
             config,
@@ -1174,6 +1623,7 @@ def main() -> int:
             sequence_sha256=sequence_hash,
             reservoir=reservoir,
             reservoir_sha256=reservoir_hash,
+            runtime_root=args.output,
         )
         program.save(args.output)
     for _ in range(args.steps):

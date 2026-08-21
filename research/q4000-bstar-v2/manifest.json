@@ -1,0 +1,45 @@
+{
+  "schema": "q4000-bstar-capacity-candidate-v2",
+  "status": "registered-waiting-for-capacity",
+  "candidate": {
+    "name": "conv-torus-recurrent-idcols-128-bstar",
+    "max_strands": 12,
+    "serial_raster": "scalable",
+    "serial_raster_wrap_strands": true,
+    "serial_raster_identity_padding": true,
+    "cyclic_band_generators": true,
+    "checkpoint_policy": "fresh",
+    "replay_buffer_policy": "fresh"
+  },
+  "paired_control": {
+    "cyclic_band_generators": false,
+    "selection": "strongest eligible fresh ordinary 12-strand checkpoint"
+  },
+  "training": {
+    "strand_counts": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    "required_explicit_counts": [6, 7, 8, 9, 10, 11, 12],
+    "simple_knot_warmup": true
+  },
+  "paired_gate": {
+    "identity_disjoint": true,
+    "simulations": 64,
+    "evaluation_attempts": 4,
+    "action_horizon": 128,
+    "objectives": [10, 1000],
+    "same_panel": true,
+    "same_seeds": true,
+    "promotion_retention_min_by_strand": 0.8,
+    "capacity_exceptions_max": 0,
+    "promotion_rule": "higher successes_per_cpu or strictly better paired coverage/capped_l1000"
+  },
+  "launch_gate": {
+    "requires_fresh_q20_1_inactive": true,
+    "do_not_slow_main_q20": true,
+    "do_not_modify_existing_checkpoints": true
+  },
+  "evidence": {
+    "record_action_alphabet_per_solution": true,
+    "require_replay": true,
+    "compile_certificates_to_ordinary_artin": true
+  }
+}

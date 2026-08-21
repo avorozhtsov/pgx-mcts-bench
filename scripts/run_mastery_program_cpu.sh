@@ -6,6 +6,7 @@ sequence=${MP_SEQUENCE:?set MP_SEQUENCE to a pinned 200+ challenge sequence}
 checkpoint=${MP_CHECKPOINT:?set MP_CHECKPOINT to a pinned inherited checkpoint}
 output=${MP_OUTPUT:?set MP_OUTPUT to a new or resumable scientist directory}
 inventory=${MP_EVIDENCE_INVENTORY:?set MP_EVIDENCE_INVENTORY}
+evidence_snapshot=${MP_EVIDENCE_SNAPSHOT:-}
 scientist=${MP_SCIENTIST:?set MP_SCIENTIST}
 reservoir=${MP_CHALLENGE_RESERVOIR:-}
 rehearsal_panel=${MP_REHEARSAL_PANEL:-}
@@ -15,6 +16,10 @@ cores=${MP_CORES:-0-7}
 parallel=${MP_PARALLEL_SEARCHES:-2}
 torch_threads=${MP_TORCH_THREADS:-2}
 simulations=${MP_SIMULATIONS:-128}
+simulation_levels=${MP_SIMULATION_LEVELS:-}
+simulation_probe_interval=${MP_SIMULATION_PROBE_INTERVAL:-20}
+protocol_version=${MP_PROTOCOL_VERSION:-1}
+attempt_wall_seconds_limit=${MP_ATTEMPT_WALL_SECONDS_LIMIT:-900}
 action_horizon=${MP_ACTION_HORIZON:-256}
 heap_size=${MP_HEAP_SIZE:-200}
 challenge_attempt_limit=${MP_CHALLENGE_ATTEMPT_LIMIT:-24}
@@ -30,6 +35,9 @@ if [[ -n "$reservoir" ]]; then
 fi
 if [[ -n "$rehearsal_panel" ]]; then
   test -s "$rehearsal_panel"
+fi
+if [[ "$protocol_version" -ge 2 ]]; then
+  test -s "$evidence_snapshot"
 fi
 
 cd "$repo"
@@ -53,6 +61,11 @@ if [[ -n "$rehearsal_panel" ]]; then
   rehearsal_args=(--rehearsal-panel "$rehearsal_panel")
 fi
 
+snapshot_args=()
+if [[ -n "$evidence_snapshot" ]]; then
+  snapshot_args=(--evidence-snapshot "$evidence_snapshot")
+fi
+
 exec taskset -c "$cores" nice -n 19 env \
   OMP_WAIT_POLICY=PASSIVE \
   GOMP_SPINCOUNT=0 \
@@ -65,10 +78,15 @@ exec taskset -c "$cores" nice -n 19 env \
   --checkpoint "$checkpoint" \
   --output "$output" \
   --evidence-inventory "$inventory" \
+  "${snapshot_args[@]}" \
   "${rehearsal_args[@]}" \
   --parallel-searches "$parallel" \
   --torch-threads "$torch_threads" \
   --simulations "$simulations" \
+  --simulation-levels "$simulation_levels" \
+  --simulation-probe-interval "$simulation_probe_interval" \
+  --protocol-version "$protocol_version" \
+  --attempt-wall-seconds-limit "$attempt_wall_seconds_limit" \
   --action-horizon "$action_horizon" \
   --max-heap "$heap_size" \
   --challenge-attempt-limit "$challenge_attempt_limit" \

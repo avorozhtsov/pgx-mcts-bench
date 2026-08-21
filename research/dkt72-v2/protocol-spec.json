@@ -1,0 +1,46 @@
+{
+  "schema": "dkt72-pd-v2-preregistration-v1",
+  "dataset": {
+    "name": "DKT72-PD-v1 complete panel",
+    "rows": 72,
+    "sha256": "83c591d4b8ea002e5082ede424766fe7eb05c87958defe70413f679495a289fb"
+  },
+  "eligibility": {
+    "capacity_probe": "72/72 supported before search",
+    "max_strands_minimum": 12,
+    "minimum_native_successes_on_6plus_strands": 1,
+    "q_group_gate_required": true,
+    "required_training_strands": [6, 7, 8, 9, 10, 11, 12],
+    "retention_by_required_strand_minimum": 0.8,
+    "training_knot_identity_overlap": 0,
+    "training_representation_overlap": 0
+  },
+  "selection": {
+    "count": 2,
+    "dkt72_outcome_blinded": true,
+    "metrics": [
+      "strict high-strand successes on registered Q data",
+      "minimum retention across strands 6 through 12",
+      "native training count across strands 6 through 12",
+      "capped L1000 on registered Q data",
+      "network evaluations"
+    ],
+    "alphabet_policy": "select best ordinary and best cyclic-band system when both are eligible; otherwise best two"
+  },
+  "evaluation": {
+    "action_horizon": 128,
+    "attempts_per_representation": 4,
+    "failure_cap_l1000": 20128,
+    "learning": false,
+    "objective": "L1000",
+    "paired_representation_attempt_seeds": true,
+    "primary_denominator": 72,
+    "root_noise": true,
+    "simulations": 256
+  },
+  "certification": {
+    "evidence_inventory_ingest_required": true,
+    "exact_requires_independent_matching_lower_bound": true,
+    "replay_every_strict_current_upper_bound_improvement": true
+  }
+}

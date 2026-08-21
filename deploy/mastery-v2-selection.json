@@ -1,0 +1,27 @@
+{
+  "schema": "mastery-v2-candidate-selection-v1",
+  "selected": [
+    {
+      "candidate": "high-cyclic-memory",
+      "reason": "healthy throughput, 0.84375 latest frozen-panel retention, and the largest audited network (658993 parameters)",
+      "simulation_levels": [128, 256]
+    },
+    {
+      "candidate": "high-combined-dual",
+      "reason": "0.875 latest retention and scientifically distinct invariant architecture; v1 stall is addressed by the v2 hard attempt deadline",
+      "simulation_levels": [32, 64]
+    }
+  ],
+  "not_selected_first": [
+    {
+      "candidate": "high-jones-12",
+      "reason": "latest frozen-panel retention is 0.50; run a controlled wider-model and by-strand retention ablation before promotion"
+    }
+  ],
+  "selection_policy": {
+    "requires_distinct_architectures": true,
+    "requires_retention_at_least": 0.80,
+    "operational_stalls_must_have_hard_deadline": true,
+    "parameter_count_is_diagnostic_not_proof": true
+  }
+}

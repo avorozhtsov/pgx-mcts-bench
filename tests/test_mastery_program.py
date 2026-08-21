@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -337,3 +338,35 @@ def test_knotinfo_frontier_injection_preserves_provenance_and_bonus(tmp_path: Pa
     assert all(node.priority_bonus == 0.10 for node in nodes)
     assert all(node.provenance["original_knot_name"] == candidate.knot_name for node in nodes)
     assert all(node.provenance["original_target_u"] == 1 for node in nodes)
+
+
+def test_v2_hard_timeout_commits_an_outcome_and_attempt_journal(tmp_path: Path):
+    class SleepingBackend(FakeBackend):
+        def attempt_batch(self, nodes, target_u, seeds, *, simulations=None):
+            del nodes, target_u, seeds, simulations
+            time.sleep(0.2)
+            raise AssertionError("deadline did not interrupt the backend")
+
+    config = ProgramConfig(
+        "test-sequence",
+        "sleeping-scientist",
+        bootstrap_challenges=1,
+        max_active_challenges=1,
+        parallel_searches=1,
+        expansion_children=0,
+        attempt_wall_seconds_limit=0.02,
+        challenge_search_seconds_limit=1.0,
+    )
+    output = tmp_path / "run"
+    mastery = MasteryProgram(
+        config,
+        SleepingBackend(),
+        [challenge(0), challenge(1)],
+        EvidenceInventory(tmp_path / "inventory"),
+        sequence_sha256="f" * 64,
+        runtime_root=output,
+    )
+    event = mastery.step()
+    assert event["outcomes"] == {"hard_timeout": 1}
+    journal = json.loads((output / "attempt-journal" / "current.json").read_text())
+    assert journal["status"] == "hard-timeout"

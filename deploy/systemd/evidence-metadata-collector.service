@@ -1,0 +1,19 @@
+[Unit]
+Description=Replay-verified Q/R/SKM evidence and invariant metadata collector
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=artemvorozhtsov
+Group=artemvorozhtsov
+EnvironmentFile=/etc/braid/evidence-metadata-collector.env
+ExecStart=/srv/braid/work-evidence-metadata-collector-v1/pgx-mcts-bench/scripts/run_evidence_metadata_collector.sh
+Nice=19
+CPUWeight=10
+IOSchedulingClass=idle
+TimeoutStartSec=20min
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
