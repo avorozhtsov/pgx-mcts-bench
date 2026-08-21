@@ -1,8 +1,10 @@
 import gzip
 import importlib.util
+import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 
 from pgx_mcts_bench.data import ReplayBuffer
@@ -50,3 +52,48 @@ def test_rehearsal_debt_is_lineage_local_and_idempotent(tmp_path: Path) -> None:
     first_hash = launcher._sha256(launcher.REHEARSAL_DEBT)
     assert launcher._build_rehearsal_debt() == {"lineage": 5}
     assert launcher._sha256(launcher.REHEARSAL_DEBT) == first_hash
+
+
+def test_primary_8_launcher_excludes_deferred_v3() -> None:
+    launcher = _launcher_module()
+    labels = [label for label, _scientist, _simulations, _timeout in launcher.BRANCHES]
+    assert len(labels) == 8
+    assert "cyclic-graph-dual-v3" not in labels
+    assert "cyclic-memory-deep-v3" not in labels
+    assert launcher.Q104_MARKER.name == "PRIMARY_8_LINEAGES_Q104_COMPLETE.json"
+
+
+def test_primary_8_marker_binds_report_and_state_hashes(tmp_path: Path) -> None:
+    launcher = _launcher_module()
+    launcher.Q104_ROOT = tmp_path / "q104"
+    launcher.Q104_STAGE = "stage"
+    launcher.Q104_MARKER = launcher.Q104_ROOT / "PRIMARY_8_LINEAGES_Q104_COMPLETE.json"
+    launcher.BRANCHES = (("lineage", "scientist", 40, False),)
+    branch = launcher.Q104_ROOT / "branches/lineage/stage"
+    branch.mkdir(parents=True)
+    report = branch / "report.json"
+    state = branch / "state.pt.gz"
+    report.write_text("{}\n")
+    state.write_bytes(b"state")
+    launcher.Q104_MARKER.write_text(
+        json.dumps(
+            {
+                "schema": "q104-primary-8-completion-v1",
+                "lineages": ["lineage"],
+                "artifacts": {
+                    "lineage": {
+                        "report_sha256": launcher._sha256(report),
+                        "state_sha256": launcher._sha256(state),
+                    }
+                },
+            }
+        )
+    )
+
+    launcher._wait_for_q104()
+
+    marker = json.loads(launcher.Q104_MARKER.read_text())
+    marker["artifacts"]["lineage"]["state_sha256"] = "bad"
+    launcher.Q104_MARKER.write_text(json.dumps(marker))
+    with pytest.raises(RuntimeError, match="state hash changed"):
+        launcher._wait_for_q104()

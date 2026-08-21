@@ -29,6 +29,7 @@ from pgx_mcts_bench.sv2_curriculum import (
     coordinated_block_report,
     curriculum_skip_event,
     deterministic_rehearsal_panel,
+    deterministic_rehearsal_task_order,
     next_compute_dose,
     next_rehearsal_dose,
     rehearsal_cumulative_timeout_seconds,
@@ -54,6 +55,57 @@ def test_expanding_round_robin_panel_uses_exact_order_and_durable_absolute_curso
     assert (cursor, cursor2) == (4, 8)
     assert metadata["policy"] == "exact-bank-order-expanding-round-robin-v1"
     assert metadata2["population_size"] == 8
+
+
+def test_rehearsal_panel_can_be_reused_without_double_wrapping() -> None:
+    items = [
+        BankItem(f"r{index}", KnotItem(f"k{index}", 3, (1, -1), 2), float(index), 0)
+        for index in range(3)
+    ]
+    first, cursor, _metadata = deterministic_rehearsal_panel(items, panel_size=2, cursor=0)
+
+    reused, next_cursor, metadata = deterministic_rehearsal_panel(
+        first,
+        panel_size=2,
+        cursor=0,
+    )
+
+    assert reused == first
+    assert (cursor, next_cursor) == (2, 2)
+    assert metadata["representations"] == ["r0", "r1"]
+
+
+def test_seeded_rehearsal_task_order_interleaves_outcomes_and_is_replayable() -> None:
+    items = [
+        BankItem(f"r{index}", KnotItem(f"k{index}", 3, (1, -1), 2), float(index), 0)
+        for index in range(4)
+    ]
+    cells = {}
+    signatures = ((True, True), (True, False), (False, True), (False, False))
+    for item, signature in zip(items, signatures, strict=True):
+        cells[item.id] = {
+            "10.0": {"best_objective": 10.0 if signature[0] else None},
+            "1000.0": {"best_objective": 1000.0 if signature[1] else None},
+        }
+    first, metadata = deterministic_rehearsal_task_order(
+        items,
+        retention={"cells": cells},
+        ratios=(10.0, 1000.0),
+        exposure={},
+        seed=1234,
+    )
+    second, metadata2 = deterministic_rehearsal_task_order(
+        items,
+        retention={"cells": cells},
+        ratios=(10.0, 1000.0),
+        exposure={},
+        seed=1234,
+    )
+    assert [item.id for item in first] == [item.id for item in second]
+    assert metadata == metadata2
+    assert len(set(metadata["exposure_tiers"][0]["stratum_order"])) == 4
+    assert metadata["outcome_signature_deficits"] == []
+    assert metadata["policy"] == "seeded-outcome-interleaved-exposure-v1"
 
 
 def test_rehearsal_timeout_debt_counts_only_missing_censored_iterations() -> None:

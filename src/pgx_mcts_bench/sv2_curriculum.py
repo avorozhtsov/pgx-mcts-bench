@@ -117,13 +117,17 @@ class _RetentionRepresentation:
 
 
 def _retention_representations(
-    items: list[KnotItem] | list[BankItem],
+    items: list[KnotItem] | list[BankItem] | list[_RetentionRepresentation],
 ) -> list[_RetentionRepresentation]:
     return [
         (
-            _RetentionRepresentation(item.id, item.knot)
-            if isinstance(item, BankItem)
-            else _RetentionRepresentation(item.name, item)
+            item
+            if isinstance(item, _RetentionRepresentation)
+            else (
+                _RetentionRepresentation(item.id, item.knot)
+                if isinstance(item, BankItem)
+                else _RetentionRepresentation(item.name, item)
+            )
         )
         for item in items
     ]
@@ -474,6 +478,82 @@ def deterministic_rehearsal_panel(
         "representations": [item.id for item in panel],
     }
     return panel, next_cursor, metadata
+
+
+def deterministic_rehearsal_task_order(
+    items: list[KnotItem] | list[BankItem] | list[_RetentionRepresentation],
+    *,
+    retention: dict[str, Any],
+    ratios: tuple[float, ...],
+    exposure: dict[str, int],
+    seed: int,
+) -> tuple[list[_RetentionRepresentation], dict[str, Any]]:
+    """Mix a bounded panel without sacrificing exposure fairness.
+
+    Membership remains the auditable exact-order round-robin panel.  Within
+    that panel, representations with the same prior exposure are interleaved
+    across their complete ratio-outcome signatures.  Bucket order and bucket
+    contents use one durable seeded permutation, so a resumed transaction gets
+    byte-for-byte the same training order.
+    """
+    representations = list(_retention_representations(items))
+    if not representations:
+        raise ValueError("rehearsal task order requires at least one representation")
+    if not ratios:
+        raise ValueError("rehearsal task order requires at least one ratio")
+    rng = np.random.default_rng(seed)
+    ordered: list[_RetentionRepresentation] = []
+    strata_seen: set[str] = set()
+    tiers: list[dict[str, Any]] = []
+    for exposure_count in sorted({int(exposure.get(item.id, 0)) for item in representations}):
+        tier = [
+            item
+            for item in representations
+            if int(exposure.get(item.id, 0)) == exposure_count
+        ]
+        buckets: dict[str, list[_RetentionRepresentation]] = {}
+        for item in tier:
+            cells = retention["cells"][item.id]
+            signature = "/".join(
+                f"{float(ratio):g}-"
+                + ("positive" if cells[str(ratio)]["best_objective"] is not None else "negative")
+                for ratio in ratios
+            )
+            buckets.setdefault(signature, []).append(item)
+            strata_seen.add(signature)
+        signatures = sorted(buckets)
+        rng.shuffle(signatures)
+        for signature in signatures:
+            rng.shuffle(buckets[signature])
+        tier_order: list[str] = []
+        while any(buckets.values()):
+            for signature in signatures:
+                if buckets[signature]:
+                    ordered.append(buckets[signature].pop())
+                    tier_order.append(signature)
+        tiers.append(
+            {
+                "exposure": exposure_count,
+                "representations": len(tier),
+                "stratum_order": tier_order,
+            }
+        )
+    all_signatures = [
+        "/".join(
+            f"{float(ratio):g}-" + ("positive" if mask & (1 << index) else "negative")
+            for index, ratio in enumerate(ratios)
+        )
+        for mask in range(1 << len(ratios))
+    ]
+    metadata = {
+        "policy": "seeded-outcome-interleaved-exposure-v1",
+        "training_seed": int(seed),
+        "training_order": [item.id for item in ordered],
+        "outcome_signatures_present": sorted(strata_seen),
+        "outcome_signature_deficits": sorted(set(all_signatures) - strata_seen),
+        "exposure_tiers": tiers,
+    }
+    return ordered, metadata
 
 
 def rehearsal_timeout_debt(events: list[dict[str, Any]], scientist: str) -> int:
@@ -1333,6 +1413,10 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
     if operation == "rehearse":
         processed_items = payload["processed_items"]
         panel_metadata = payload.get("rehearsal_panel_metadata")
+        task_order_policy = str(
+            payload.get("rehearsal_task_order_policy", "priority-exposure-v1")
+        )
+        task_order_seed = int(payload.get("rehearsal_task_order_seed", payload["seed"]))
         evaluation_ratios = tuple(payload["ratios"])
         training_ratios = tuple(payload.get("training_ratios", evaluation_ratios))
         identity_indices = payload["identity_indices"]
@@ -1340,7 +1424,22 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
         round_index = int(payload["round_index"])
         dose_before = int(payload["f_old"])
         scientist_name = str(payload.get("scientist", scientist.name))
-        representations = {item.id: item for item in _retention_representations(processed_items)}
+        retention_items = list(_retention_representations(processed_items))
+        task_order_metadata: dict[str, Any] | None = None
+        if task_order_policy == "seeded-outcome-interleaved-exposure-v1":
+            rng = np.random.default_rng(task_order_seed)
+            indices = list(range(len(retention_items)))
+            rng.shuffle(indices)
+            retention_items = [retention_items[index] for index in indices]
+            task_order_metadata = {
+                "policy": task_order_policy,
+                "seed": task_order_seed,
+                "retention_order": [item.id for item in retention_items],
+                "training_order": None,
+            }
+        elif task_order_policy != "priority-exposure-v1":
+            raise ValueError(f"unknown rehearsal task order policy: {task_order_policy}")
+        representations = {item.id: item for item in retention_items}
         checkpoint_interval = float(
             payload.get(
                 "checkpoint_interval_seconds",
@@ -1361,6 +1460,18 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
             rehearsal_rows = list(checkpoint["iterations"])
             if checkpoint.get("rehearsal_panel_metadata") != panel_metadata:
                 raise RuntimeError("rehearsal checkpoint panel cursor differs from payload")
+            checkpoint_task_order = checkpoint.get("rehearsal_task_order")
+            if task_order_metadata is not None:
+                if not isinstance(checkpoint_task_order, dict):
+                    raise RuntimeError("rehearsal checkpoint is missing task-order metadata")
+                if (
+                    checkpoint_task_order.get("policy") != task_order_metadata["policy"]
+                    or checkpoint_task_order.get("seed") != task_order_metadata["seed"]
+                    or checkpoint_task_order.get("retention_order")
+                    != task_order_metadata["retention_order"]
+                ):
+                    raise RuntimeError("rehearsal checkpoint task order differs from payload")
+                task_order_metadata = checkpoint_task_order
         else:
             phase = "retention_before"
             before = None
@@ -1400,6 +1511,7 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
                     "completed_retention_after_cells": _retention_cell_count(after_cells),
                     "rehearsal_exposure": exposure,
                     "rehearsal_panel_metadata": panel_metadata,
+                    "rehearsal_task_order": task_order_metadata,
                     "scientist_state": _scientist_state(scientist),
                 },
             )
@@ -1420,7 +1532,7 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
 
             before = _retention_summary_resumable(
                 scientist,
-                processed_items,
+                retention_items,
                 ratios=evaluation_ratios,
                 simulations=int(payload["simulations"]),
                 seed=seed + 700_000_000 + round_index * 100_000,
@@ -1430,15 +1542,32 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
                 progress=before_progress,
             )
             before_cells = before["cells"]
-            priority = _rehearsal_priority(processed_items, before, evaluation_ratios)
-            priority_rank = {item.id: index for index, item in enumerate(priority)}
-            selected_old = sorted(
-                priority,
-                key=lambda item: (
-                    exposure.get(item.id, 0),
-                    priority_rank[item.id],
-                ),
-            )[:dose_before]
+            if task_order_policy == "seeded-outcome-interleaved-exposure-v1":
+                selected_order, training_metadata = deterministic_rehearsal_task_order(
+                    retention_items,
+                    retention=before,
+                    ratios=evaluation_ratios,
+                    exposure=exposure,
+                    seed=task_order_seed + 1,
+                )
+                selected_old = selected_order[:dose_before]
+                assert task_order_metadata is not None
+                task_order_metadata = {
+                    **task_order_metadata,
+                    **training_metadata,
+                    "retention_order": task_order_metadata["retention_order"],
+                    "selected_training_order": [item.id for item in selected_old],
+                }
+            else:
+                priority = _rehearsal_priority(retention_items, before, evaluation_ratios)
+                priority_rank = {item.id: index for index, item in enumerate(priority)}
+                selected_old = sorted(
+                    priority,
+                    key=lambda item: (
+                        exposure.get(item.id, 0),
+                        priority_rank[item.id],
+                    ),
+                )[:dose_before]
             phase = "train"
             persist_checkpoint()
 
@@ -1484,7 +1613,7 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
 
         after = _retention_summary_resumable(
             scientist,
-            processed_items,
+            retention_items,
             ratios=evaluation_ratios,
             simulations=int(payload["simulations"]),
             seed=seed + 700_000_000 + round_index * 100_000,
@@ -1519,6 +1648,7 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
                 "after": after,
                 "capped_cost_worsened": worsened,
                 "panel": panel_metadata,
+                "task_order": task_order_metadata,
             },
         }
 
@@ -2366,6 +2496,8 @@ def run_coordinated_arm(
     strict_own_budget_rehearsal: bool = False,
     rehearsal_repair_debt: dict[str, int] | None = None,
     terminal_full_retention_audit: bool = False,
+    pause_after_rungs: int | None = None,
+    rehearsal_task_order_transition: Path | None = None,
     pipelined_static_no_sharing: bool = False,
     adaptive_compute: bool = False,
     f_native_levels: tuple[int, ...] | None = None,
@@ -2408,6 +2540,10 @@ def run_coordinated_arm(
             raise ValueError("rehearsal repair debt names must match scientists")
         if any(value < 0 for value in rehearsal_repair_debt.values()):
             raise ValueError("rehearsal repair debt must be non-negative")
+    if pause_after_rungs is not None and (
+        pause_after_rungs < 1 or pause_after_rungs % block_size != 0
+    ):
+        raise ValueError("pause-after-rungs must be a positive rehearsal block boundary")
     if (
         min(
             simulations,
@@ -2688,6 +2824,24 @@ def run_coordinated_arm(
         if prior_payload is not None:
             _atomic_json(output / "prior-bank.json", prior_payload)
 
+    task_order_transition: dict[str, Any] | None = None
+    if rehearsal_task_order_transition is not None:
+        task_order_transition = json.loads(rehearsal_task_order_transition.read_text())
+        expected_transition = {
+            "schema": "semantic-v2-rehearsal-task-order-transition-v1",
+            "cohort": "primary-8",
+            "passed": True,
+            "boundary_completed_rungs": 30,
+            "from_policy": "priority-exposure-v1",
+            "to_policy": "seeded-outcome-interleaved-exposure-v1",
+            "bank_sha256": protocol["bank_sha256"],
+        }
+        for key, value in expected_transition.items():
+            if task_order_transition.get(key) != value:
+                raise RuntimeError(f"rehearsal task-order transition differs at {key}")
+        if task_order_transition["boundary_completed_rungs"] % block_size:
+            raise RuntimeError("rehearsal task-order transition is not a block boundary")
+
     scientist_seeds = {name: seed + index * 100_000_000 for index, name in enumerate(checkpoints)}
     if state_path.exists():
         state = _load_state(state_path)
@@ -2905,7 +3059,14 @@ def run_coordinated_arm(
             for name in coordinator.names
         }
 
-    while len(processed) < target_rungs:
+    if pause_after_rungs is not None and len(processed) > pause_after_rungs:
+        raise RuntimeError("durable curriculum already crossed pause-after-rungs barrier")
+    paused_at_barrier = bool(
+        pause_after_rungs is not None
+        and len(processed) == pause_after_rungs
+        and len(processed) < target_rungs
+    )
+    while len(processed) < target_rungs and not paused_at_barrier:
         round_index = len(processed)
         remaining = [item for item in items if item.id not in set(processed)]
         qualification: list[dict[str, Any]] = []
@@ -3109,6 +3270,21 @@ def run_coordinated_arm(
                     "scientist": name,
                     "processed_items": panels[name][0],
                     "rehearsal_panel_metadata": panels[name][2],
+                    "rehearsal_task_order_policy": (
+                        str(task_order_transition["to_policy"])
+                        if task_order_transition is not None
+                        and len(processed)
+                        > int(task_order_transition["boundary_completed_rungs"])
+                        else "priority-exposure-v1"
+                    ),
+                    "rehearsal_task_order_seed": (
+                        scientist_seeds[name]
+                        + 1_600_000_000
+                        + round_index * 100_000
+                        + int(panels[name][2]["cursor_before"])
+                        if panels[name][2] is not None
+                        else scientist_seeds[name] + 1_600_000_000 + round_index * 100_000
+                    ),
                     "strict_own_budget_rehearsal": strict_own_budget_rehearsal,
                     "ratios": ratios,
                     "training_ratios": training_ratios,
@@ -3335,9 +3511,13 @@ def run_coordinated_arm(
         if pipelined_static_no_sharing and block_boundary:
             pipelined_rows = {}
             pipelined_selected = {}
+        if pause_after_rungs is not None and len(processed) >= pause_after_rungs:
+            if len(processed) != pause_after_rungs or not block_boundary:
+                raise RuntimeError("pause-after-rungs crossed outside its exact block boundary")
+            paused_at_barrier = len(processed) < target_rungs
 
     terminal_audit = None
-    if terminal_full_retention_audit:
+    if terminal_full_retention_audit and not paused_at_barrier:
         audit_items = [*prior_items, *[by_id[item_id] for item_id in processed]]
         audit_rows = coordinator.run(
             "retention-audit",
@@ -3380,6 +3560,20 @@ def run_coordinated_arm(
         "block_reports": block_reports,
         "events": events,
         "terminal_retention_audit": terminal_audit,
+        "paused_at_rehearsal_barrier": paused_at_barrier,
+        "pause_after_rungs": pause_after_rungs,
+        "rehearsal_task_order_transition": (
+            {
+                "path": str(rehearsal_task_order_transition),
+                "sha256": _sha256(rehearsal_task_order_transition),
+                "boundary_completed_rungs": task_order_transition[
+                    "boundary_completed_rungs"
+                ],
+                "to_policy": task_order_transition["to_policy"],
+            }
+            if task_order_transition is not None
+            else None
+        ),
         "q104_rehearsal_repair": (
             {
                 "root": str(repair_root),
@@ -3399,7 +3593,12 @@ def run_coordinated_arm(
         "invocation_source_provenance": invocation_source_provenance,
         "wall_seconds_this_invocation": time.perf_counter() - started,
     }
-    _atomic_json(output / "report.json", report)
+    report_path = (
+        output / f"barrier-report-{int(pause_after_rungs):03d}.json"
+        if paused_at_barrier
+        else output / "report.json"
+    )
+    _atomic_json(report_path, report)
     coordinator.close()
     return report
 

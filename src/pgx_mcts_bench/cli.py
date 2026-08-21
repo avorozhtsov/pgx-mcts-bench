@@ -201,6 +201,18 @@ def braid_sv2_coordinated(
         typer.Option(help="Repeat NAME=ITERATIONS for censored Q104 rehearsal debt"),
     ] = None,
     terminal_full_retention_audit: bool = False,
+    pause_after_rungs: Annotated[
+        int | None,
+        typer.Option(help="Stop only after this completed rehearsal block boundary"),
+    ] = None,
+    rehearsal_task_order_transition: Annotated[
+        Path | None,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Verified cohort transition enabling seeded rehearsal task ordering",
+        ),
+    ] = None,
     pipelined_static_no_sharing: bool = False,
     adaptive_compute: bool = False,
     f_native_levels: str | None = None,
@@ -278,6 +290,8 @@ def braid_sv2_coordinated(
         strict_own_budget_rehearsal=strict_own_budget_rehearsal,
         rehearsal_repair_debt=repair_debt or None,
         terminal_full_retention_audit=terminal_full_retention_audit,
+        pause_after_rungs=pause_after_rungs,
+        rehearsal_task_order_transition=rehearsal_task_order_transition,
         pipelined_static_no_sharing=pipelined_static_no_sharing,
         adaptive_compute=adaptive_compute,
         f_native_levels=(

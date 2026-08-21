@@ -99,6 +99,20 @@ positive, and L1000 negative/censored.  If a stratum is absent, use the
 declared deterministic fallback order and record the exact deficit; do not
 retry until a desired outcome appears.
 
+The primary-8 cohort keeps the original priority/exposure task order through
+the exact-common Q134 boundary (30 Q154 rows).  Every lineage must stop at that
+durable rehearsal block before any Q135 native work.  The cohort marker binds
+all eight 30-event prefixes and state hashes.  After the verified Q134
+transition gate, panel membership and the absolute cursor remain unchanged,
+but task order is mixed reproducibly: `retention_before` and
+`retention_after` use the same lineage/round/cursor-seeded permutation, while
+training tasks are interleaved across complete L10/L1000 outcome signatures
+inside each least-exposed tier.  The seed, retention order, selected training
+order, present outcome signatures, and fallback deficits are persisted in the
+schema-v3 checkpoint and completed rehearsal event.  A transition before the
+common Q134 marker, a different order on resume, or a branch crossing Q134
+under the new policy before the cohort barrier is `BLOCKED`.
+
 Before Q154 native curriculum begins, each lineage repays all Q104 rehearsal
 debt, defined as the sum over censored Q104 rehearsal blocks of
 `max(0, F_old - completed_rehearsal_iterations)`.  Repair is written as a
@@ -117,3 +131,28 @@ cap exhaustion is a censored hard timeout and holds `F_old`; native keeps its
 original one-hour hard deadline.  After durable Q154 completion, run exactly
 one full-history, after-only retention audit over all 154 representations and
 both ratios.  It performs no training and cannot update `F_old`.
+
+## Primary-8 and deferred V3 cohorts
+
+The Q104-to-Q154 transition is cohort-scoped.  The primary cohort contains the
+eight Q/SKM lineages that have durable 44/44 Q104 reports.  Its authoritative
+prerequisite is `PRIMARY_8_LINEAGES_Q104_COMPLETE.json`, which must enumerate
+the exact eight labels and bind every Q104 report and final state by SHA256.
+This marker is not an assertion that all ten registered lineages completed
+Q104.
+
+`cyclic-graph-dual-v3` and `cyclic-memory-deep-v3` form a separate deferred
+backfill cohort.  Deferral preserves each latest atomic Q104 state, completed
+event count, event-file hash, and state hash in `V3_BACKFILL_DEFERRED.json`.
+The two branches are `PREPARED`, never `COMPLETED`, until their own Q104
+reports exist.  They must be resumed only through the dedicated V3 backfill
+launcher and must never be silently folded into the primary marker.
+
+Q154 may dispatch the primary eight immediately after the primary marker and
+the strict-no-sharing bounded-rehearsal gate verify.  Its terminal marker is
+`ALL_PRIMARY_8_LINEAGES_Q154_COMPLETE`; it is not the all-ten terminal marker.
+The V3 Q104 and Q154 backfill keeps separate launcher status, roots, markers,
+and reports.  Primary-8 results may be compared on their exact-common prefixes;
+V3 results join a leaderboard only after an exact-common block exists.  No
+partial V3 prefix may be ranked against a longer primary prefix, and no result
+may be ranked by iteration count alone.

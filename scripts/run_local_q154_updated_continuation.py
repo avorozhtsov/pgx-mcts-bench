@@ -28,11 +28,14 @@ ARCHIVE = Path(
 )
 POPULATION = RUN / "continuation/q4000-v1-population-20260818"
 Q104_ROOT = POPULATION / "q104-updated-20260819"
-Q104_MARKER = Q104_ROOT / "ALL_REGISTERED_LINEAGES_Q104_COMPLETE"
+Q104_MARKER = Q104_ROOT / "PRIMARY_8_LINEAGES_Q104_COMPLETE.json"
+Q104_MARKER_SCHEMA = "q104-primary-8-completion-v1"
 Q104_STATUS = Q104_ROOT / "launcher-status.json"
 ROOT = POPULATION / "q154-updated-20260819"
 STATUS = ROOT / "launcher-status.json"
 LOCK = ROOT / "launcher.lock"
+COMPLETION_MARKER = ROOT / "ALL_PRIMARY_8_LINEAGES_Q154_COMPLETE"
+Q134_BARRIER_MARKER = ROOT / "ALL_PRIMARY_8_LINEAGES_Q134_PRIORITY_ORDER_COMPLETE.json"
 QROOT = RUN / "inputs/q4000-v1"
 POLICY = REPO / "research/local-q-skm-ablation/q50-1-updated-policy.json"
 REGISTRATION = REPO / "research/mastery-v3-curriculum/curriculum.json"
@@ -42,7 +45,7 @@ PRIOR = ROOT / "protocol/prior-q104-for-q50-1-updated.json"
 BUILD_AUDIT = ROOT / "protocol/q50-1-updated-audit.json"
 MAX_EXPERIMENT_CORES = 6
 INVARIANT_TIMEOUT_SECONDS = 3600
-BOUNDED_REHEARSAL_FIX_GATE = ROOT / "STRICT_NO_SHARING_BOUNDED_REHEARSAL_FIX_VERIFIED.json"
+BOUNDED_REHEARSAL_FIX_GATE = ROOT / "Q134_REHEARSAL_TASK_ORDER_TRANSITION_VERIFIED.json"
 BOUNDED_REHEARSAL_SOURCES = (
     REPO / "src/pgx_mcts_bench/sv2_curriculum.py",
     REPO / "src/pgx_mcts_bench/data.py",
@@ -52,10 +55,17 @@ BOUNDED_REHEARSAL_SOURCES = (
     REPO / "tests/test_q154_launcher.py",
     REPO / "tests/test_sv2_curriculum.py",
     REPO / "scripts/run_local_q154_updated_continuation.py",
+    REPO / "scripts/run_local_q154_v3_backfill.py",
+    REPO / "scripts/prepare_local_q154_primary8_transition.py",
+    REPO / "scripts/prepare_q134_rehearsal_task_order_transition.py",
+    REPO / "scripts/build_q50_1_updated.py",
+    REPO / "scripts/run_local_q104_v3_backfill.py",
+    REPO / "research/local-q-skm-ablation/q50-1-updated-policy.json",
     REPO / "research/local-q-skm-ablation/EXECUTION-CONTRACT.md",
 )
 REHEARSAL_DEBT = ROOT / "protocol/q104-rehearsal-debt.json"
 REHEARSAL_PANEL_SIZE = 20
+TASK_ORDER_TRANSITION_RUNG = 30
 Q104_STAGE = "q44-2-updated-scheduled-no-sharing"
 F_NATIVE_LEVELS = (4, 6, 8, 12, 16)
 SIMULATION_LEVELS = (40, 64, 80, 128, 256)
@@ -89,8 +99,6 @@ SELECTIONS = {
     / "research/local-q-skm-ablation/cyclic-graph-dual-v3-selection.json",
 }
 BRANCHES = (
-    ("cyclic-memory-deep-v3", "cyclic-memory-deep-v3", 40, False),
-    ("cyclic-graph-dual-v3", "cyclic-graph-dual-v3", 40, False),
     ("q-grown-raster-axial-12", "raster-axial-12", 40, False),
     (
         "q-grown-raster-invariant-combined-dual-12",
@@ -113,7 +121,8 @@ BRANCHES = (
 
 _status_lock = threading.Lock()
 _status: dict[str, Any] = {
-    "schema": "q154-updated-population-launcher-v1",
+    "schema": "q154-primary-8-population-launcher-v1",
+    "cohort": "primary-8",
     "created_at": datetime.now(UTC).isoformat(),
     "state": "QUEUED",
     "stage": "awaiting durable Q104 completion",
@@ -193,14 +202,35 @@ def _wait_for_q104() -> None:
             _status["last_q104_check_at"] = datetime.now(UTC).isoformat()
             _write_status()
         time.sleep(60)
+    marker = json.loads(Q104_MARKER.read_text())
+    expected = [label for label, _scientist, _simulations, _timeout in BRANCHES]
+    if marker.get("schema") != Q104_MARKER_SCHEMA:
+        raise RuntimeError("unexpected Q104 cohort marker schema")
+    if marker.get("lineages") != expected:
+        raise RuntimeError("primary-8 Q104 marker lineages do not match launcher order")
+    for label in expected:
+        bound = marker.get("artifacts", {}).get(label, {})
+        report = Q104_ROOT / "branches" / label / Q104_STAGE / "report.json"
+        state = Q104_ROOT / "branches" / label / Q104_STAGE / "state.pt.gz"
+        if bound.get("report_sha256") != _sha256(report):
+            raise RuntimeError(f"primary-8 report hash changed: {label}")
+        if bound.get("state_sha256") != _sha256(state):
+            raise RuntimeError(f"primary-8 state hash changed: {label}")
 
 
 def _verify_bounded_rehearsal_gate() -> None:
     if not BOUNDED_REHEARSAL_FIX_GATE.is_file():
         raise RuntimeError(f"missing bounded rehearsal gate: {BOUNDED_REHEARSAL_FIX_GATE}")
     gate = json.loads(BOUNDED_REHEARSAL_FIX_GATE.read_text())
-    if gate.get("schema") != "bounded-rehearsal-protocol-fix-gate-v1" or not gate.get("passed"):
-        raise RuntimeError("bounded rehearsal protocol gate did not pass")
+    if (
+        gate.get("schema") != "semantic-v2-rehearsal-task-order-transition-v1"
+        or gate.get("cohort") != "primary-8"
+        or gate.get("boundary_completed_rungs") != TASK_ORDER_TRANSITION_RUNG
+        or gate.get("from_policy") != "priority-exposure-v1"
+        or gate.get("to_policy") != "seeded-outcome-interleaved-exposure-v1"
+        or not gate.get("passed")
+    ):
+        raise RuntimeError("Q134 rehearsal task-order transition gate did not pass")
     expected = {str(path): _sha256(path) for path in BOUNDED_REHEARSAL_SOURCES}
     if gate.get("source_sha256") != expected:
         raise RuntimeError("bounded rehearsal protocol source hashes changed")
@@ -334,12 +364,26 @@ def _run_branch(
     initial_state: Path,
     seed: int,
     repair_debt: int,
+    *,
+    phase: str,
 ) -> None:
     output = ROOT / "branches" / label / "q50-1-updated-scheduled-no-sharing-bounded"
     log = ROOT / "logs" / f"{label}.log"
-    if (output / "report.json").is_file():
-        _set_status(label, "COMPLETED", "Q154", "existing durable report")
+    barrier_report = output / f"barrier-report-{TASK_ORDER_TRANSITION_RUNG:03d}.json"
+    if phase == "q134-barrier" and barrier_report.is_file():
+        report = json.loads(barrier_report.read_text())
+        if (
+            report.get("completed_rungs") != TASK_ORDER_TRANSITION_RUNG
+            or not report.get("paused_at_rehearsal_barrier")
+        ):
+            raise RuntimeError(f"invalid Q134 barrier report: {label}")
+        _set_status(label, "COMPLETED", "Q134 rehearsal-order barrier")
         return
+    if phase == "q154-final" and (output / "report.json").is_file():
+        report = json.loads((output / "report.json").read_text())
+        if report.get("completed_rungs") == 50 and report.get("terminal_retention_audit"):
+            _set_status(label, "COMPLETED", "Q154", "existing durable terminal report")
+            return
     command = [
         "uv",
         "run",
@@ -402,6 +446,15 @@ def _run_branch(
         f"{scientist}={repair_debt}",
         "--terminal-full-retention-audit",
     ]
+    if phase == "q134-barrier":
+        command += ["--pause-after-rungs", str(TASK_ORDER_TRANSITION_RUNG)]
+    elif phase == "q154-final":
+        command += [
+            "--rehearsal-task-order-transition",
+            str(BOUNDED_REHEARSAL_FIX_GATE),
+        ]
+    else:
+        raise ValueError(f"unknown Q154 launcher phase: {phase}")
     if timeout:
         command += [
             "--scientist-task-timeout-seconds",
@@ -410,12 +463,52 @@ def _run_branch(
         ]
     if (output / "manifest.json").is_file():
         command.append("--resume")
-    _set_status(label, "LAUNCHED", "Q50-1-updated", "awaiting worker verification")
+    _set_status(label, "LAUNCHED", phase, "awaiting worker verification")
     _run(command, log=log)
-    if not (output / "report.json").is_file():
-        raise RuntimeError(f"Q154 branch returned without durable report: {label}")
-    (ROOT / "branches" / label / "Q154_COMPLETE").touch()
-    _set_status(label, "COMPLETED", "Q154")
+    if phase == "q134-barrier":
+        if not barrier_report.is_file():
+            raise RuntimeError(f"Q134 branch returned without durable barrier report: {label}")
+        report = json.loads(barrier_report.read_text())
+        if report.get("completed_rungs") != TASK_ORDER_TRANSITION_RUNG:
+            raise RuntimeError(f"Q134 branch stopped at the wrong prefix: {label}")
+        _set_status(label, "COMPLETED", "Q134 rehearsal-order barrier")
+    else:
+        if not (output / "report.json").is_file():
+            raise RuntimeError(f"Q154 branch returned without durable report: {label}")
+        (ROOT / "branches" / label / "Q154_COMPLETE").touch()
+        _set_status(label, "COMPLETED", "Q154")
+
+
+def _write_q134_barrier_marker() -> None:
+    artifacts: dict[str, Any] = {}
+    for label, _scientist, _simulations, _timeout in BRANCHES:
+        output = ROOT / "branches" / label / "q50-1-updated-scheduled-no-sharing-bounded"
+        report = output / f"barrier-report-{TASK_ORDER_TRANSITION_RUNG:03d}.json"
+        state = output / "state.pt.gz"
+        events = sorted((output / "events").glob("*.json"))
+        if len(events) != TASK_ORDER_TRANSITION_RUNG:
+            raise RuntimeError(f"Q134 barrier event count differs: {label}")
+        payload = json.loads(report.read_text())
+        if payload.get("completed_rungs") != TASK_ORDER_TRANSITION_RUNG:
+            raise RuntimeError(f"Q134 barrier report prefix differs: {label}")
+        artifacts[label] = {
+            "barrier_report_sha256": _sha256(report),
+            "state_sha256": _sha256(state),
+            "event_count": len(events),
+            "last_event_sha256": _sha256(events[-1]),
+        }
+    marker = {
+        "schema": "q154-primary-8-q134-task-order-transition-boundary-v1",
+        "cohort": "primary-8",
+        "completed_rungs": TASK_ORDER_TRANSITION_RUNG,
+        "lineages": [label for label, *_rest in BRANCHES],
+        "artifacts": artifacts,
+        "transition_gate": str(BOUNDED_REHEARSAL_FIX_GATE),
+        "transition_gate_sha256": _sha256(BOUNDED_REHEARSAL_FIX_GATE),
+    }
+    temporary = Q134_BARRIER_MARKER.with_suffix(".tmp")
+    temporary.write_text(json.dumps(marker, indent=2, sort_keys=True) + "\n")
+    os.replace(temporary, Q134_BARRIER_MARKER)
 
 
 def main() -> None:
@@ -442,33 +535,46 @@ def main() -> None:
             _status["stage"] = "Q50-1-updated wave dispatch"
             _status["q104_completed_at"] = datetime.now(UTC).isoformat()
             _write_status()
-        jobs: list[tuple[str, Callable[[], None]]] = []
-        for index, (label, scientist, simulations, timeout) in enumerate(BRANCHES):
-            jobs.append(
-                (
-                    label,
-                    partial(
-                        _run_branch,
-                        label,
-                        scientist,
-                        simulations,
-                        timeout,
-                        initial_states[label],
-                        202608190300 + index,
-                        rehearsal_debts[label],
-                    ),
-                )
-            )
         failures = []
-        with ThreadPoolExecutor(max_workers=MAX_EXPERIMENT_CORES) as executor:
-            futures = {executor.submit(job): label for label, job in jobs}
-            for future in as_completed(futures):
-                label = futures[future]
-                try:
-                    future.result()
-                except Exception as error:
-                    failures.append(f"{label}: {error!r}")
-                    _set_status(label, "BLOCKED", "Q50-1-updated", repr(error))
+        for phase in ("q134-barrier", "q154-final"):
+            with _status_lock:
+                _status["stage"] = phase
+                _write_status()
+            jobs: list[tuple[str, Callable[[], None]]] = []
+            for index, (label, scientist, simulations, timeout) in enumerate(BRANCHES):
+                jobs.append(
+                    (
+                        label,
+                        partial(
+                            _run_branch,
+                            label,
+                            scientist,
+                            simulations,
+                            timeout,
+                            initial_states[label],
+                            202608190300 + index,
+                            rehearsal_debts[label],
+                            phase=phase,
+                        ),
+                    )
+                )
+            with ThreadPoolExecutor(max_workers=MAX_EXPERIMENT_CORES) as executor:
+                futures = {executor.submit(job): label for label, job in jobs}
+                for future in as_completed(futures):
+                    label = futures[future]
+                    try:
+                        future.result()
+                    except Exception as error:
+                        failures.append(f"{label}: {error!r}")
+                        _set_status(label, "BLOCKED", phase, repr(error))
+            if failures:
+                break
+            if phase == "q134-barrier":
+                _write_q134_barrier_marker()
+                with _status_lock:
+                    _status["q134_barrier_marker"] = str(Q134_BARRIER_MARKER)
+                    _status["q134_barrier_verified_at"] = datetime.now(UTC).isoformat()
+                    _write_status()
         with _status_lock:
             _status["finished_at"] = datetime.now(UTC).isoformat()
             _status["state"] = "BLOCKED" if failures else "COMPLETED"
@@ -477,7 +583,7 @@ def main() -> None:
             _write_status()
         if failures:
             raise SystemExit("; ".join(failures))
-        (ROOT / "ALL_REGISTERED_LINEAGES_Q154_COMPLETE").touch()
+        COMPLETION_MARKER.touch()
     except Exception as error:
         with _status_lock:
             _status["state"] = "BLOCKED"

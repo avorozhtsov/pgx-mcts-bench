@@ -30,6 +30,8 @@ EXPLORATORY = RUN / "continuation/q4000-v1-exploratory-q40-1-20260818"
 ROOT = POPULATION / "q104-updated-20260819"
 STATUS = ROOT / "launcher-status.json"
 LOCK = ROOT / "launcher.lock"
+COMPLETION_MARKER = ROOT / "ALL_REGISTERED_LINEAGES_Q104_COMPLETE.json"
+COMPLETION_SCHEMA = "q104-all-10-completion-v1"
 Q60_MARKER = PRESERVED / "ALL_PROMISING_LINEAGES_Q60_COMPLETE"
 Q60_STATUS = PRESERVED / "launcher-status.json"
 REHEARSAL_FIX_GATE = ROOT / "REHEARSAL_TIMEOUT_CHECKPOINT_FIX_VERIFIED"
@@ -111,6 +113,29 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _write_completion_marker() -> None:
+    artifacts = {}
+    for label, _scientist, _simulations, _timeout in BRANCHES:
+        output = ROOT / "branches" / label / "q44-2-updated-scheduled-no-sharing"
+        report = output / "report.json"
+        state = output / "state.pt.gz"
+        if not report.is_file() or not state.is_file():
+            raise RuntimeError(f"cannot bind incomplete Q104 branch: {label}")
+        artifacts[label] = {
+            "report_sha256": _sha256(report),
+            "state_sha256": _sha256(state),
+        }
+    payload = {
+        "schema": COMPLETION_SCHEMA,
+        "lineages": [label for label, _scientist, _simulations, _timeout in BRANCHES],
+        "artifacts": artifacts,
+        "completed_at": datetime.now(UTC).isoformat(),
+    }
+    temporary = COMPLETION_MARKER.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    os.replace(temporary, COMPLETION_MARKER)
 
 
 def _write_status() -> None:
@@ -391,7 +416,7 @@ def main() -> None:
             _write_status()
         if failures:
             raise SystemExit("; ".join(failures))
-        (ROOT / "ALL_REGISTERED_LINEAGES_Q104_COMPLETE").touch()
+        _write_completion_marker()
     except Exception as error:
         with _status_lock:
             _status["state"] = "BLOCKED"
