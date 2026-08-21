@@ -100,6 +100,39 @@ def test_collaboration_sampling_balances_success_and_includes_cap_failures() -> 
     assert censored_only.has_trainable_collaboration_positions()
 
 
+def test_ratio_outcome_rehearsal_sampler_uses_four_equal_strata_and_reports_deficits() -> None:
+    replay = ReplayBuffer(1_000, np.random.default_rng(44))
+    for ratio in (10.0, 1000.0):
+        for solved in (0.0, 1.0):
+            record = _episode(f"{ratio:g}-{solved:g}", solved, length=4)
+            replay.add(record, objective_ratio=ratio)
+
+    batch = replay.sample_ratio_outcome_balanced_positions(64, positions_per_episode=4)
+
+    assert len(batch) == 64
+    trace = replay.last_collaboration_sample_trace
+    assert len(trace) == 16
+    assert {
+        (row["requested_ratio"], row["requested_outcome"]): sum(
+            other["requested_ratio"] == row["requested_ratio"]
+            and other["requested_outcome"] == row["requested_outcome"]
+            for other in trace
+        )
+        for row in trace
+    } == {
+        (10.0, "positive"): 4,
+        (10.0, "negative"): 4,
+        (1000.0, "positive"): 4,
+        (1000.0, "negative"): 4,
+    }
+    assert {row["fallback"] for row in trace} == {"none"}
+
+    missing = ReplayBuffer(100, np.random.default_rng(45))
+    missing.add(_episode("only-l10-positive", 1.0), objective_ratio=10.0)
+    missing.sample_ratio_outcome_balanced_positions(16, positions_per_episode=4)
+    assert any(row["fallback"] != "none" for row in missing.last_collaboration_sample_trace)
+
+
 def test_small_positive_shared_fraction_still_schedules_one_witness_episode() -> None:
     replay = ReplayBuffer(100, np.random.default_rng(6))
     replay.add(_episode("native", 1.0, length=8), representation_id="native")

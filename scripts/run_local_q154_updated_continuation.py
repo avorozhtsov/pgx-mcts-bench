@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import fcntl
+import gzip
 import hashlib
 import json
 import os
@@ -16,6 +17,8 @@ from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any
+
+import torch
 
 REPO = Path("/Users/artemvorozhtsov/projects/pgx-mcts-bench-local-ablation")
 RUN = Path("/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/local-q-skm-ablation-20260817")
@@ -39,6 +42,20 @@ PRIOR = ROOT / "protocol/prior-q104-for-q50-1-updated.json"
 BUILD_AUDIT = ROOT / "protocol/q50-1-updated-audit.json"
 MAX_EXPERIMENT_CORES = 6
 INVARIANT_TIMEOUT_SECONDS = 3600
+BOUNDED_REHEARSAL_FIX_GATE = ROOT / "STRICT_NO_SHARING_BOUNDED_REHEARSAL_FIX_VERIFIED.json"
+BOUNDED_REHEARSAL_SOURCES = (
+    REPO / "src/pgx_mcts_bench/sv2_curriculum.py",
+    REPO / "src/pgx_mcts_bench/data.py",
+    REPO / "src/pgx_mcts_bench/training.py",
+    REPO / "src/pgx_mcts_bench/cli.py",
+    REPO / "tests/test_data.py",
+    REPO / "tests/test_q154_launcher.py",
+    REPO / "tests/test_sv2_curriculum.py",
+    REPO / "scripts/run_local_q154_updated_continuation.py",
+    REPO / "research/local-q-skm-ablation/EXECUTION-CONTRACT.md",
+)
+REHEARSAL_DEBT = ROOT / "protocol/q104-rehearsal-debt.json"
+REHEARSAL_PANEL_SIZE = 20
 Q104_STAGE = "q44-2-updated-scheduled-no-sharing"
 F_NATIVE_LEVELS = (4, 6, 8, 12, 16)
 SIMULATION_LEVELS = (40, 64, 80, 128, 256)
@@ -178,6 +195,57 @@ def _wait_for_q104() -> None:
         time.sleep(60)
 
 
+def _verify_bounded_rehearsal_gate() -> None:
+    if not BOUNDED_REHEARSAL_FIX_GATE.is_file():
+        raise RuntimeError(f"missing bounded rehearsal gate: {BOUNDED_REHEARSAL_FIX_GATE}")
+    gate = json.loads(BOUNDED_REHEARSAL_FIX_GATE.read_text())
+    if gate.get("schema") != "bounded-rehearsal-protocol-fix-gate-v1" or not gate.get("passed"):
+        raise RuntimeError("bounded rehearsal protocol gate did not pass")
+    expected = {str(path): _sha256(path) for path in BOUNDED_REHEARSAL_SOURCES}
+    if gate.get("source_sha256") != expected:
+        raise RuntimeError("bounded rehearsal protocol source hashes changed")
+    with _status_lock:
+        _status["bounded_rehearsal_fix_gate"] = str(BOUNDED_REHEARSAL_FIX_GATE)
+        _status["bounded_rehearsal_fix_verified_at"] = datetime.now(UTC).isoformat()
+        _write_status()
+
+
+def _load_state(path: Path) -> dict[str, Any]:
+    with gzip.open(path, "rb") as handle:
+        return torch.load(handle, map_location="cpu", weights_only=False)
+
+
+def _build_rehearsal_debt() -> dict[str, int]:
+    debts: dict[str, int] = {}
+    for label, scientist, _simulations, _timeout in BRANCHES:
+        state_path = Q104_ROOT / "branches" / label / Q104_STAGE / "state.pt.gz"
+        state = _load_state(state_path)
+        debt = 0
+        for event in state.get("events", []):
+            rehearsal = event.get("scientists", {}).get(scientist, {}).get("rehearsal") or {}
+            if rehearsal.get("hard_timeout") is not None:
+                debt += max(
+                    0,
+                    int(rehearsal.get("F_old", 0)) - len(rehearsal.get("iterations", [])),
+                )
+        debts[label] = debt
+    REHEARSAL_DEBT.parent.mkdir(parents=True, exist_ok=True)
+    debt_payload = {
+        "schema": "semantic-v2-q104-rehearsal-debt-v1",
+        "formula": "sum(max(0,F_old-completed_rehearsal_iterations)) over censored blocks",
+        "sharing": "none",
+        "lineages": debts,
+    }
+    serialized = json.dumps(debt_payload, indent=2, sort_keys=True) + "\n"
+    if REHEARSAL_DEBT.exists() and REHEARSAL_DEBT.read_text() != serialized:
+        raise RuntimeError(f"frozen Q104 debt artifact changed: {REHEARSAL_DEBT}")
+    if not REHEARSAL_DEBT.exists():
+        temporary = REHEARSAL_DEBT.with_suffix(".tmp")
+        temporary.write_text(serialized)
+        os.replace(temporary, REHEARSAL_DEBT)
+    return debts
+
+
 def _build_bank() -> None:
     _run(
         [
@@ -233,6 +301,27 @@ def _export_initial_states() -> dict[str, Path]:
             )
         if not destination.is_file():
             raise RuntimeError(f"Q104 state export missing: {destination}")
+        exported = _load_state(destination)
+        source_state = _load_state(source)
+        source_hash = _sha256(source)
+        if exported.get("exact_representation_objectives_enriched_from") != source_hash:
+            replay = exported["scientist"]["replay"]
+            replay._ensure_replay_state()
+            for event in source_state.get("events", []):
+                representation = event.get("selected")
+                native_best = event.get("scientists", {}).get(scientist, {}).get("native_best", {})
+                if not representation:
+                    continue
+                for ratio_key, witness in native_best.items():
+                    if isinstance(witness, dict) and witness.get("objective") is not None:
+                        replay.record_native_objective(
+                            str(representation), float(ratio_key), float(witness["objective"])
+                        )
+            exported["exact_representation_objectives_enriched_from"] = source_hash
+            temporary = destination.with_suffix(destination.suffix + ".tmp")
+            with gzip.open(temporary, "wb", compresslevel=1) as handle:
+                torch.save(exported, handle)
+            os.replace(temporary, destination)
         result[label] = destination
     return result
 
@@ -244,8 +333,9 @@ def _run_branch(
     timeout: bool,
     initial_state: Path,
     seed: int,
+    repair_debt: int,
 ) -> None:
-    output = ROOT / "branches" / label / "q50-1-updated-scheduled-no-sharing"
+    output = ROOT / "branches" / label / "q50-1-updated-scheduled-no-sharing-bounded"
     log = ROOT / "logs" / f"{label}.log"
     if (output / "report.json").is_file():
         _set_status(label, "COMPLETED", "Q154", "existing durable report")
@@ -305,11 +395,18 @@ def _run_branch(
         ",".join(map(str, SIMULATION_LEVELS)),
         "--device",
         "cpu",
+        "--rehearsal-panel-size",
+        str(REHEARSAL_PANEL_SIZE),
+        "--strict-own-budget-rehearsal",
+        "--rehearsal-repair-debt",
+        f"{scientist}={repair_debt}",
+        "--terminal-full-retention-audit",
     ]
     if timeout:
         command += [
             "--scientist-task-timeout-seconds",
             str(INVARIANT_TIMEOUT_SECONDS),
+            "--resumable-rehearsal-segments",
         ]
     if (output / "manifest.json").is_file():
         command.append("--resume")
@@ -336,7 +433,9 @@ def main() -> None:
     _write_status()
     try:
         _wait_for_q104()
+        _verify_bounded_rehearsal_gate()
         _build_bank()
+        rehearsal_debts = _build_rehearsal_debt()
         initial_states = _export_initial_states()
         with _status_lock:
             _status["state"] = "LAUNCHED"
@@ -356,6 +455,7 @@ def main() -> None:
                         timeout,
                         initial_states[label],
                         202608190300 + index,
+                        rehearsal_debts[label],
                     ),
                 )
             )

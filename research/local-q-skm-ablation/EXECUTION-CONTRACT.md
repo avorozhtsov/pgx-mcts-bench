@@ -78,3 +78,42 @@ failures in the denominator.  Never serialize model state from an asynchronous
 signal handler.  At most the completed work since the preceding ten-minute
 checkpoint plus the currently incomplete cell or rehearsal iteration may be
 discarded.
+
+Q154 remains strict `scheduled-no-sharing` in exact bank row order.  No scalar
+budget, network weight, replay record, witness, trajectory, outcome, or
+controller datum crosses lineages.  Every rehearsal iteration keeps four
+self-play games and 24 optimizer steps: two games use L10 and two use L1000.
+All four games use only that lineage's best native incumbent cap for the exact
+representation and ratio.  A historical carry that predates exact
+representation indexing may use only the same lineage's knot-identity
+incumbent as an explicitly reported compatibility fallback.  Missing local
+caps fall back to the global game budget and are reported as deficits.
+
+Q154 block rehearsal uses a deterministic expanding round-robin panel of at
+most 20 representations in exact historical bank order.  The durable absolute
+cursor is part of state and checkpoint data.  Only that panel receives the
+`retention_before -> train -> retention_after` transaction, for at most
+`20 x 2 ratios x 2 phases = 80` retention cells per block.  Replay optimizer
+batches target four equal strata: L10 positive, L10 negative/censored, L1000
+positive, and L1000 negative/censored.  If a stratum is absent, use the
+declared deterministic fallback order and record the exact deficit; do not
+retry until a desired outcome appears.
+
+Before Q154 native curriculum begins, each lineage repays all Q104 rehearsal
+debt, defined as the sum over censored Q104 rehearsal blocks of
+`max(0, F_old - completed_rehearsal_iterations)`.  Repair is written as a
+separate `q104-rehearsal-repair-v1` carry and uses consecutive round-robin
+panels in chunks of at most eight iterations.  It must not replay a native Q104
+identity, commit a Q104 event, advance curriculum, or rewrite the historical
+Q104 result.  Every repair chunk is atomic and resumable.
+
+For timeout-enabled Q154 lineages, the one-hour rehearsal deadline is a
+resumable compute segment.  An expired segment kills only that scientist child
+and resumes the same panel transaction from its schema-v3 checkpoint without
+committing an event or advancing curriculum.  The cumulative cap is computed
+from the bounded panel size, ratio count, current simulation dose, and current
+rehearsal iteration dose, then rounded up to a whole segment.  Only cumulative
+cap exhaustion is a censored hard timeout and holds `F_old`; native keeps its
+original one-hour hard deadline.  After durable Q154 completion, run exactly
+one full-history, after-only retention audit over all 154 representations and
+both ratios.  It performs no training and cannot update `F_old`.

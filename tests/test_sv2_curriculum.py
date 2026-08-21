@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 import pgx_mcts_bench.sv2_curriculum as curriculum
 from pgx_mcts_bench.adaptive_scientists import KnotItem
@@ -27,11 +28,55 @@ from pgx_mcts_bench.sv2_curriculum import (
     build_r200,
     coordinated_block_report,
     curriculum_skip_event,
+    deterministic_rehearsal_panel,
     next_compute_dose,
     next_rehearsal_dose,
+    rehearsal_cumulative_timeout_seconds,
+    rehearsal_timeout_debt,
     run_static_no_sharing,
     write_prefix24,
 )
+
+
+def test_expanding_round_robin_panel_uses_exact_order_and_durable_absolute_cursor() -> None:
+    items = [
+        BankItem(f"r{index}", KnotItem(f"k{index}", 3, (1, -1), 2), float(index), 0)
+        for index in range(7)
+    ]
+    first, cursor, metadata = deterministic_rehearsal_panel(items, panel_size=4, cursor=0)
+    second, cursor2, metadata2 = deterministic_rehearsal_panel(
+        [*items, BankItem("r7", KnotItem("k7", 3, (1, -1), 2), 7.0, 0)],
+        panel_size=4,
+        cursor=cursor,
+    )
+    assert [item.id for item in first] == ["r0", "r1", "r2", "r3"]
+    assert [item.id for item in second] == ["r4", "r5", "r6", "r7"]
+    assert (cursor, cursor2) == (4, 8)
+    assert metadata["policy"] == "exact-bank-order-expanding-round-robin-v1"
+    assert metadata2["population_size"] == 8
+
+
+def test_rehearsal_timeout_debt_counts_only_missing_censored_iterations() -> None:
+    events = [
+        {
+            "scientists": {
+                "s": {"rehearsal": {"F_old": 8, "iterations": [{}, {}], "hard_timeout": {}}}
+            }
+        },
+        {"scientists": {"s": {"rehearsal": {"F_old": 4, "iterations": [{}]}}}},
+        {
+            "scientists": {
+                "s": {
+                    "rehearsal": {
+                        "F_old": 4,
+                        "iterations": [{}, {}, {}],
+                        "hard_timeout": {},
+                    }
+                }
+            }
+        },
+    ]
+    assert rehearsal_timeout_debt(events, "s") == 7
 
 
 def test_native_event_is_immutable_and_hash_verified(tmp_path: Path) -> None:
@@ -353,6 +398,220 @@ def test_rehearsal_timeout_installs_latest_checkpoint_in_coordinator(
     assert result["rehearsal_exposure"] == {"k1": 1}
 
 
+def test_rehearsal_cumulative_timeout_scales_with_history_and_compute() -> None:
+    assert (
+        rehearsal_cumulative_timeout_seconds(
+            3600,
+            processed_items=104,
+            ratios=2,
+            simulations=80,
+            f_old=8,
+        )
+        == 8 * 3600
+    )
+    assert (
+        rehearsal_cumulative_timeout_seconds(
+            3600,
+            processed_items=154,
+            ratios=2,
+            simulations=80,
+            f_old=8,
+        )
+        == 11 * 3600
+    )
+    assert (
+        rehearsal_cumulative_timeout_seconds(
+            3600,
+            processed_items=154,
+            ratios=2,
+            simulations=128,
+            f_old=8,
+        )
+        == 17 * 3600
+    )
+
+
+def test_rehearsal_segment_timeout_resumes_same_phase_until_complete(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    item = BankItem(
+        id="k1",
+        knot=KnotItem("k1", 3, (1, -1, 1), 2),
+        cheap_score=1.0,
+        difficulty_quartile=0,
+    )
+    checkpoint_path = tmp_path / "rehearsal.pt.gz"
+    partial_state = {"version": 7}
+    curriculum._save_state(
+        checkpoint_path,
+        {
+            "schema": "semantic-v2-rehearsal-checkpoint-v1",
+            "scientist": "scientist",
+            "round_index": 3,
+            "checkpointed_at_unix": 1.0,
+            "selected_order": ["k1"],
+            "selected": ["k1"],
+            "iterations": [{"representation": "k1", "train_steps": 24}],
+            "completed_iterations": 1,
+            "before": {"solve_rate": 0.0, "capped_cost": 328.0},
+            "rehearsal_exposure": {"k1": 1},
+            "scientist_state": partial_state,
+        },
+    )
+    payload = {
+        "scientist": "scientist",
+        "processed_items": [item],
+        "ratios": (10.0,),
+        "action_horizon": 128,
+        "f_old": 1,
+        "rehearsal_exposure": {},
+        "retention_target": 0.8,
+        "round_index": 3,
+        "checkpoint_path": str(checkpoint_path),
+    }
+    completed = {
+        "next_F_old": 1,
+        "rehearsal_exposure": {"k1": 1},
+        "retention_after": {"attempts": 1},
+        "event": {"F_old": 1, "next_F_old": 1},
+    }
+    coordinator = object.__new__(curriculum._ScientistPhaseCoordinator)
+    coordinator.parallel = True
+    coordinator.names = ["scientist"]
+    coordinator.states = {"scientist": {"version": 0}}
+    coordinator._restore_next = {"scientist": False}
+    submitted = []
+    monkeypatch.setattr(
+        coordinator,
+        "submit",
+        lambda *args, **kwargs: submitted.append((args, kwargs)) or object(),
+    )
+    collects = iter([curriculum.FutureTimeoutError(), completed])
+
+    def collect(*_args, **_kwargs):
+        value = next(collects)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    monkeypatch.setattr(coordinator, "collect", collect)
+    monkeypatch.setattr(coordinator, "_reset_executor", lambda name: None)
+
+    result = coordinator.run(
+        "rehearse",
+        {"scientist": payload},
+        timeout_seconds=3600,
+        cumulative_timeout_seconds={"scientist": 10800},
+    )["scientist"]
+
+    assert len(submitted) == 2
+    assert coordinator.states["scientist"] == partial_state
+    assert result["event"]["rehearsal_segments"] == {
+        "segment_timeout_seconds": 3600.0,
+        "cumulative_timeout_seconds": 10800.0,
+        "segment_expirations": 1,
+        "checkpoint_resumes": 1,
+        "completed": True,
+    }
+    assert not checkpoint_path.exists()
+
+
+def test_rehearsal_segments_censor_only_after_cumulative_cap(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    item = BankItem(
+        id="k1",
+        knot=KnotItem("k1", 3, (1, -1, 1), 2),
+        cheap_score=1.0,
+        difficulty_quartile=0,
+    )
+    checkpoint_path = tmp_path / "rehearsal.pt.gz"
+    curriculum._save_state(
+        checkpoint_path,
+        {
+            "schema": "semantic-v2-rehearsal-checkpoint-v1",
+            "scientist": "scientist",
+            "round_index": 3,
+            "checkpointed_at_unix": 1.0,
+            "selected_order": ["k1"],
+            "selected": [],
+            "iterations": [],
+            "completed_iterations": 0,
+            "before": None,
+            "rehearsal_exposure": {},
+            "scientist_state": {"version": 7},
+        },
+    )
+    payload = {
+        "scientist": "scientist",
+        "processed_items": [item],
+        "ratios": (10.0,),
+        "action_horizon": 128,
+        "f_old": 1,
+        "rehearsal_exposure": {},
+        "retention_target": 0.8,
+        "round_index": 3,
+        "checkpoint_path": str(checkpoint_path),
+    }
+    coordinator = object.__new__(curriculum._ScientistPhaseCoordinator)
+    coordinator.parallel = True
+    coordinator.names = ["scientist"]
+    coordinator.states = {"scientist": {"version": 0}}
+    coordinator._restore_next = {"scientist": False}
+    monkeypatch.setattr(coordinator, "submit", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        coordinator,
+        "collect",
+        lambda *args, **kwargs: (_ for _ in ()).throw(curriculum.FutureTimeoutError()),
+    )
+    monkeypatch.setattr(coordinator, "_reset_executor", lambda name: None)
+
+    result = coordinator.run(
+        "rehearse",
+        {"scientist": payload},
+        timeout_seconds=3600,
+        cumulative_timeout_seconds={"scientist": 7200},
+    )["scientist"]
+
+    timeout = result["event"]["hard_timeout"]
+    assert timeout["seconds"] == 7200.0
+    assert timeout["segment_timeout_seconds"] == 3600.0
+    assert timeout["segment_expirations"] == 2
+    assert timeout["controller_update"] == "held-censored-timeout"
+    assert result["next_F_old"] == 1
+
+
+def test_rehearsal_segment_requires_atomic_checkpoint(monkeypatch) -> None:
+    coordinator = object.__new__(curriculum._ScientistPhaseCoordinator)
+    coordinator.parallel = True
+    coordinator.names = ["scientist"]
+    coordinator.states = {"scientist": {"version": 0}}
+    coordinator._restore_next = {"scientist": False}
+    monkeypatch.setattr(coordinator, "submit", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        coordinator,
+        "collect",
+        lambda *args, **kwargs: (_ for _ in ()).throw(curriculum.FutureTimeoutError()),
+    )
+    monkeypatch.setattr(coordinator, "_reset_executor", lambda name: None)
+
+    with pytest.raises(RuntimeError, match="without an atomic checkpoint"):
+        coordinator.run(
+            "rehearse",
+            {
+                "scientist": {
+                    "scientist": "scientist",
+                    "round_index": 3,
+                    "checkpoint_path": None,
+                }
+            },
+            timeout_seconds=3600,
+            cumulative_timeout_seconds={"scientist": 7200},
+        )
+
+
 def test_resumable_retention_skips_completed_cells(monkeypatch) -> None:
     items = [
         BankItem(
@@ -490,6 +749,63 @@ def test_iteration_reports_games_by_training_objective(monkeypatch) -> None:
         seed=1,
     )
     assert result["selfplay_games_by_ratio"] == {"10.0": 4, "1000.0": 4}
+
+
+def test_strict_rehearsal_uses_only_lineage_local_caps(monkeypatch) -> None:
+    caps = []
+
+    class Replay:
+        games = [object()]
+        last_collaboration_sample_trace = []
+
+        def set_representation_embedding(self, *args) -> None:
+            pass
+
+        def best_native_objective(self, representation: str, ratio: float) -> float:
+            assert representation == "exact-id"
+            return ratio + 3.0
+
+        def add(self, *args, **kwargs) -> None:
+            pass
+
+    scientist = SimpleNamespace(
+        replay=Replay(),
+        game=object(),
+        network=object(),
+        optimizer=object(),
+        config=SimpleNamespace(search=object(), train=SimpleNamespace(device="cpu")),
+    )
+    monkeypatch.setattr(curriculum, "replace", lambda value, **kwargs: value)
+
+    def fixed(*args, **kwargs):
+        caps.append((args[2], kwargs["objective_cap"], kwargs["cap_type"]))
+        return object()
+
+    monkeypatch.setattr(curriculum, "FixedWordGame", fixed)
+    monkeypatch.setattr(curriculum, "NeuralMCTS", lambda *args: object())
+    monkeypatch.setattr(curriculum, "play_selfplay_games", lambda *args: [[]])
+    monkeypatch.setattr(curriculum, "train_alphazero_step", lambda *args, **kwargs: {})
+
+    result = curriculum._iteration(
+        scientist,
+        KnotItem("coarse-knot", 3, (1, -1, 1), 2),
+        representation_id="exact-id",
+        ratios=(10.0, 1000.0),
+        simulations=2,
+        selfplay_games=4,
+        train_steps=1,
+        batch_size=1,
+        seed=1,
+        use_own_budget_caps=True,
+    )
+
+    assert caps == [
+        (10.0, 13.0, "own"),
+        (10.0, 13.0, "own"),
+        (1000.0, 1003.0, "own"),
+        (1000.0, 1003.0, "own"),
+    ]
+    assert result["selfplay_games_by_budget_source"] == {"own": 4}
 
 
 def test_pipelined_native_block_advances_fast_scientist_and_resumes(

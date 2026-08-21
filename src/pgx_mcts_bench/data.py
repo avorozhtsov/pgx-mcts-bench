@@ -576,6 +576,122 @@ class ReplayBuffer:
         self.last_collaboration_sample_trace = trace
         return batch
 
+    def sample_ratio_outcome_balanced_positions(
+        self,
+        batch_size: int,
+        *,
+        ratios: tuple[float, float] = (10.0, 1000.0),
+        positions_per_episode: int = 4,
+        max_position_uses: int = 0,
+    ) -> list[Position]:
+        """Sample fixed L10/L1000 x positive/negative rehearsal strata.
+
+        Each of the four strata receives the same number of episode slots when
+        possible.  A missing stratum falls back to the same ratio, then to the
+        same outcome, then to the complete eligible replay.  Every fallback is
+        recorded, so a nominal 50:50 mix can never silently become biased.
+        """
+        if len(ratios) != 2 or any(not np.isfinite(ratio) or ratio <= 0 for ratio in ratios):
+            raise ValueError("balanced rehearsal requires two positive finite ratios")
+        if batch_size < 1 or positions_per_episode < 1:
+            raise ValueError("batch and positions_per_episode must be positive")
+        if max_position_uses < 0:
+            raise ValueError("max_position_uses must be non-negative")
+        self._ensure_replay_state()
+
+        def eligible(game: GameRecord) -> bool:
+            return bool(game) and (
+                max_position_uses == 0
+                or any(
+                    int(getattr(position, "replay_position_uses", 0)) < max_position_uses
+                    for position in game
+                )
+            )
+
+        def outcome(game: GameRecord) -> str:
+            head = game[0]
+            return (
+                "positive"
+                if not bool(getattr(head, "objective_censored", False))
+                and float(getattr(head, "solved", -1.0)) > 0.5
+                else "negative"
+            )
+
+        available = [
+            game
+            for game in self.games
+            if eligible(game) and not bool(getattr(game[0], "shared_witness", False))
+        ]
+        if not available:
+            if self.games and max_position_uses:
+                raise RuntimeError("All replay positions reached max_position_uses")
+            raise RuntimeError("Cannot sample an empty balanced rehearsal replay")
+        pools: dict[tuple[float, str], list[GameRecord]] = {}
+        for ratio in ratios:
+            for label in ("positive", "negative"):
+                pools[(float(ratio), label)] = [
+                    game
+                    for game in available
+                    if np.isclose(float(getattr(game[0], "objective_ratio", np.nan)), ratio)
+                    and outcome(game) == label
+                ]
+
+        slots = max(1, int(np.ceil(batch_size / positions_per_episode)))
+        strata = [
+            (float(ratio), label)
+            for ratio in ratios
+            for label in ("positive", "negative")
+        ]
+        requests = [strata[index % len(strata)] for index in range(slots)]
+        # The deterministic quota is fixed; shuffling only removes optimizer
+        # ordering effects and uses the durable replay RNG.
+        self.rng.shuffle(requests)
+        batch: list[Position] = []
+        trace: list[dict[str, Any]] = []
+        for ratio, label in requests:
+            if len(batch) >= batch_size:
+                break
+            candidates = pools[(ratio, label)]
+            fallback = "none"
+            if not candidates:
+                candidates = [
+                    game
+                    for game in available
+                    if np.isclose(float(getattr(game[0], "objective_ratio", np.nan)), ratio)
+                ]
+                fallback = "outcome-deficit"
+            if not candidates:
+                candidates = [game for game in available if outcome(game) == label]
+                fallback = "ratio-deficit"
+            if not candidates:
+                candidates = available
+                fallback = "ratio-and-outcome-deficit"
+            game = self._draw_exposure_balanced_episode(candidates)
+            eligible_positions = [
+                position
+                for position in game
+                if max_position_uses == 0
+                or int(getattr(position, "replay_position_uses", 0)) < max_position_uses
+            ]
+            positions = self._spread_positions(
+                eligible_positions,
+                min(positions_per_episode, batch_size - len(batch), len(eligible_positions)),
+            )
+            batch.extend(positions)
+            trace.append(
+                {
+                    "requested_ratio": ratio,
+                    "requested_outcome": label,
+                    "actual_ratio": float(getattr(game[0], "objective_ratio", np.nan)),
+                    "actual_outcome": outcome(game),
+                    "actual_representation": self._representation(game),
+                    "fallback": fallback,
+                    "positions": len(positions),
+                }
+            )
+        self.last_collaboration_sample_trace = trace
+        return batch
+
     def _similar_representations(self, current: str, count: int) -> set[str]:
         current_embedding = self.representation_embeddings.get(current)
         if current_embedding is None or count <= 0:

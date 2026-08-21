@@ -299,6 +299,7 @@ def train_alphazero_step(
     continual_replay: bool = False,
     replay_rehearsal_representations: set[str] | None = None,
     replay_rehearsal_fraction: float = 0.25,
+    replay_ratio_outcome_balance: tuple[float, float] | None = None,
 ) -> dict[str, float]:
     network.train()
     optimized_parameters = _optimizer_parameters(optimizer)
@@ -317,6 +318,13 @@ def train_alphazero_step(
             max_position_uses=replay_max_position_uses,
         )
         if continual_replay
+        else replay.sample_ratio_outcome_balanced_positions(
+            batch_size,
+            ratios=replay_ratio_outcome_balance,
+            positions_per_episode=replay_positions_per_episode,
+            max_position_uses=replay_max_position_uses,
+        )
+        if replay_ratio_outcome_balance is not None
         else replay.sample_collaboration_positions(
             batch_size,
             shared_fraction,

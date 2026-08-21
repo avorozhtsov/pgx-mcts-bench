@@ -74,6 +74,11 @@ F_NATIVE_LEVELS = (5, 8, 12, 16)
 SIMULATION_LEVELS = (64, 128, 256, 512)
 DONATION_DOSES = (1, 2, 3)
 REHEARSAL_CHECKPOINT_INTERVAL_SECONDS = 600.0
+REHEARSAL_RETENTION_SECONDS_PER_CELL_SIMULATION = 0.6
+REHEARSAL_TRAINING_SECONDS_PER_ITERATION_AT_REFERENCE = 900.0
+REHEARSAL_TIMEOUT_REFERENCE_SIMULATIONS = 80
+REHEARSAL_PANEL_SIZE = 20
+REHEARSAL_REPAIR_CHUNK_SIZE = 8
 COORDINATED_ARMS = (
     "static-no-sharing",
     "scheduled-no-sharing",
@@ -90,6 +95,10 @@ CoordinatedArm = Literal[
     "static-sharing",
     "adaptive-sharing",
 ]
+
+
+def _uses_donation_sharing(arm: str) -> bool:
+    return arm in {"static-sharing", "adaptive-sharing"}
 
 
 @dataclass(frozen=True)
@@ -405,6 +414,80 @@ def next_rehearsal_dose(
     return F_OLD_LEVELS[min(index + 1, len(F_OLD_LEVELS) - 1)]
 
 
+def rehearsal_cumulative_timeout_seconds(
+    segment_timeout_seconds: float,
+    *,
+    processed_items: int,
+    ratios: int,
+    simulations: int,
+    f_old: int,
+) -> float:
+    """Budget resumable rehearsal without weakening its scientific dose.
+
+    ``processed_items`` is the bounded panel size, never the complete history.
+    Training is budgeted separately and scales with the current simulation
+    dose.  The result is rounded to whole resumable segments.
+    """
+    if min(segment_timeout_seconds, processed_items, ratios, simulations, f_old) <= 0:
+        raise ValueError("rehearsal timeout budget inputs must be positive")
+    retention_cells = 2 * processed_items * ratios
+    retention_seconds = (
+        REHEARSAL_RETENTION_SECONDS_PER_CELL_SIMULATION * retention_cells * simulations
+    )
+    training_seconds = (
+        REHEARSAL_TRAINING_SECONDS_PER_ITERATION_AT_REFERENCE
+        * f_old
+        * simulations
+        / REHEARSAL_TIMEOUT_REFERENCE_SIMULATIONS
+    )
+    projected_seconds = retention_seconds + training_seconds
+    segments = max(1, math.ceil(projected_seconds / segment_timeout_seconds))
+    return float(segments * segment_timeout_seconds)
+
+
+def deterministic_rehearsal_panel(
+    items: list[KnotItem] | list[BankItem],
+    *,
+    panel_size: int,
+    cursor: int,
+) -> tuple[list[Any], int, dict[str, Any]]:
+    """Take one exact-order expanding round-robin panel.
+
+    The durable cursor counts consumed slots rather than storing a modulo
+    offset, so extending the history cannot reset the schedule.
+    """
+    representations = list(_retention_representations(items))
+    if panel_size < 1 or cursor < 0:
+        raise ValueError("rehearsal panel size must be positive and cursor non-negative")
+    if not representations:
+        raise ValueError("rehearsal panel requires at least one representation")
+    count = min(panel_size, len(representations))
+    start = cursor % len(representations)
+    panel = [representations[(start + offset) % len(representations)] for offset in range(count)]
+    next_cursor = cursor + count
+    metadata = {
+        "policy": "exact-bank-order-expanding-round-robin-v1",
+        "population_size": len(representations),
+        "panel_size": count,
+        "cursor_before": cursor,
+        "cursor_after": next_cursor,
+        "representations": [item.id for item in panel],
+    }
+    return panel, next_cursor, metadata
+
+
+def rehearsal_timeout_debt(events: list[dict[str, Any]], scientist: str) -> int:
+    """Count missing optimizer iterations from censored rehearsal events."""
+    debt = 0
+    for event in events:
+        row = event.get("scientists", {}).get(scientist, {})
+        rehearsal = row.get("rehearsal") or {}
+        if rehearsal.get("hard_timeout") is None:
+            continue
+        debt += max(0, int(rehearsal.get("F_old", 0)) - len(rehearsal.get("iterations", [])))
+    return debt
+
+
 def next_compute_dose(
     current: int,
     *,
@@ -453,10 +536,16 @@ def _iteration(
     train_steps: int,
     batch_size: int,
     seed: int,
+    representation_id: str | None = None,
+    use_own_budget_caps: bool = False,
+    balanced_rehearsal_replay: bool = False,
 ) -> dict[str, Any]:
-    scientist.replay.set_representation_embedding(knot.name, _replay_representation_embedding(knot))
+    identity = representation_id or knot.name
+    scientist.replay.set_representation_embedding(identity, _replay_representation_embedding(knot))
     records = []
     games_by_ratio: dict[str, int] = {}
+    games_by_budget: dict[str, int] = {}
+    budget_deficits: list[dict[str, Any]] = []
     scheduled = 0
     per_ratio = selfplay_games // len(ratios)
     remainder = selfplay_games % len(ratios)
@@ -464,26 +553,60 @@ def _iteration(
         games = per_ratio + int(ratio_index < remainder)
         if not games:
             continue
-        fixed = FixedWordGame(scientist.game, knot, ratio)
-        search = NeuralMCTS(
-            fixed,
-            scientist.network,
-            replace(scientist.config.search, simulations=simulations),
-            scientist.config.train.device,
-        )
-        seeds = [seed + ratio_index * 10_000 + index for index in range(games)]
-        batch = play_selfplay_games(
-            fixed,
-            search,
-            [np.random.default_rng(value + 7) for value in seeds],
-            seeds,
-            12,
-        )
-        games_by_ratio[str(float(ratio))] = len(batch)
-        records.extend(batch)
-        for record in batch:
-            scientist.replay.add(record, representation_id=knot.name, objective_ratio=ratio)
-            scheduled += len(record) * (simulations + 1)
+        plans: list[tuple[str, float | None]] = []
+        if not use_own_budget_caps:
+            plans = [("global", None)] * games
+        else:
+            own = scientist.replay.best_native_objective(identity, ratio)
+            own_identity_fallback = False
+            if own is None and identity != knot.name:
+                own = scientist.replay.best_native_objective(knot.name, ratio)
+                own_identity_fallback = own is not None
+            for _game_index in range(games):
+                source = "own"
+                cap = own
+                if own_identity_fallback:
+                    source = "own-knot-identity-fallback"
+                if cap is None:
+                    budget_deficits.append(
+                        {"representation": identity, "ratio": ratio, "source": source}
+                    )
+                    source = f"{source}-missing-global-fallback"
+                plans.append((source, cap))
+        ratio_records = []
+        for game_index, (cap_type, cap) in enumerate(plans):
+            fixed = (
+                FixedWordGame(scientist.game, knot, ratio)
+                if not use_own_budget_caps
+                else FixedWordGame(
+                    scientist.game,
+                    knot,
+                    ratio,
+                    objective_cap=cap,
+                    cap_type=cap_type,
+                )
+            )
+            search = NeuralMCTS(
+                fixed,
+                scientist.network,
+                replace(scientist.config.search, simulations=simulations),
+                scientist.config.train.device,
+            )
+            game_seed = seed + ratio_index * 10_000 + game_index
+            batch = play_selfplay_games(
+                fixed,
+                search,
+                [np.random.default_rng(game_seed + 7)],
+                [game_seed],
+                12,
+            )
+            ratio_records.extend(batch)
+            games_by_budget[cap_type] = games_by_budget.get(cap_type, 0) + len(batch)
+            for record in batch:
+                scientist.replay.add(record, representation_id=identity, objective_ratio=ratio)
+                scheduled += len(record) * (simulations + 1)
+        games_by_ratio[str(float(ratio))] = len(ratio_records)
+        records.extend(ratio_records)
 
     losses = []
     if any(scientist.replay.games):
@@ -498,21 +621,31 @@ def _iteration(
                     collaboration_replay=True,
                     shared_fraction=0.0,
                     policy_value_success_only=True,
-                    replay_current_representation=knot.name,
+                    replay_current_representation=identity,
                     replay_current_fraction=0.25,
                     replay_similar_fraction=0.25,
                     replay_positions_per_episode=4,
+                    replay_ratio_outcome_balance=(
+                        (10.0, 1000.0) if balanced_rehearsal_replay else None
+                    ),
                 )
             )
     return {
         "selfplay_games": len(records),
         "selfplay_games_by_ratio": games_by_ratio,
+        "selfplay_games_by_budget_source": games_by_budget,
+        "budget_source_deficits": budget_deficits,
         "selfplay_solved": sum(
             bool(record and float(record[0].solved) > 0.5) for record in records
         ),
         "train_steps": len(losses),
         "scheduled_network_evaluations": scheduled,
         "last_loss": losses[-1] if losses else None,
+        "last_replay_balance": (
+            list(scientist.replay.last_collaboration_sample_trace)
+            if balanced_rehearsal_replay and losses
+            else None
+        ),
     }
 
 
@@ -1114,6 +1247,7 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
                     seed=int(payload["seed"])
                     + int(payload["static_index"]) * 10_000_000
                     + iteration * 100_000,
+                    representation_id=selected.id,
                 )
             )
         evaluation = _evaluate(
@@ -1198,6 +1332,7 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
 
     if operation == "rehearse":
         processed_items = payload["processed_items"]
+        panel_metadata = payload.get("rehearsal_panel_metadata")
         evaluation_ratios = tuple(payload["ratios"])
         training_ratios = tuple(payload.get("training_ratios", evaluation_ratios))
         identity_indices = payload["identity_indices"]
@@ -1224,6 +1359,8 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
                 representations[item_id] for item_id in checkpoint.get("selected_order", [])
             ]
             rehearsal_rows = list(checkpoint["iterations"])
+            if checkpoint.get("rehearsal_panel_metadata") != panel_metadata:
+                raise RuntimeError("rehearsal checkpoint panel cursor differs from payload")
         else:
             phase = "retention_before"
             before = None
@@ -1243,7 +1380,11 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
             _save_state(
                 checkpoint_path,
                 {
-                    "schema": "semantic-v2-rehearsal-checkpoint-v2",
+                    "schema": (
+                        "semantic-v2-rehearsal-checkpoint-v3"
+                        if panel_metadata is not None
+                        else "semantic-v2-rehearsal-checkpoint-v2"
+                    ),
                     "scientist": scientist_name,
                     "round_index": round_index,
                     "checkpointed_at_unix": time.time(),
@@ -1258,6 +1399,7 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
                     "completed_retention_before_cells": _retention_cell_count(before_cells),
                     "completed_retention_after_cells": _retention_cell_count(after_cells),
                     "rehearsal_exposure": exposure,
+                    "rehearsal_panel_metadata": panel_metadata,
                     "scientist_state": _scientist_state(scientist),
                 },
             )
@@ -1317,6 +1459,9 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
                         + 800_000_000
                         + int(identity_indices[old.id]) * 1_000_000
                         + previous_exposures * 10_000,
+                        representation_id=old.id,
+                        use_own_budget_caps=bool(payload.get("strict_own_budget_rehearsal")),
+                        balanced_rehearsal_replay=bool(panel_metadata is not None),
                     ),
                 }
             )
@@ -1361,6 +1506,9 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
         return {
             "next_F_old": next_f_old,
             "rehearsal_exposure": exposure,
+            "rehearsal_panel_cursor": (
+                int(panel_metadata["cursor_after"]) if panel_metadata is not None else None
+            ),
             "retention_after": after,
             "event": {
                 "F_old": dose_before,
@@ -1370,6 +1518,7 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
                 "before": before,
                 "after": after,
                 "capped_cost_worsened": worsened,
+                "panel": panel_metadata,
             },
         }
 
@@ -1390,6 +1539,17 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
             add_root_noise=evaluation_root_noise,
         )
         return {"exposure": exposure, "retention": retention}
+
+    if operation == "retention-audit":
+        return _retention_summary(
+            scientist,
+            payload["processed_items"],
+            ratios=tuple(payload["ratios"]),
+            simulations=int(payload["simulations"]),
+            seed=int(payload["seed"]),
+            identity_indices=payload["identity_indices"],
+            add_root_noise=evaluation_root_noise,
+        )
 
     raise ValueError(f"unknown SV2 scientist phase: {operation}")
 
@@ -1418,6 +1578,7 @@ def _load_rehearsal_checkpoint(payload: dict[str, Any], *, scientist: str) -> di
     if schema not in {
         "semantic-v2-rehearsal-checkpoint-v1",
         "semantic-v2-rehearsal-checkpoint-v2",
+        "semantic-v2-rehearsal-checkpoint-v3",
     }:
         raise RuntimeError(f"invalid rehearsal checkpoint schema: {path}")
     if checkpoint.get("scientist") != scientist:
@@ -1432,7 +1593,10 @@ def _load_rehearsal_checkpoint(payload: dict[str, Any], *, scientist: str) -> di
         row.get("representation") for row in checkpoint.get("iterations", [])
     ]:
         raise RuntimeError(f"rehearsal checkpoint iteration order mismatch: {path}")
-    if schema == "semantic-v2-rehearsal-checkpoint-v2":
+    if schema in {
+        "semantic-v2-rehearsal-checkpoint-v2",
+        "semantic-v2-rehearsal-checkpoint-v3",
+    }:
         phase = checkpoint.get("phase")
         if phase not in {"retention_before", "train", "retention_after", "complete"}:
             raise RuntimeError(f"invalid rehearsal checkpoint phase: {path}")
@@ -1441,6 +1605,10 @@ def _load_rehearsal_checkpoint(payload: dict[str, Any], *, scientist: str) -> di
             expected = checkpoint.get(f"completed_{key}", _retention_cell_count(cells))
             if int(expected) != _retention_cell_count(cells):
                 raise RuntimeError(f"rehearsal checkpoint retention cursor mismatch: {path}")
+    if schema == "semantic-v2-rehearsal-checkpoint-v3":
+        panel = checkpoint.get("rehearsal_panel_metadata")
+        if not isinstance(panel, dict):
+            raise RuntimeError(f"rehearsal checkpoint panel metadata missing: {path}")
     return checkpoint
 
 
@@ -1457,6 +1625,8 @@ def _phase_timeout_result(
     *,
     timeout_seconds: float | None,
     partial_checkpoint: dict[str, Any] | None = None,
+    segment_timeout_seconds: float | None = None,
+    segment_expirations: int = 1,
 ) -> dict[str, Any]:
     """Represent a hard compute deadline as an auditable unsolved outcome."""
     if timeout_seconds is None:
@@ -1494,6 +1664,13 @@ def _phase_timeout_result(
                 "controller_update": "held-censored-timeout",
             }
         )
+        if segment_timeout_seconds is not None:
+            marker.update(
+                {
+                    "segment_timeout_seconds": float(segment_timeout_seconds),
+                    "segment_expirations": int(segment_expirations),
+                }
+            )
     ratios = tuple(float(value) for value in payload["ratios"])
 
     if operation == "native":
@@ -1576,6 +1753,11 @@ def _phase_timeout_result(
                 if partial_checkpoint is not None
                 else payload["rehearsal_exposure"]
             ),
+            "rehearsal_panel_cursor": (
+                int(payload["rehearsal_panel_metadata"]["cursor_after"])
+                if payload.get("rehearsal_panel_metadata") is not None
+                else None
+            ),
             "retention_after": failed,
             "event": {
                 "F_old": dose_before,
@@ -1593,6 +1775,7 @@ def _phase_timeout_result(
                 "capped_cost_worsened": False,
                 "controller_update": "held-censored-timeout",
                 "hard_timeout": marker,
+                "panel": payload.get("rehearsal_panel_metadata"),
             },
         }
 
@@ -1670,32 +1853,89 @@ class _ScientistPhaseCoordinator:
         payloads: dict[str, dict[str, Any]],
         *,
         timeout_seconds: float | None = None,
+        cumulative_timeout_seconds: dict[str, float] | None = None,
     ) -> dict[str, Any]:
+        if cumulative_timeout_seconds is not None:
+            if operation != "rehearse" or timeout_seconds is None:
+                raise ValueError(
+                    "cumulative scientist timeout is only valid for bounded rehearsal segments"
+                )
+            if set(cumulative_timeout_seconds) != set(self.names):
+                raise ValueError("cumulative rehearsal timeout names must match scientists")
+            if any(value < timeout_seconds for value in cumulative_timeout_seconds.values()):
+                raise ValueError("cumulative rehearsal timeout must cover at least one segment")
         if self.parallel:
             futures = {name: self.submit(name, operation, payloads[name]) for name in self.names}
             result = {}
             for name, future in futures.items():
-                try:
-                    result[name] = self.collect(
-                        name,
-                        future,
-                        timeout_seconds=timeout_seconds,
+                remaining = (
+                    float(cumulative_timeout_seconds[name])
+                    if cumulative_timeout_seconds is not None
+                    else None
+                )
+                segment_expirations = 0
+                while True:
+                    wait_seconds = (
+                        min(float(timeout_seconds), remaining)
+                        if timeout_seconds is not None and remaining is not None
+                        else timeout_seconds
                     )
-                except FutureTimeoutError:
-                    self._reset_executor(name)
-                    partial_checkpoint = _load_rehearsal_checkpoint(payloads[name], scientist=name)
-                    if partial_checkpoint is not None:
-                        self.states[name] = partial_checkpoint["scientist_state"]
-                        self._restore_next[name] = True
-                    result[name] = _phase_timeout_result(
-                        name,
-                        operation,
-                        payloads[name],
-                        timeout_seconds=timeout_seconds,
-                        partial_checkpoint=partial_checkpoint,
-                    )
-                else:
-                    _discard_rehearsal_checkpoint(payloads[name])
+                    try:
+                        result[name] = self.collect(
+                            name,
+                            future,
+                            timeout_seconds=wait_seconds,
+                        )
+                    except FutureTimeoutError:
+                        segment_expirations += 1
+                        self._reset_executor(name)
+                        partial_checkpoint = _load_rehearsal_checkpoint(
+                            payloads[name], scientist=name
+                        )
+                        if cumulative_timeout_seconds is not None and partial_checkpoint is None:
+                            raise RuntimeError(
+                                f"resumable rehearsal segment expired without an atomic "
+                                f"checkpoint: scientist={name}"
+                            ) from None
+                        if partial_checkpoint is not None:
+                            self.states[name] = partial_checkpoint["scientist_state"]
+                            self._restore_next[name] = True
+                        if remaining is not None:
+                            assert wait_seconds is not None
+                            remaining -= wait_seconds
+                        if remaining is None or remaining <= 1e-9:
+                            result[name] = _phase_timeout_result(
+                                name,
+                                operation,
+                                payloads[name],
+                                timeout_seconds=(
+                                    cumulative_timeout_seconds[name]
+                                    if cumulative_timeout_seconds is not None
+                                    else timeout_seconds
+                                ),
+                                partial_checkpoint=partial_checkpoint,
+                                segment_timeout_seconds=(
+                                    timeout_seconds
+                                    if cumulative_timeout_seconds is not None
+                                    else None
+                                ),
+                                segment_expirations=segment_expirations,
+                            )
+                            break
+                        future = self.submit(name, operation, payloads[name])
+                    else:
+                        if cumulative_timeout_seconds is not None:
+                            result[name]["event"]["rehearsal_segments"] = {
+                                "segment_timeout_seconds": float(timeout_seconds),
+                                "cumulative_timeout_seconds": float(
+                                    cumulative_timeout_seconds[name]
+                                ),
+                                "segment_expirations": segment_expirations,
+                                "checkpoint_resumes": segment_expirations,
+                                "completed": True,
+                            }
+                        _discard_rehearsal_checkpoint(payloads[name])
+                        break
             return result
 
         result = {}
@@ -2030,7 +2270,7 @@ def _coordinated_name(
         if arm == "static-random-no-sharing"
         else ""
     )
-    sharing = "SHARING" if arm.endswith("sharing") and "no-sharing" not in arm else "NO-SHARING"
+    sharing = "SHARING" if _uses_donation_sharing(arm) else "NO-SHARING"
     return (
         f"SV2-{scientists}S-R{representations}-SIM{simulations}-F{f_native}-"
         f"AR-EV{evaluation_attempts}-{schedule}{sharing}"
@@ -2121,6 +2361,11 @@ def run_coordinated_arm(
     torch_threads: int = 2,
     parallel_scientists: bool = True,
     scientist_task_timeout_seconds: float | None = None,
+    resumable_rehearsal_segments: bool = False,
+    rehearsal_panel_size: int | None = None,
+    strict_own_budget_rehearsal: bool = False,
+    rehearsal_repair_debt: dict[str, int] | None = None,
+    terminal_full_retention_audit: bool = False,
     pipelined_static_no_sharing: bool = False,
     adaptive_compute: bool = False,
     f_native_levels: tuple[int, ...] | None = None,
@@ -2151,6 +2396,18 @@ def run_coordinated_arm(
             raise ValueError("scientist task timeout requires parallel scientist execution")
         if initial_states is None:
             raise ValueError("scientist task timeout requires durable initial states")
+    if resumable_rehearsal_segments and scientist_task_timeout_seconds is None:
+        raise ValueError("resumable rehearsal segments require a scientist task timeout")
+    bounded_rehearsal = rehearsal_panel_size is not None
+    if bounded_rehearsal and rehearsal_panel_size < 1:
+        raise ValueError("rehearsal panel size must be positive")
+    if strict_own_budget_rehearsal and not bounded_rehearsal:
+        raise ValueError("strict own-budget rehearsal requires a bounded panel")
+    if rehearsal_repair_debt is not None:
+        if set(rehearsal_repair_debt) != set(checkpoints):
+            raise ValueError("rehearsal repair debt names must match scientists")
+        if any(value < 0 for value in rehearsal_repair_debt.values()):
+            raise ValueError("rehearsal repair debt must be non-negative")
     if (
         min(
             simulations,
@@ -2175,7 +2432,7 @@ def run_coordinated_arm(
     if arm != "static-random-no-sharing" and static_random_seed is not None:
         raise ValueError("static_random_seed is exclusive to static-random-no-sharing")
     if pipelined_static_no_sharing and (
-        not parallel_scientists or arm.startswith("adaptive") or "no-sharing" not in arm
+        not parallel_scientists or arm.startswith("adaptive") or _uses_donation_sharing(arm)
     ):
         raise ValueError(
             "pipelined execution is restricted to parallel fixed-order no-sharing arms"
@@ -2237,7 +2494,11 @@ def run_coordinated_arm(
     )
     invocation_source_provenance = source_provenance()
     protocol = {
-        "schema": "semantic-v2-coordinated-arm-v6",
+        "schema": (
+            "semantic-v2-coordinated-arm-v7-bounded-rehearsal"
+            if bounded_rehearsal
+            else "semantic-v2-coordinated-arm-v6"
+        ),
         "arm": arm,
         "name": name,
         "source_provenance": invocation_source_provenance,
@@ -2308,7 +2569,7 @@ def run_coordinated_arm(
         "F_old_levels": list(F_OLD_LEVELS),
         "retention_target": retention_target,
         "block_size": block_size,
-        "sharing": "no-sharing" not in arm,
+        "sharing": "trajectory-and-training-sharing" if _uses_donation_sharing(arm) else "none",
         "donation_dose_levels": list(DONATION_DOSES),
         "donation_internal_action_cap_per_edit": 5,
         "donation_rule": "verified and strictly better than receiver native incumbent",
@@ -2318,7 +2579,7 @@ def run_coordinated_arm(
         ),
         "donation_training": (
             "block-boundary exact optimizer exposures with donation-only rollback"
-            if "no-sharing" not in arm
+            if _uses_donation_sharing(arm)
             else None
         ),
         "action_horizon": action_horizon,
@@ -2327,13 +2588,60 @@ def run_coordinated_arm(
         "torch_threads": torch_threads,
         "parallel_scientists": parallel_scientists,
         "scientist_task_timeout_seconds": scientist_task_timeout_seconds,
+        "resumable_rehearsal_segments": resumable_rehearsal_segments,
+        "rehearsal_panel_size": rehearsal_panel_size,
+        "rehearsal_panel_policy": (
+            "exact-bank-order-expanding-round-robin-v1" if bounded_rehearsal else None
+        ),
+        "rehearsal_panel_cursor_policy": (
+            "durable-absolute-consumed-slot-cursor" if bounded_rehearsal else None
+        ),
+        "rehearsal_ratio_outcome_balance": (
+            {
+                "strata": ["L10-positive", "L10-negative", "L1000-positive", "L1000-negative"],
+                "target": [0.25, 0.25, 0.25, 0.25],
+                "fallbacks_recorded": True,
+            }
+            if bounded_rehearsal
+            else None
+        ),
+        "strict_own_budget_rehearsal": strict_own_budget_rehearsal,
+        "rehearsal_budget_policy": (
+            "lineage-local-native-incumbent-with-global-fallback"
+            if strict_own_budget_rehearsal
+            else "global"
+        ),
+        "rehearsal_repair_debt": rehearsal_repair_debt,
+        "rehearsal_repair_chunk_size": (
+            REHEARSAL_REPAIR_CHUNK_SIZE if rehearsal_repair_debt is not None else None
+        ),
+        "terminal_full_retention_audit": terminal_full_retention_audit,
+        "rehearsal_segment_timeout_seconds": (
+            scientist_task_timeout_seconds if resumable_rehearsal_segments else None
+        ),
+        "rehearsal_cumulative_timeout_policy": (
+            {
+                "retention_seconds_per_cell_simulation": (
+                    REHEARSAL_RETENTION_SECONDS_PER_CELL_SIMULATION
+                ),
+                "training_seconds_per_iteration_at_reference": (
+                    REHEARSAL_TRAINING_SECONDS_PER_ITERATION_AT_REFERENCE
+                ),
+                "reference_simulations": REHEARSAL_TIMEOUT_REFERENCE_SIMULATIONS,
+                "rounding": "ceil-to-whole-segment",
+            }
+            if resumable_rehearsal_segments
+            else None
+        ),
         "rehearsal_checkpoint_interval_seconds": (
             REHEARSAL_CHECKPOINT_INTERVAL_SECONDS
             if scientist_task_timeout_seconds is not None
             else None
         ),
         "rehearsal_timeout_state_policy": (
-            "recover-latest-atomic-checkpoint"
+            ("resume-same-rehearsal-from-latest-atomic-checkpoint-until-complete-or-cumulative-cap")
+            if resumable_rehearsal_segments
+            else "recover-latest-atomic-checkpoint"
             if scientist_task_timeout_seconds is not None
             else None
         ),
@@ -2391,6 +2699,12 @@ def run_coordinated_arm(
             str(name): {str(key): int(value) for key, value in rows.items()}
             for name, rows in state["rehearsal_exposure"].items()
         }
+        rehearsal_panel_cursor = {
+            str(name): int(value)
+            for name, value in state.get(
+                "rehearsal_panel_cursor", {name: 0 for name in checkpoints}
+            ).items()
+        }
         donation_dose = int(state.get("donation_dose", 1))
         donation_healthy_streak = int(state.get("donation_healthy_streak", 0))
         current_f_native = {
@@ -2426,6 +2740,10 @@ def run_coordinated_arm(
             }
             for name in checkpoints
         }
+        rehearsal_panel_cursor = {
+            name: int(initial_payloads.get(name, {}).get("rehearsal_panel_cursor", 0))
+            for name in checkpoints
+        }
         (
             donation_dose,
             donation_healthy_streak,
@@ -2437,6 +2755,22 @@ def run_coordinated_arm(
             default_f_native=f_native,
             default_simulations=simulations,
         )
+
+    repair_root = output / "q104-rehearsal-repair-v1"
+    repair_state_path = repair_root / "state.pt.gz"
+    repair_events: list[dict[str, Any]] = []
+    if not state_path.exists() and repair_state_path.exists():
+        repair_state = _load_state(repair_state_path)
+        if repair_state.get("source_debt") != rehearsal_repair_debt:
+            raise RuntimeError("durable rehearsal repair debt differs from requested debt")
+        restored_states = repair_state["scientists"]
+        f_old = {str(key): int(value) for key, value in repair_state["f_old"].items()}
+        rehearsal_exposure = repair_state["rehearsal_exposure"]
+        rehearsal_panel_cursor = {
+            str(key): int(value)
+            for key, value in repair_state["rehearsal_panel_cursor"].items()
+        }
+        repair_events = list(repair_state.get("events", []))
 
     coordinator = _ScientistPhaseCoordinator(
         checkpoints,
@@ -2450,6 +2784,101 @@ def run_coordinated_arm(
     )
 
     started = time.perf_counter()
+    if rehearsal_repair_debt is not None and any(rehearsal_repair_debt.values()):
+        if len(coordinator.names) != 1:
+            raise ValueError("rehearsal debt repair runs one lineage per private root")
+        if not prior_items:
+            raise ValueError("rehearsal debt repair requires the complete Q104 prior bank")
+        scientist_name = coordinator.names[0]
+        completed_debt = sum(
+            len(event.get("iterations", [])) for event in repair_events
+        )
+        remaining_debt = max(0, rehearsal_repair_debt[scientist_name] - completed_debt)
+        while remaining_debt:
+            chunk = min(REHEARSAL_REPAIR_CHUNK_SIZE, remaining_debt)
+            panel, next_cursor, panel_metadata = deterministic_rehearsal_panel(
+                prior_items,
+                panel_size=int(rehearsal_panel_size or REHEARSAL_PANEL_SIZE),
+                cursor=rehearsal_panel_cursor[scientist_name],
+            )
+            repair_index = len(repair_events)
+            payload = {
+                "scientist": scientist_name,
+                "processed_items": panel,
+                "rehearsal_panel_metadata": panel_metadata,
+                "strict_own_budget_rehearsal": strict_own_budget_rehearsal,
+                "ratios": ratios,
+                "training_ratios": training_ratios,
+                "identity_indices": identity_index,
+                "seed": scientist_seeds[scientist_name] + 1_500_000_000,
+                "round_index": -1 - repair_index,
+                "simulations": current_simulations[scientist_name],
+                "f_old": chunk,
+                "rehearsal_exposure": rehearsal_exposure[scientist_name],
+                "selfplay_games": selfplay_games,
+                "train_steps": train_steps,
+                "batch_size": batch_size,
+                "retention_target": retention_target,
+                "action_horizon": action_horizon,
+                "evaluation_root_noise": evaluation_root_noise,
+                "checkpoint_path": str(repair_root / "phase-checkpoint.pt.gz"),
+                "checkpoint_interval_seconds": REHEARSAL_CHECKPOINT_INTERVAL_SECONDS,
+            }
+            repaired = coordinator.run(
+                "rehearse",
+                {scientist_name: payload},
+                timeout_seconds=scientist_task_timeout_seconds,
+                cumulative_timeout_seconds=(
+                    {
+                        scientist_name: rehearsal_cumulative_timeout_seconds(
+                            float(scientist_task_timeout_seconds),
+                            processed_items=len(panel),
+                            ratios=len(ratios),
+                            simulations=current_simulations[scientist_name],
+                            f_old=chunk,
+                        )
+                    }
+                    if resumable_rehearsal_segments
+                    and scientist_task_timeout_seconds is not None
+                    else None
+                ),
+            )[scientist_name]
+            event = {
+                **repaired["event"],
+                "schema": "semantic-v2-q104-rehearsal-debt-repair-event-v1",
+                "repair_index": repair_index,
+                "requested_debt_iterations": chunk,
+                "curriculum_advanced": False,
+                "native_identity_replayed": False,
+            }
+            if event.get("hard_timeout") is not None:
+                raise RuntimeError("rehearsal debt repair exhausted its cumulative cap")
+            repair_events.append(event)
+            rehearsal_exposure[scientist_name] = repaired["rehearsal_exposure"]
+            rehearsal_panel_cursor[scientist_name] = next_cursor
+            remaining_debt -= len(event["iterations"])
+            _atomic_json(repair_root / "events" / f"{repair_index:03d}.json", event)
+            _save_state(
+                repair_state_path,
+                {
+                    "schema": "semantic-v2-q104-rehearsal-repair-carry-v1",
+                    "source_debt": rehearsal_repair_debt,
+                    "events": repair_events,
+                    "f_old": f_old,
+                    "rehearsal_exposure": rehearsal_exposure,
+                    "rehearsal_panel_cursor": rehearsal_panel_cursor,
+                    "scientists": coordinator.serializable_states(),
+                },
+            )
+        _atomic_json(
+            repair_root / "report.json",
+            {
+                "schema": "semantic-v2-q104-rehearsal-repair-report-v1",
+                "source_debt": rehearsal_repair_debt,
+                "completed_iterations": sum(len(event["iterations"]) for event in repair_events),
+                "events": repair_events,
+            },
+        )
     block_reports: list[dict[str, Any]] = []
     for path in sorted((output / "blocks").glob("*.json")):
         block_reports.append(json.loads(path.read_text()))
@@ -2613,7 +3042,7 @@ def run_coordinated_arm(
         )
 
         translations: list[dict[str, Any]] = []
-        if "no-sharing" not in arm:
+        if _uses_donation_sharing(arm):
             _assert_native_commit(output, native_commit)
             donations = []
             for ratio_index, ratio in enumerate(ratios):
@@ -2664,36 +3093,64 @@ def run_coordinated_arm(
                 *prior_items,
                 *[by_id[item_id] for item_id in processed],
             ]
+            panels: dict[str, tuple[list[Any], int, dict[str, Any]]] = {}
+            for name in coordinator.names:
+                panels[name] = (
+                    deterministic_rehearsal_panel(
+                        processed_items,
+                        panel_size=int(rehearsal_panel_size),
+                        cursor=rehearsal_panel_cursor[name],
+                    )
+                    if bounded_rehearsal
+                    else (processed_items, rehearsal_panel_cursor[name], None)
+                )
+            rehearsal_payloads = {
+                name: {
+                    "scientist": name,
+                    "processed_items": panels[name][0],
+                    "rehearsal_panel_metadata": panels[name][2],
+                    "strict_own_budget_rehearsal": strict_own_budget_rehearsal,
+                    "ratios": ratios,
+                    "training_ratios": training_ratios,
+                    "identity_indices": identity_index,
+                    "seed": scientist_seeds[name],
+                    "round_index": round_index,
+                    "simulations": current_simulations[name],
+                    "f_old": f_old[name],
+                    "rehearsal_exposure": rehearsal_exposure[name],
+                    "selfplay_games": selfplay_games,
+                    "train_steps": train_steps,
+                    "batch_size": batch_size,
+                    "retention_target": retention_target,
+                    "action_horizon": action_horizon,
+                    "evaluation_root_noise": evaluation_root_noise,
+                    "checkpoint_path": (
+                        str(_rehearsal_checkpoint_file(output, name))
+                        if scientist_task_timeout_seconds is not None
+                        else None
+                    ),
+                    "checkpoint_interval_seconds": REHEARSAL_CHECKPOINT_INTERVAL_SECONDS,
+                }
+                for name in coordinator.names
+            }
             rehearsal_rows = coordinator.run(
                 "rehearse",
-                {
-                    name: {
-                        "scientist": name,
-                        "processed_items": processed_items,
-                        "ratios": ratios,
-                        "training_ratios": training_ratios,
-                        "identity_indices": identity_index,
-                        "seed": scientist_seeds[name],
-                        "round_index": round_index,
-                        "simulations": current_simulations[name],
-                        "f_old": f_old[name],
-                        "rehearsal_exposure": rehearsal_exposure[name],
-                        "selfplay_games": selfplay_games,
-                        "train_steps": train_steps,
-                        "batch_size": batch_size,
-                        "retention_target": retention_target,
-                        "action_horizon": action_horizon,
-                        "evaluation_root_noise": evaluation_root_noise,
-                        "checkpoint_path": (
-                            str(_rehearsal_checkpoint_file(output, name))
-                            if scientist_task_timeout_seconds is not None
-                            else None
-                        ),
-                        "checkpoint_interval_seconds": (REHEARSAL_CHECKPOINT_INTERVAL_SECONDS),
-                    }
-                    for name in coordinator.names
-                },
+                rehearsal_payloads,
                 timeout_seconds=scientist_task_timeout_seconds,
+                cumulative_timeout_seconds=(
+                    {
+                        name: rehearsal_cumulative_timeout_seconds(
+                            float(scientist_task_timeout_seconds),
+                            processed_items=len(panels[name][0]),
+                            ratios=len(ratios),
+                            simulations=current_simulations[name],
+                            f_old=f_old[name],
+                        )
+                        for name in coordinator.names
+                    }
+                    if resumable_rehearsal_segments
+                    else None
+                ),
             )
             retention_after = {
                 name: rehearsal_rows[name]["retention_after"] for name in coordinator.names
@@ -2701,9 +3158,13 @@ def run_coordinated_arm(
             for name in coordinator.names:
                 f_old[name] = int(rehearsal_rows[name]["next_F_old"])
                 rehearsal_exposure[name] = rehearsal_rows[name]["rehearsal_exposure"]
+                if rehearsal_rows[name].get("rehearsal_panel_cursor") is not None:
+                    rehearsal_panel_cursor[name] = int(
+                        rehearsal_rows[name]["rehearsal_panel_cursor"]
+                    )
                 scientist_events[name]["rehearsal"] = rehearsal_rows[name]["event"]
 
-            if "no-sharing" not in arm:
+            if _uses_donation_sharing(arm):
                 _assert_native_commit(output, native_commit)
                 portfolio_before = _portfolio_summary(
                     retention_after,
@@ -2863,6 +3324,7 @@ def run_coordinated_arm(
                     "events": events,
                     "f_old": f_old,
                     "rehearsal_exposure": rehearsal_exposure,
+                    "rehearsal_panel_cursor": rehearsal_panel_cursor,
                     "donation_dose": donation_dose,
                     "donation_healthy_streak": donation_healthy_streak,
                     "f_native": current_f_native,
@@ -2874,11 +3336,38 @@ def run_coordinated_arm(
             pipelined_rows = {}
             pipelined_selected = {}
 
+    terminal_audit = None
+    if terminal_full_retention_audit:
+        audit_items = [*prior_items, *[by_id[item_id] for item_id in processed]]
+        audit_rows = coordinator.run(
+            "retention-audit",
+            {
+                name: {
+                    "processed_items": audit_items,
+                    "ratios": ratios,
+                    "simulations": current_simulations[name],
+                    "seed": scientist_seeds[name] + 1_900_000_000,
+                    "identity_indices": identity_index,
+                    "evaluation_root_noise": evaluation_root_noise,
+                }
+                for name in coordinator.names
+            },
+        )
+        terminal_audit = {
+            "schema": "semantic-v2-terminal-full-retention-after-only-audit-v1",
+            "representations": len(_retention_representations(audit_items)),
+            "controller_updated": False,
+            "training_performed": False,
+            "scientists": audit_rows,
+        }
+        _atomic_json(output / "terminal-retention-audit.json", terminal_audit)
+
     report = {
         **protocol,
         "completed_rungs": len(processed),
         "processed": processed,
         "final_F_old": f_old,
+        "final_rehearsal_panel_cursor": rehearsal_panel_cursor,
         "final_F_native": current_f_native,
         "final_simulations": current_simulations,
         "final_donation_dose": donation_dose,
@@ -2890,6 +3379,18 @@ def run_coordinated_arm(
         },
         "block_reports": block_reports,
         "events": events,
+        "terminal_retention_audit": terminal_audit,
+        "q104_rehearsal_repair": (
+            {
+                "root": str(repair_root),
+                "source_debt": rehearsal_repair_debt,
+                "completed_iterations": sum(
+                    len(event.get("iterations", [])) for event in repair_events
+                ),
+            }
+            if rehearsal_repair_debt is not None
+            else None
+        ),
         "invocation_execution": (
             "pipelined fixed-order no-sharing within rehearsal blocks"
             if pipelined_static_no_sharing

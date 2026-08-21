@@ -179,9 +179,28 @@ def braid_sv2_coordinated(
         float | None,
         typer.Option(
             min=0.001,
-            help="Hard native/rehearsal deadline; timeout is retained as unsolved",
+            help=(
+                "Hard native deadline and rehearsal segment duration; without resumable "
+                "segments, a rehearsal timeout is retained as unsolved"
+            ),
         ),
     ] = None,
+    resumable_rehearsal_segments: Annotated[
+        bool,
+        typer.Option(
+            help=(
+                "Resume the same rehearsal from its atomic checkpoint after each task "
+                "timeout until its adaptive cumulative cap is exhausted"
+            )
+        ),
+    ] = False,
+    rehearsal_panel_size: Annotated[int | None, typer.Option(min=1)] = None,
+    strict_own_budget_rehearsal: bool = False,
+    rehearsal_repair_debt: Annotated[
+        list[str] | None,
+        typer.Option(help="Repeat NAME=ITERATIONS for censored Q104 rehearsal debt"),
+    ] = None,
+    terminal_full_retention_audit: bool = False,
     pipelined_static_no_sharing: bool = False,
     adaptive_compute: bool = False,
     f_native_levels: str | None = None,
@@ -214,6 +233,15 @@ def braid_sv2_coordinated(
         if not path.is_file():
             raise typer.BadParameter(f"initial state does not exist: {path}")
         initial_states[name] = path
+    repair_debt: dict[str, int] = {}
+    for value in rehearsal_repair_debt or ():
+        if "=" not in value:
+            raise typer.BadParameter("--rehearsal-repair-debt must be NAME=ITERATIONS")
+        name, raw_debt = value.split("=", 1)
+        debt = int(raw_debt)
+        if debt < 0:
+            raise typer.BadParameter("rehearsal repair debt must be non-negative")
+        repair_debt[name] = debt
     report = run_coordinated_arm(
         checkpoints,
         bank,
@@ -245,6 +273,11 @@ def braid_sv2_coordinated(
         torch_threads=torch_threads,
         parallel_scientists=parallel_scientists,
         scientist_task_timeout_seconds=scientist_task_timeout_seconds,
+        resumable_rehearsal_segments=resumable_rehearsal_segments,
+        rehearsal_panel_size=rehearsal_panel_size,
+        strict_own_budget_rehearsal=strict_own_budget_rehearsal,
+        rehearsal_repair_debt=repair_debt or None,
+        terminal_full_retention_audit=terminal_full_retention_audit,
         pipelined_static_no_sharing=pipelined_static_no_sharing,
         adaptive_compute=adaptive_compute,
         f_native_levels=(
