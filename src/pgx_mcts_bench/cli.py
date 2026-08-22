@@ -194,6 +194,16 @@ def braid_sv2_coordinated(
             )
         ),
     ] = False,
+    rehearsal_training_seconds_per_iteration_at_reference: Annotated[
+        float,
+        typer.Option(
+            min=0.001,
+            help=(
+                "Cumulative-cap estimate per rehearsal iteration at 80 simulations; "
+                "slow cohorts may raise this without changing the learning dose"
+            ),
+        ),
+    ] = 900.0,
     rehearsal_panel_size: Annotated[int | None, typer.Option(min=1)] = None,
     strict_own_budget_rehearsal: bool = False,
     rehearsal_repair_debt: Annotated[
@@ -286,6 +296,9 @@ def braid_sv2_coordinated(
         parallel_scientists=parallel_scientists,
         scientist_task_timeout_seconds=scientist_task_timeout_seconds,
         resumable_rehearsal_segments=resumable_rehearsal_segments,
+        rehearsal_training_seconds_per_iteration_at_reference=(
+            rehearsal_training_seconds_per_iteration_at_reference
+        ),
         rehearsal_panel_size=rehearsal_panel_size,
         strict_own_budget_rehearsal=strict_own_budget_rehearsal,
         rehearsal_repair_debt=repair_debt or None,

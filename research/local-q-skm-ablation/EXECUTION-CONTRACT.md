@@ -69,15 +69,18 @@ retention evaluation may update that controller.  Every timeout-enabled
 lineage owns exactly one atomic rehearsal checkpoint.  Its cursor covers
 `retention_before`, `train`, and `retention_after`, including completed
 retention cells, selected order, completed rehearsal iterations, network,
-optimizer, replay, and rehearsal exposure.  Overwrite it at the first safe
-completed cell or iteration boundary after ten minutes and unconditionally at
-every phase transition.  On timeout or process recovery, restore the latest
+optimizer, replay, and rehearsal exposure.  Schema-v4 also persists an
+in-progress iteration after each completed self-play game and after safe
+optimizer-step boundaries, including the frozen game plan and separate
+self-play/optimizer wall-time counters.  Overwrite it at the first safe
+completed cell, game, optimizer step, or iteration boundary after ten minutes
+and unconditionally at every phase transition.  On timeout or process recovery, restore the latest
 checkpoint and report its phase plus completed cell and iteration counts.
 Completed retention cells remain measured; missing cells remain hard-timeout
 failures in the denominator.  Never serialize model state from an asynchronous
 signal handler.  At most the completed work since the preceding ten-minute
-checkpoint plus the currently incomplete cell or rehearsal iteration may be
-discarded.
+checkpoint plus the currently incomplete retention cell, self-play game, or
+optimizer step may be discarded.
 
 Q154 remains strict `scheduled-no-sharing` in exact bank row order.  No scalar
 budget, network weight, replay record, witness, trajectory, outcome, or
@@ -99,19 +102,21 @@ positive, and L1000 negative/censored.  If a stratum is absent, use the
 declared deterministic fallback order and record the exact deficit; do not
 retry until a desired outcome appears.
 
-The primary-8 cohort keeps the original priority/exposure task order through
-the exact-common Q134 boundary (30 Q154 rows).  Every lineage must stop at that
-durable rehearsal block before any Q135 native work.  The cohort marker binds
-all eight 30-event prefixes and state hashes.  After the verified Q134
-transition gate, panel membership and the absolute cursor remain unchanged,
+The six fast Q/SKM lineages reached the original priority/exposure task order
+through the exact-common Q134 boundary (30 Q154 rows).  Their cohort marker
+binds all six 30-event prefixes and state hashes.  After the verified
+fast-6/slow-4 split gate, those six may continue through Q135-Q154 without
+waiting for the four slow lineages.  Each slow lineage independently uses the
+original order through its own slow-4 exact-common Q134 barrier.  After each
+cohort's verified Q134 transition gate, panel membership and the absolute cursor remain unchanged,
 but task order is mixed reproducibly: `retention_before` and
 `retention_after` use the same lineage/round/cursor-seeded permutation, while
 training tasks are interleaved across complete L10/L1000 outcome signatures
 inside each least-exposed tier.  The seed, retention order, selected training
 order, present outcome signatures, and fallback deficits are persisted in the
 schema-v3 checkpoint and completed rehearsal event.  A transition before the
-common Q134 marker, a different order on resume, or a branch crossing Q134
-under the new policy before the cohort barrier is `BLOCKED`.
+applicable Q134 marker, a different order on resume, or a branch crossing Q134
+under the new policy before its cohort barrier is `BLOCKED`.
 
 Before Q154 native curriculum begins, each lineage repays all Q104 rehearsal
 debt, defined as the sum over censored Q104 rehearsal blocks of
@@ -121,38 +126,58 @@ panels in chunks of at most eight iterations.  It must not replay a native Q104
 identity, commit a Q104 event, advance curriculum, or rewrite the historical
 Q104 result.  Every repair chunk is atomic and resumable.
 
-For timeout-enabled Q154 lineages, the one-hour rehearsal deadline is a
-resumable compute segment.  An expired segment kills only that scientist child
-and resumes the same panel transaction from its schema-v3 checkpoint without
+For the slow-4 Q154 lineages, the two-hour rehearsal deadline is a resumable
+compute segment.  An expired segment kills only that scientist child and
+resumes the same panel transaction from its schema-v4 checkpoint without
 committing an event or advancing curriculum.  The cumulative cap is computed
 from the bounded panel size, ratio count, current simulation dose, and current
-rehearsal iteration dose, then rounded up to a whole segment.  Only cumulative
-cap exhaustion is a censored hard timeout and holds `F_old`; native keeps its
-original one-hour hard deadline.  After durable Q154 completion, run exactly
+rehearsal iteration dose, then rounded up to a whole segment.  The slow-cohort
+training estimate is 7200 seconds per iteration at 80 simulations; this changes
+only the cumulative deadline, never `F_old`, self-play games, optimizer steps,
+or adaptive simulation dose.  Only cumulative cap exhaustion is a censored
+hard timeout and holds `F_old`; slow native tasks use the same two-hour hard
+deadline.  After durable Q154 completion, run exactly
 one full-history, after-only retention audit over all 154 representations and
 both ratios.  It performs no training and cannot update `F_old`.
 
-## Primary-8 and deferred V3 cohorts
+## Fast-6 and slow-4 cohorts
 
-The Q104-to-Q154 transition is cohort-scoped.  The primary cohort contains the
-eight Q/SKM lineages that have durable 44/44 Q104 reports.  Its authoritative
-prerequisite is `PRIMARY_8_LINEAGES_Q104_COMPLETE.json`, which must enumerate
-the exact eight labels and bind every Q104 report and final state by SHA256.
-This marker is not an assertion that all ten registered lineages completed
-Q104.
+The Q104-to-Q154 transition is cohort-scoped.  The historical
+`PRIMARY_8_LINEAGES_Q104_COMPLETE.json` remains an immutable binding of the
+eight completed Q/SKM Q104 reports, but Q154 execution is split by measured
+runtime after the exact-common Q134 boundary.  The authoritative executable
+gate is `FAST6_SLOW4_COHORT_SPLIT_V5_VERIFIED.json`; its compatibility rule
+normalizes only protocol-neutral legacy default spellings and records resume
+provenance.  Any compute-dose, order, bank, or sharing difference remains
+`BLOCKED`.  V5 also isolates recovery status writes before gate verification;
+an operational recovery must never overwrite the original launcher status.
+Removing slow lineages from fast dispatch must not renumber random
+seeds: every fast lineage retains its original primary-8 seed index.  V1--V4
+gates are immutable historical records and do not authorize a new dispatch;
+already-active V4 branch transactions remain durable and continue unchanged.
 
-`cyclic-graph-dual-v3` and `cyclic-memory-deep-v3` form a separate deferred
-backfill cohort.  Deferral preserves each latest atomic Q104 state, completed
-event count, event-file hash, and state hash in `V3_BACKFILL_DEFERRED.json`.
-The two branches are `PREPARED`, never `COMPLETED`, until their own Q104
-reports exist.  They must be resumed only through the dedicated V3 backfill
-launcher and must never be silently folded into the primary marker.
+Fast-6 contains `q-grown-raster-axial-12`, `q-grown-strand-graph-12`,
+`q-grown-cyclic-memory-12`, `skm-v2-high-cyclic-memory`,
+`skm-v1-simple-raster-axial`, and `skm-v1-simple-strand-graph`.  They run as six
+concurrent one-thread branches.  Their terminal marker is
+`ALL_FAST_6_LINEAGES_Q154_COMPLETE`.
+If the original post-Q134 launcher has already bound one active writer while
+other branches rejected a pre-V4 seed mismatch, the registered recovery script
+`scripts/run_local_q154_fast6_transition_recovery.py` may own only the five
+writer-free roots.  It must prove the original writer chain and absence of a
+writer in every recovery root before launch; it never restarts or duplicates
+the active branch.
 
-Q154 may dispatch the primary eight immediately after the primary marker and
-the strict-no-sharing bounded-rehearsal gate verify.  Its terminal marker is
-`ALL_PRIMARY_8_LINEAGES_Q154_COMPLETE`; it is not the all-ten terminal marker.
-The V3 Q104 and Q154 backfill keeps separate launcher status, roots, markers,
-and reports.  Primary-8 results may be compared on their exact-common prefixes;
-V3 results join a leaderboard only after an exact-common block exists.  No
-partial V3 prefix may be ranked against a longer primary prefix, and no result
-may be ranked by iteration count alone.
+Slow-4 contains the two combined-dual lineages plus `cyclic-memory-deep-v3`
+and `cyclic-graph-dual-v3`.  Exactly one one-thread slow worker runs at a time.
+The combined-dual branches resume imported, hash-bound Q104 debt-repair carries;
+the V3 branches first resume their deferred 33/44 and 24/44 Q104 boundaries
+through `scripts/run_local_q104_v3_backfill.py`.  After
+`SLOW_4_LINEAGES_Q104_READY.json`, the four continue in a separate Q154 root and
+share no state.  Their terminal marker is `ALL_SLOW_4_LINEAGES_Q154_COMPLETE`.
+
+The two launchers may overlap: six fast workers plus one slow worker, for an
+explicit maximum of seven one-thread experiment workers.  Results may be
+compared only on exact-common prefixes within a cohort; slow-4 joins a combined
+leaderboard only when an equal prefix exists.  No partial prefix may be ranked
+against a longer prefix, and no result may be ranked by iteration count alone.

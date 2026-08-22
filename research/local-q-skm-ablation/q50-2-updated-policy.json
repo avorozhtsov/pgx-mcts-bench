@@ -1,0 +1,74 @@
+{
+  "schema": "q50-2-updated-policy-v1-cohort-scoped",
+  "status": "PREPARED",
+  "purpose": "Q204 successor bank; prepare only and never mutate the active Q154 bank",
+  "source_pool": {
+    "bank": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/local-q-skm-ablation-20260817/inputs/q4000-v1/q200-1.json",
+    "byte_sha256": "1c1fc18aeb7717f7a1bb036eca014d2896a7ebbdadeda624d0913d3959cf903d",
+    "immutable": true
+  },
+  "predecessor": {
+    "bank": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/local-q-skm-ablation-20260817/continuation/q4000-v1-population-20260818/q154-updated-20260819/protocol/q50-1-updated.json",
+    "bank_byte_sha256": "2bac8d2597019d892c0013af472c3c772edb7cd8a215873b97f8f1bb18a58dc8",
+    "prior_bank": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/local-q-skm-ablation-20260817/continuation/q4000-v1-population-20260818/q154-updated-20260819/protocol/prior-q104-for-q50-1-updated.json",
+    "prior_bank_byte_sha256": "904d714ccf7f1e219e301aafb99bcaa982c285198e1620bf72831ee9c993b8eb"
+  },
+  "cohort_triggers": {
+    "fast-6": "q154-updated-20260819/ALL_FAST_6_LINEAGES_Q154_COMPLETE",
+    "slow-4": "q154-slow4-20260822/ALL_SLOW_4_LINEAGES_Q154_COMPLETE",
+    "rule": "each cohort may continue independently from its own terminal marker and lineage-local controller states"
+  },
+  "output": {
+    "name": "q50-2-updated",
+    "size": 50,
+    "cumulative_representations": 204,
+    "execution_arm": "scheduled-no-sharing",
+    "low_strand_rows": 40,
+    "simple_bridge_rows": 10,
+    "bridge_fraction": 0.2
+  },
+  "low_strand_selection": {
+    "definition": "new Q200-1 identities with strands <= 7, excluding every predecessor ID and knot identity",
+    "easy_rows": {
+      "strands": [2, 3, 4],
+      "take": 32
+    },
+    "medium_rows": {
+      "strands": [5, 6, 7],
+      "take": 8,
+      "available_source_note": "the frozen Q200-1 pool currently supplies these rows at strands=6"
+    },
+    "ordering": ["acs10", "strands", "presentation_crossings", "id"]
+  },
+  "bridge_schedule": {
+    "representation_variant": "deterministic-simple-markov-stabilization-v1",
+    "target_order": [9, 10, 9, 11, 10, 12, 9, 11, 10, 12],
+    "counts": {
+      "9": 3,
+      "10": 3,
+      "11": 2,
+      "12": 2
+    },
+    "next_batch_remainder_rotation": {
+      "rule": "give the two 10-row remainder slots to strands 11 and 12 in q50-3 so two successive banks contain five bridges at each strands 9 through 12"
+    }
+  },
+  "exact_schedule": {
+    "microblocks": 10,
+    "rows_per_microblock": 5,
+    "pattern": "four low-strand rows followed by one simple high-strand bridge",
+    "bridge_positions_one_based": [5, 10, 15, 20, 25, 30, 35, 40, 45, 50],
+    "medium_low_microblocks_one_based": [2, 3, 4, 5, 6, 7, 8, 9],
+    "medium_low_position_within_microblock_one_based": 4
+  },
+  "safety": {
+    "active_q154_bank_is_immutable": true,
+    "strict_no_sharing": true,
+    "checkpoint_max_strands_required": 12,
+    "dkt72_training_or_selection": false,
+    "replayable_markov_certificates_required": true,
+    "alexander_jones_component_audit_required": true,
+    "exact_row_order_required": true,
+    "separate_artifact_root_per_lineage": true
+  }
+}

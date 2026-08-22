@@ -20,31 +20,10 @@ def _launcher_module():
 
 
 def main() -> None:
-    launcher = _launcher_module()
-    launcher.BRANCHES = (
-        ("cyclic-memory-deep-v3", "cyclic-memory-deep-v3", 40, False),
-        ("cyclic-graph-dual-v3", "cyclic-graph-dual-v3", 40, False),
+    raise RuntimeError(
+        "superseded by scripts/run_local_q_slow4_continuation.py; "
+        "the V3 lineages now share one serial cohort with the two combined-dual carries"
     )
-    launcher.Q104_MARKER = launcher.Q104_ROOT / "V3_BACKFILL_Q104_COMPLETE.json"
-    launcher.Q104_MARKER_SCHEMA = "q104-v3-backfill-completion-v1"
-    launcher.Q104_STATUS = launcher.Q104_ROOT / "v3-backfill-launcher-status.json"
-    launcher.ROOT = launcher.POPULATION / "q154-v3-backfill-20260821"
-    launcher.STATUS = launcher.ROOT / "launcher-status.json"
-    launcher.LOCK = launcher.ROOT / "launcher.lock"
-    launcher.BANK = launcher.ROOT / "protocol/q50-1-updated.json"
-    launcher.PRIOR = launcher.ROOT / "protocol/prior-q104-for-q50-1-updated.json"
-    launcher.BUILD_AUDIT = launcher.ROOT / "protocol/q50-1-updated-audit.json"
-    launcher.REHEARSAL_DEBT = launcher.ROOT / "protocol/q104-rehearsal-debt.json"
-    launcher.COMPLETION_MARKER = launcher.ROOT / "V3_BACKFILL_Q154_COMPLETE"
-    launcher._status.update(
-        {
-            "schema": "q154-v3-backfill-launcher-v1",
-            "cohort": "deferred-v3-backfill",
-            "status_file": str(launcher.STATUS),
-            "completion_marker": str(launcher.COMPLETION_MARKER),
-        }
-    )
-    launcher.main()
 
 
 if __name__ == "__main__":

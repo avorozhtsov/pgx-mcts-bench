@@ -22,6 +22,7 @@ def _launcher_module():
 def main() -> None:
     launcher = _launcher_module()
     launcher.BRANCHES = launcher.BRANCHES[:2]
+    launcher.MAX_EXPERIMENT_CORES = 1
     launcher.STATUS = launcher.ROOT / "v3-backfill-launcher-status.json"
     launcher.LOCK = launcher.ROOT / "v3-backfill-launcher.lock"
     launcher.COMPLETION_MARKER = launcher.ROOT / "V3_BACKFILL_Q104_COMPLETE.json"
@@ -32,6 +33,7 @@ def main() -> None:
             "cohort": "deferred-v3-backfill",
             "status_file": str(launcher.STATUS),
             "completion_marker": str(launcher.COMPLETION_MARKER),
+            "max_experiment_cores": 1,
         }
     )
     launcher.main()

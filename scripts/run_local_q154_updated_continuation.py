@@ -34,8 +34,8 @@ Q104_STATUS = Q104_ROOT / "launcher-status.json"
 ROOT = POPULATION / "q154-updated-20260819"
 STATUS = ROOT / "launcher-status.json"
 LOCK = ROOT / "launcher.lock"
-COMPLETION_MARKER = ROOT / "ALL_PRIMARY_8_LINEAGES_Q154_COMPLETE"
-Q134_BARRIER_MARKER = ROOT / "ALL_PRIMARY_8_LINEAGES_Q134_PRIORITY_ORDER_COMPLETE.json"
+COMPLETION_MARKER = ROOT / "ALL_FAST_6_LINEAGES_Q154_COMPLETE"
+Q134_BARRIER_MARKER = ROOT / "ALL_FAST_6_LINEAGES_Q134_PRIORITY_ORDER_COMPLETE.json"
 QROOT = RUN / "inputs/q4000-v1"
 POLICY = REPO / "research/local-q-skm-ablation/q50-1-updated-policy.json"
 REGISTRATION = REPO / "research/mastery-v3-curriculum/curriculum.json"
@@ -45,7 +45,10 @@ PRIOR = ROOT / "protocol/prior-q104-for-q50-1-updated.json"
 BUILD_AUDIT = ROOT / "protocol/q50-1-updated-audit.json"
 MAX_EXPERIMENT_CORES = 6
 INVARIANT_TIMEOUT_SECONDS = 3600
-BOUNDED_REHEARSAL_FIX_GATE = ROOT / "Q134_REHEARSAL_TASK_ORDER_TRANSITION_VERIFIED.json"
+REHEARSAL_TRAINING_SECONDS_PER_ITERATION_AT_REFERENCE = 900
+COHORT = "fast-6"
+Q134_MARKER_SCHEMA = "q154-fast-6-q134-task-order-transition-boundary-v1"
+BOUNDED_REHEARSAL_FIX_GATE = ROOT / "FAST6_SLOW4_COHORT_SPLIT_V5_VERIFIED.json"
 BOUNDED_REHEARSAL_SOURCES = (
     REPO / "src/pgx_mcts_bench/sv2_curriculum.py",
     REPO / "src/pgx_mcts_bench/data.py",
@@ -56,14 +59,17 @@ BOUNDED_REHEARSAL_SOURCES = (
     REPO / "tests/test_sv2_curriculum.py",
     REPO / "scripts/run_local_q154_updated_continuation.py",
     REPO / "scripts/run_local_q154_v3_backfill.py",
+    REPO / "scripts/run_local_q_slow4_continuation.py",
+    REPO / "scripts/run_local_q154_fast6_transition_recovery.py",
     REPO / "scripts/prepare_local_q154_primary8_transition.py",
     REPO / "scripts/prepare_q134_rehearsal_task_order_transition.py",
+    REPO / "scripts/prepare_fast6_slow4_cohort_split.py",
     REPO / "scripts/build_q50_1_updated.py",
     REPO / "scripts/run_local_q104_v3_backfill.py",
     REPO / "research/local-q-skm-ablation/q50-1-updated-policy.json",
     REPO / "research/local-q-skm-ablation/EXECUTION-CONTRACT.md",
 )
-REHEARSAL_DEBT = ROOT / "protocol/q104-rehearsal-debt.json"
+REHEARSAL_DEBT = ROOT / "protocol/q104-rehearsal-debt-fast6.json"
 REHEARSAL_PANEL_SIZE = 20
 TASK_ORDER_TRANSITION_RUNG = 30
 Q104_STAGE = "q44-2-updated-scheduled-no-sharing"
@@ -98,7 +104,7 @@ SELECTIONS = {
     "cyclic-graph-dual-v3": REPO
     / "research/local-q-skm-ablation/cyclic-graph-dual-v3-selection.json",
 }
-BRANCHES = (
+PRIMARY_8_BRANCHES = (
     ("q-grown-raster-axial-12", "raster-axial-12", 40, False),
     (
         "q-grown-raster-invariant-combined-dual-12",
@@ -118,11 +124,28 @@ BRANCHES = (
         True,
     ),
 )
+SLOW_COMBINED_LABELS = {
+    "q-grown-raster-invariant-combined-dual-12",
+    "skm-v2-high-combined-dual",
+}
+BRANCHES = tuple(
+    branch for branch in PRIMARY_8_BRANCHES if branch[0] not in SLOW_COMBINED_LABELS
+)
+FAST_6_LABELS = tuple(branch[0] for branch in BRANCHES)
+PRIMARY_8_SEED_INDEX = {
+    label: index for index, (label, *_rest) in enumerate(PRIMARY_8_BRANCHES)
+}
+SLOW_4_LABELS = (
+    "q-grown-raster-invariant-combined-dual-12",
+    "skm-v2-high-combined-dual",
+    "cyclic-memory-deep-v3",
+    "cyclic-graph-dual-v3",
+)
 
 _status_lock = threading.Lock()
 _status: dict[str, Any] = {
-    "schema": "q154-primary-8-population-launcher-v1",
-    "cohort": "primary-8",
+    "schema": "q154-fast-6-population-launcher-v1",
+    "cohort": COHORT,
     "created_at": datetime.now(UTC).isoformat(),
     "state": "QUEUED",
     "stage": "awaiting durable Q104 completion",
@@ -204,11 +227,13 @@ def _wait_for_q104() -> None:
         time.sleep(60)
     marker = json.loads(Q104_MARKER.read_text())
     expected = [label for label, _scientist, _simulations, _timeout in BRANCHES]
+    primary = [label for label, _scientist, _simulations, _timeout in PRIMARY_8_BRANCHES]
     if marker.get("schema") != Q104_MARKER_SCHEMA:
         raise RuntimeError("unexpected Q104 cohort marker schema")
-    if marker.get("lineages") != expected:
-        raise RuntimeError("primary-8 Q104 marker lineages do not match launcher order")
-    for label in expected:
+    marker_lineages = primary if Q104_MARKER_SCHEMA == "q104-primary-8-completion-v1" else expected
+    if marker.get("lineages") != marker_lineages:
+        raise RuntimeError("Q104 cohort marker lineages do not match frozen order")
+    for label in marker_lineages:
         bound = marker.get("artifacts", {}).get(label, {})
         report = Q104_ROOT / "branches" / label / Q104_STAGE / "report.json"
         state = Q104_ROOT / "branches" / label / Q104_STAGE / "state.pt.gz"
@@ -223,8 +248,9 @@ def _verify_bounded_rehearsal_gate() -> None:
         raise RuntimeError(f"missing bounded rehearsal gate: {BOUNDED_REHEARSAL_FIX_GATE}")
     gate = json.loads(BOUNDED_REHEARSAL_FIX_GATE.read_text())
     if (
-        gate.get("schema") != "semantic-v2-rehearsal-task-order-transition-v1"
-        or gate.get("cohort") != "primary-8"
+        gate.get("schema") != "semantic-v2-fast6-slow4-cohort-split-v5"
+        or gate.get("fast_cohort") != list(FAST_6_LABELS)
+        or gate.get("slow_cohort") != list(SLOW_4_LABELS)
         or gate.get("boundary_completed_rungs") != TASK_ORDER_TRANSITION_RUNG
         or gate.get("from_policy") != "priority-exposure-v1"
         or gate.get("to_policy") != "seeded-outcome-interleaved-exposure-v1"
@@ -460,6 +486,8 @@ def _run_branch(
             "--scientist-task-timeout-seconds",
             str(INVARIANT_TIMEOUT_SECONDS),
             "--resumable-rehearsal-segments",
+            "--rehearsal-training-seconds-per-iteration-at-reference",
+            str(REHEARSAL_TRAINING_SECONDS_PER_ITERATION_AT_REFERENCE),
         ]
     if (output / "manifest.json").is_file():
         command.append("--resume")
@@ -498,8 +526,8 @@ def _write_q134_barrier_marker() -> None:
             "last_event_sha256": _sha256(events[-1]),
         }
     marker = {
-        "schema": "q154-primary-8-q134-task-order-transition-boundary-v1",
-        "cohort": "primary-8",
+        "schema": Q134_MARKER_SCHEMA,
+        "cohort": COHORT,
         "completed_rungs": TASK_ORDER_TRANSITION_RUNG,
         "lineages": [label for label, *_rest in BRANCHES],
         "artifacts": artifacts,
@@ -552,7 +580,7 @@ def main() -> None:
                             simulations,
                             timeout,
                             initial_states[label],
-                            202608190300 + index,
+                            202608190300 + PRIMARY_8_SEED_INDEX[label],
                             rehearsal_debts[label],
                             phase=phase,
                         ),
