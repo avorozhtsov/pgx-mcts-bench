@@ -29,6 +29,7 @@ from pgx_mcts_bench.sv2_curriculum import (
     coordinated_block_report,
     curriculum_skip_event,
     deterministic_rehearsal_panel,
+    deterministic_rehearsal_task_order,
     next_compute_dose,
     next_rehearsal_dose,
     rehearsal_cumulative_timeout_seconds,
@@ -54,6 +55,57 @@ def test_expanding_round_robin_panel_uses_exact_order_and_durable_absolute_curso
     assert (cursor, cursor2) == (4, 8)
     assert metadata["policy"] == "exact-bank-order-expanding-round-robin-v1"
     assert metadata2["population_size"] == 8
+
+
+def test_rehearsal_panel_can_be_reused_without_double_wrapping() -> None:
+    items = [
+        BankItem(f"r{index}", KnotItem(f"k{index}", 3, (1, -1), 2), float(index), 0)
+        for index in range(3)
+    ]
+    first, cursor, _metadata = deterministic_rehearsal_panel(items, panel_size=2, cursor=0)
+
+    reused, next_cursor, metadata = deterministic_rehearsal_panel(
+        first,
+        panel_size=2,
+        cursor=0,
+    )
+
+    assert reused == first
+    assert (cursor, next_cursor) == (2, 2)
+    assert metadata["representations"] == ["r0", "r1"]
+
+
+def test_seeded_rehearsal_task_order_interleaves_outcomes_and_is_replayable() -> None:
+    items = [
+        BankItem(f"r{index}", KnotItem(f"k{index}", 3, (1, -1), 2), float(index), 0)
+        for index in range(4)
+    ]
+    cells = {}
+    signatures = ((True, True), (True, False), (False, True), (False, False))
+    for item, signature in zip(items, signatures, strict=True):
+        cells[item.id] = {
+            "10.0": {"best_objective": 10.0 if signature[0] else None},
+            "1000.0": {"best_objective": 1000.0 if signature[1] else None},
+        }
+    first, metadata = deterministic_rehearsal_task_order(
+        items,
+        retention={"cells": cells},
+        ratios=(10.0, 1000.0),
+        exposure={},
+        seed=1234,
+    )
+    second, metadata2 = deterministic_rehearsal_task_order(
+        items,
+        retention={"cells": cells},
+        ratios=(10.0, 1000.0),
+        exposure={},
+        seed=1234,
+    )
+    assert [item.id for item in first] == [item.id for item in second]
+    assert metadata == metadata2
+    assert len(set(metadata["exposure_tiers"][0]["stratum_order"])) == 4
+    assert metadata["outcome_signature_deficits"] == []
+    assert metadata["policy"] == "seeded-outcome-interleaved-exposure-v1"
 
 
 def test_rehearsal_timeout_debt_counts_only_missing_censored_iterations() -> None:
@@ -429,6 +481,43 @@ def test_rehearsal_cumulative_timeout_scales_with_history_and_compute() -> None:
         )
         == 17 * 3600
     )
+    assert (
+        rehearsal_cumulative_timeout_seconds(
+            7200,
+            processed_items=20,
+            ratios=2,
+            simulations=80,
+            f_old=1,
+            training_seconds_per_iteration_at_reference=7200,
+        )
+        == 2 * 7200
+    )
+
+
+def test_legacy_resume_protocol_accepts_only_neutral_default_spellings() -> None:
+    current = {
+        "arm": "scheduled-no-sharing",
+        "sharing": "none",
+        "resumable_rehearsal_segments": False,
+        "strict_own_budget_rehearsal": False,
+        "rehearsal_budget_policy": "global",
+        "terminal_full_retention_audit": False,
+        "simulations": 40,
+        "protocol_sha256": "current",
+    }
+    frozen = {
+        "arm": "scheduled-no-sharing",
+        "sharing": False,
+        "resumable_rehearsal_segments": None,
+        "strict_own_budget_rehearsal": None,
+        "rehearsal_budget_policy": None,
+        "terminal_full_retention_audit": None,
+        "simulations": 40,
+        "protocol_sha256": "frozen",
+    }
+    assert curriculum._legacy_resume_protocol_is_equivalent(frozen, current)
+    frozen["simulations"] = 80
+    assert not curriculum._legacy_resume_protocol_is_equivalent(frozen, current)
 
 
 def test_rehearsal_segment_timeout_resumes_same_phase_until_complete(
@@ -806,6 +895,98 @@ def test_strict_rehearsal_uses_only_lineage_local_caps(monkeypatch) -> None:
         (1000.0, 1003.0, "own"),
     ]
     assert result["selfplay_games_by_budget_source"] == {"own": 4}
+
+
+def test_iteration_resumes_after_safe_game_and_optimizer_boundaries(monkeypatch) -> None:
+    class Replay:
+        games = [object()]
+
+        def set_representation_embedding(self, *args) -> None:
+            pass
+
+        def add(self, *args, **kwargs) -> None:
+            pass
+
+    scientist = SimpleNamespace(
+        replay=Replay(),
+        game=object(),
+        network=object(),
+        optimizer=object(),
+        config=SimpleNamespace(search=object(), train=SimpleNamespace(device="cpu")),
+    )
+    played = []
+    optimized = []
+    monkeypatch.setattr(curriculum, "replace", lambda value, **kwargs: value)
+    monkeypatch.setattr(curriculum, "FixedWordGame", lambda *args, **kwargs: object())
+    monkeypatch.setattr(curriculum, "NeuralMCTS", lambda *args: object())
+
+    def play(*args):
+        played.append(len(played))
+        return [[]]
+
+    def optimize(*args, **kwargs):
+        optimized.append(len(optimized))
+        return {"step": len(optimized)}
+
+    monkeypatch.setattr(curriculum, "play_selfplay_games", play)
+    monkeypatch.setattr(curriculum, "train_alphazero_step", optimize)
+    saved = None
+
+    class SegmentExpired(Exception):
+        pass
+
+    def interrupt_after_two_games(row):
+        nonlocal saved
+        saved = row
+        if len(row["completed_games"]) == 2:
+            raise SegmentExpired
+
+    kwargs = dict(
+        ratios=(10.0, 1000.0),
+        simulations=2,
+        selfplay_games=4,
+        train_steps=6,
+        batch_size=1,
+        seed=1,
+    )
+    with pytest.raises(SegmentExpired):
+        curriculum._iteration(
+            scientist,
+            KnotItem("x", 3, (1, -1, 1), 2),
+            progress=interrupt_after_two_games,
+            **kwargs,
+        )
+    assert saved is not None
+    assert len(saved["completed_games"]) == 2
+
+    def interrupt_after_three_steps(row):
+        nonlocal saved
+        saved = row
+        if row["completed_optimizer_steps"] == 3:
+            raise SegmentExpired
+
+    with pytest.raises(SegmentExpired):
+        curriculum._iteration(
+            scientist,
+            KnotItem("x", 3, (1, -1, 1), 2),
+            resume_progress=saved,
+            progress=interrupt_after_three_steps,
+            **kwargs,
+        )
+    assert len(played) == 4
+    assert len(optimized) == 3
+
+    result = curriculum._iteration(
+        scientist,
+        KnotItem("x", 3, (1, -1, 1), 2),
+        resume_progress=saved,
+        **kwargs,
+    )
+    assert len(played) == 4
+    assert len(optimized) == 6
+    assert result["selfplay_games"] == 4
+    assert result["train_steps"] == 6
+    assert result["last_loss"] == {"step": 6}
 
 
 def test_pipelined_native_block_advances_fast_scientist_and_resumes(

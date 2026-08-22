@@ -1,5 +1,5 @@
 {
-  "schema": "q50-1-updated-policy-v2",
+  "schema": "q50-1-updated-policy-v3-primary-8",
   "status": "REGISTERED",
   "registered_at": "2026-08-19T17:16:00Z",
   "source_pool": {
@@ -9,9 +9,24 @@
     "role": "source pool only; never launch as one monolithic stage"
   },
   "trigger": {
-    "required_marker": "q104-updated-20260819/ALL_REGISTERED_LINEAGES_Q104_COMPLETE",
-    "required_lineages": 10,
-    "all_q104_reports_required": true
+    "required_marker": "q104-updated-20260819/PRIMARY_8_LINEAGES_Q104_COMPLETE.json",
+    "required_lineages": 8,
+    "required_lineage_labels": [
+      "q-grown-raster-axial-12",
+      "q-grown-raster-invariant-combined-dual-12",
+      "q-grown-strand-graph-12",
+      "q-grown-cyclic-memory-12",
+      "skm-v2-high-cyclic-memory",
+      "skm-v1-simple-raster-axial",
+      "skm-v1-simple-strand-graph",
+      "skm-v2-high-combined-dual"
+    ],
+    "cohort": "primary-8",
+    "all_required_cohort_reports_required": true,
+    "deferred_backfill_lineages": [
+      "cyclic-graph-dual-v3",
+      "cyclic-memory-deep-v3"
+    ]
   },
   "output": {
     "name": "q50-1-updated",

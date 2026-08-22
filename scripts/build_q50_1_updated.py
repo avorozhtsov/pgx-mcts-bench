@@ -47,19 +47,29 @@ def atomic_json(path: Path, payload: Any) -> None:
     os.replace(temporary, path)
 
 
-def _report_paths(q104_root: Path) -> list[Path]:
-    paths = sorted(q104_root.glob(f"branches/*/{Q104_STAGE}/report.json"))
-    if len(paths) != 10:
-        raise ValueError(f"Q50 build requires 10 durable Q104 reports, found {len(paths)}")
+def _report_paths(q104_root: Path, required_lineages: list[str]) -> list[Path]:
+    if len(required_lineages) != len(set(required_lineages)):
+        raise ValueError("Q50 policy contains duplicate required lineage labels")
+    paths = [
+        q104_root / "branches" / label / Q104_STAGE / "report.json"
+        for label in required_lineages
+    ]
+    missing = [str(path) for path in paths if not path.is_file()]
+    if missing:
+        raise ValueError(f"Q50 build is missing required Q104 reports: {missing}")
     return paths
 
 
-def _q104_rates(q104_root: Path, q44_bank: Path) -> tuple[dict[int, dict[str, float]], dict]:
+def _q104_rates(
+    q104_root: Path,
+    q44_bank: Path,
+    required_lineages: list[str],
+) -> tuple[dict[int, dict[str, float]], dict]:
     bank = json.loads(q44_bank.read_text())
     strands = {str(row["id"]): int(row["strands"]) for row in bank["rows"]}
     counts = {strand: {"L10": [0, 0], "L1000": [0, 0]} for strand in range(5, 9)}
     signatures = {}
-    for path in _report_paths(q104_root):
+    for path in _report_paths(q104_root, required_lineages):
         report = json.loads(path.read_text())
         signatures[str(path.relative_to(q104_root))] = file_sha256(path)
         if int(report.get("completed_rungs", 0)) != 44:
@@ -84,7 +94,12 @@ def _q104_rates(q104_root: Path, q44_bank: Path) -> tuple[dict[int, dict[str, fl
         }
         for strand, rows in counts.items()
     }
-    detail = {"counts": counts, "rates": rates, "report_sha256": signatures}
+    detail = {
+        "counts": counts,
+        "rates": rates,
+        "report_sha256": signatures,
+        "required_lineages": required_lineages,
+    }
     return rates, detail
 
 
@@ -210,7 +225,11 @@ def build(
         )
     )
     base_rows = low[:40]
-    _rates, outcome_detail = _q104_rates(q104_root, q44_bank)
+    trigger = policy_payload["trigger"]
+    required_lineages = [str(label) for label in trigger["required_lineage_labels"]]
+    if len(required_lineages) != int(trigger["required_lineages"]):
+        raise ValueError("Q50 policy required lineage count does not match its labels")
+    _rates, outcome_detail = _q104_rates(q104_root, q44_bank, required_lineages)
     mix = dict(BRIDGE_MIX)
     targets = [strand for strand in sorted(mix) for _ in range(mix[strand])]
 
@@ -265,7 +284,7 @@ def build(
         "rows": prior_rows,
     }
     audit = {
-        "schema": "q50-1-updated-audit-v1",
+        "schema": "q50-1-updated-audit-v2-cohort-scoped",
         "status": "passed",
         "seed": seed,
         "policy_sha256": file_sha256(policy),
@@ -284,7 +303,7 @@ def build(
         "bank_rows_sha256": canonical_sha256(scheduled),
         "bank_row_order": [str(row["id"]) for row in scheduled],
         "checks": {
-            "all_ten_q104_reports_complete": True,
+            "all_required_cohort_q104_reports_complete": True,
             "all_bridge_invariants_match": True,
             "bridge_fraction_exactly_0_20": True,
             "simple_bridge_strands_exactly_7_through_11": (

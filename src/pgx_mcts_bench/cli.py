@@ -194,6 +194,16 @@ def braid_sv2_coordinated(
             )
         ),
     ] = False,
+    rehearsal_training_seconds_per_iteration_at_reference: Annotated[
+        float,
+        typer.Option(
+            min=0.001,
+            help=(
+                "Cumulative-cap estimate per rehearsal iteration at 80 simulations; "
+                "slow cohorts may raise this without changing the learning dose"
+            ),
+        ),
+    ] = 900.0,
     rehearsal_panel_size: Annotated[int | None, typer.Option(min=1)] = None,
     strict_own_budget_rehearsal: bool = False,
     rehearsal_repair_debt: Annotated[
@@ -201,6 +211,18 @@ def braid_sv2_coordinated(
         typer.Option(help="Repeat NAME=ITERATIONS for censored Q104 rehearsal debt"),
     ] = None,
     terminal_full_retention_audit: bool = False,
+    pause_after_rungs: Annotated[
+        int | None,
+        typer.Option(help="Stop only after this completed rehearsal block boundary"),
+    ] = None,
+    rehearsal_task_order_transition: Annotated[
+        Path | None,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Verified cohort transition enabling seeded rehearsal task ordering",
+        ),
+    ] = None,
     pipelined_static_no_sharing: bool = False,
     adaptive_compute: bool = False,
     f_native_levels: str | None = None,
@@ -274,10 +296,15 @@ def braid_sv2_coordinated(
         parallel_scientists=parallel_scientists,
         scientist_task_timeout_seconds=scientist_task_timeout_seconds,
         resumable_rehearsal_segments=resumable_rehearsal_segments,
+        rehearsal_training_seconds_per_iteration_at_reference=(
+            rehearsal_training_seconds_per_iteration_at_reference
+        ),
         rehearsal_panel_size=rehearsal_panel_size,
         strict_own_budget_rehearsal=strict_own_budget_rehearsal,
         rehearsal_repair_debt=repair_debt or None,
         terminal_full_retention_audit=terminal_full_retention_audit,
+        pause_after_rungs=pause_after_rungs,
+        rehearsal_task_order_transition=rehearsal_task_order_transition,
         pipelined_static_no_sharing=pipelined_static_no_sharing,
         adaptive_compute=adaptive_compute,
         f_native_levels=(
