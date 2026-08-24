@@ -1,0 +1,77 @@
+{
+  "schema": "dkt-proof-carrying-inflation-frontier-policy-v1",
+  "status": "PREPARED",
+  "scientific_role": "evaluation-only DKT solution mining; never training data before the frozen clean benchmark",
+  "target": {
+    "identity": "11a_14",
+    "representation_id": "braid:e65db35e8acf104074f08b7327c90885cbf6ead0239bba0fe75579946602b432",
+    "published_upper_bound": 2,
+    "paper_reports_exact_value": true
+  },
+  "representative": {
+    "lineage": "q-grown-raster-axial-12",
+    "scientist": "raster-axial-12",
+    "checkpoint_stage": "Q204"
+  },
+  "sources": {
+    "dkt_panel": {
+      "path": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/nebius-main32-final-20260817/artifacts/dkt72-pd-v1-l1000-eval-20260814/dataset/dkt2026-table1-authors-pd-braids-v1.json",
+      "byte_sha256": "83c591d4b8ea002e5082ede424766fe7eb05c87958defe70413f679495a289fb"
+    },
+    "dkt_upper_bounds": {
+      "path": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/nebius-main32-final-20260817/artifacts/dkt72-pd-v1-l1000-eval-20260814/dataset/dkt2026-table1-upper-bounds-v1.json",
+      "byte_sha256": "bfcd8747aa9e2a5e2351f73d70c39dbee30af509166e3d85d7bdb1a49c2fb010"
+    },
+    "representative_gate": {
+      "path": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/local-q-skm-ablation-20260817/continuation/q4000-v1-population-20260818/dkt-shadow4-raster-axial-q204-20260823/DKT_SHADOW4_RASTER_AXIAL_PREPARED.json",
+      "byte_sha256": "6e1d62cac522765657a8de7529215e546c15f33c65d43c6c241ad9e4df32eeca"
+    }
+  },
+  "frontier": {
+    "max_len": 48,
+    "max_strands": 12,
+    "cyclic_band_generators": false,
+    "depths": [2, 4, 6],
+    "beam_width": 8,
+    "insert_actions_per_parent": 8,
+    "shuffle_actions_per_parent": 4,
+    "allowed_prefix_actions": [
+      "STABILIZE_POS",
+      "STABILIZE_NEG",
+      "INSERT",
+      "BRAID",
+      "COMMUTE"
+    ],
+    "crossing_changes_in_prefix": 0,
+    "seed": 2026082311
+  },
+  "evaluation": {
+    "learning": false,
+    "sharing": false,
+    "screening": {
+      "attempts_per_frontier": 1,
+      "simulations": 64,
+      "root_noise": true
+    },
+    "promotion": {
+      "count": 4,
+      "ranking": "representative-network-p_solve-at-L1000",
+      "attempts_per_frontier": 4,
+      "simulations": 256,
+      "root_noise": true
+    },
+    "objective_ratio": 1000.0,
+    "published_crossing_change_cap": 2,
+    "total_semantic_move_cap": 134,
+    "suffix_action_horizon": 128,
+    "temperature": 0.0,
+    "base_seed": 2026082314
+  },
+  "acceptance": {
+    "requires_exact_replay_from_original_representation": true,
+    "requires_crossing_changes_at_most_published_upper_bound": true,
+    "requires_network_unchanged": true,
+    "may_call_optimal_only_when_published_value_is_exact": true,
+    "may_enter_training_before_clean_dkt_evaluation": false
+  }
+}
