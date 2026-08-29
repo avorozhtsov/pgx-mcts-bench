@@ -1,10 +1,81 @@
 # PGX MCTS Bench
 
-Fixed-compute experiments with AlphaZero, MuZero, and alternative tree
-exploration rules on 6×6 Go.
+**A laboratory for Monte Carlo Tree Search games, agents, and controlled
+training experiments.**
 
-This repository is designed for small local experiments, not for reproducing
-DeepMind-scale results. It makes the comparison inspectable:
+This repository contains implementations of several games and search protocols
+for AlphaZero-style and MuZero-style MCTS. Its two main uses are:
+
+- controlled fixed-compute comparisons of MCTS exploration rules on 6×6 Go;
+- neural search, curriculum training, distillation, and evaluation for the
+  braid environments defined by
+  [RF Knots](https://github.com/avorozhtsov/rf-knots).
+
+This is where the RF Knots models are trained and evaluated. RF Knots supplies
+the mathematical state and move rules; this repository supplies neural
+networks, replay buffers, MCTS, experiment runners, checkpoints, and reporting.
+
+## The three-project system
+
+| Repository | Responsibility |
+|---|---|
+| [**rf-knots**](https://github.com/avorozhtsov/rf-knots) | Knot representations, invariants, legal moves, instance generators, and Pgx-compatible braid environments. |
+| **pgx-mcts-bench** | Game adapters, AlphaZero/MuZero training, MCTS variants, braid curricula, evaluations, and experiment artifacts. |
+| [**unknotdb**](https://github.com/avorozhtsov/unknotdb) | The replayable proof graph. It consumes pinned RF Knots policies for preprocessing and can export verified routes and labels for later training here. |
+
+## Braid distance objectives: L10 and L1000
+
+A successful trajectory has two separately recorded costs:
+
+- `CC` is the number of crossing changes. These may change the knot type.
+- `semantic_moves` counts transformations of the represented braid or diagram
+  that do not incur a CC: Reidemeister/braid relations and Markov operations,
+  including stabilization and destabilization. Internal controller operations
+  such as moving a serial read head are not semantic moves.
+
+For a ratio `r`, the scalar training objective is
+
+```text
+Lr = r * CC + semantic_moves
+```
+
+Therefore `L10 = 10 * CC + semantic_moves` and
+`L1000 = 1000 * CC + semantic_moves`. Both prefer shorter proofs when the CC
+count is equal. `L10` allows a meaningful trade-off between one extra crossing
+change and a much shorter zero-CC route; `L1000` makes crossing-change
+minimization overwhelmingly dominant for the episode sizes used here, closely
+approximating lexicographic minimization of `(CC, semantic_moves)`. The cost is
+a trajectory objective, not a knot invariant and not a proof of optimality.
+
+## Braid experiments
+
+The braid suite includes parallel and serial game interfaces, neural MCTS,
+curriculum ladders, representation studies, continual-learning gates, policy
+distillation, and multi-agent “scientist” experiments. Start with the current
+operational summary in [`HANDOFF.md`](HANDOFF.md) and the mathematical rung
+definitions in the RF Knots
+[`docs/rungs.md`](https://github.com/avorozhtsov/rf-knots/blob/main/docs/rungs.md).
+
+Inspect the main ladder runner without starting a training job:
+
+```bash
+uv run pgx-mcts-bench braid-ladder --help
+```
+
+Summarize checkpoints already present under the artifact roots:
+
+```bash
+uv run pgx-mcts-bench braid-ladder-leaderboard
+```
+
+Search-generated trajectories are candidates until their semantic actions and
+endpoints have been replayed. UnknotDB is the durable evidence layer for routes
+that pass that boundary.
+
+## Fixed-compute Go benchmark
+
+The original benchmark is designed for small local experiments, not for
+reproducing DeepMind-scale results. It makes the comparison inspectable:
 
 - **AlphaZero** searches exact successor states produced by Pgx.
 - **MuZero** searches a learned latent transition and reward model.
