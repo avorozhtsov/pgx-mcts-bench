@@ -8,7 +8,7 @@ current VM and makes continuation on a replacement VM possible.
 | Layer | Frequency | Content | Destination |
 | --- | ---: | --- | --- |
 | Mac mirror | Every 2 hours | All non-model results plus restart states, final checkpoints, recently active pretraining checkpoints, code diffs, untracked code, host metadata, and systemd units | `artifacts/nebius-semantic-v2-live-backup/mirror` |
-| Drive delta | Every 6 hours | Files changed since the preceding Drive capsule, with the complete current SHA-256 manifest and deletion list | `projects/rf-knots/artefacts/nebius-semantic-v2-live-resume` |
+| Drive delta | Every 6 hours | Files changed since the preceding Drive capsule, with the complete current SHA-256 manifest and deletion list | `projects/rf-knots/artefacts/runs/nebius-semantic-v2-live-resume` |
 | Drive baseline | Sundays at 04:30 Europe/London | A complete self-contained copy of the selected mirror | The same Drive folder |
 
 These clocks are enforced by the existing 30-minute

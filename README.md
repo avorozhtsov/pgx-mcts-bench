@@ -11,16 +11,18 @@ for AlphaZero-style and MuZero-style MCTS. Its two main uses are:
   braid environments defined by
   [RF Knots](https://github.com/avorozhtsov/rf-knots).
 
-This is where the RF Knots models are trained and evaluated. RF Knots supplies
-the mathematical state and move rules; this repository supplies neural
-networks, replay buffers, MCTS, experiment runners, checkpoints, and reporting.
+This is where RF Knots **MCTS policies** are trained and evaluated. RF Knots
+supplies the mathematical state and move rules; this repository supplies neural
+search networks, replay buffers, MCTS, experiment runners, checkpoints, and
+reporting. Full-representation metric embeddings are trained in RF Knots itself,
+not here, because they are part of its model-facing representation layer.
 
 ## The three-project system
 
 | Repository | Responsibility |
 |---|---|
 | [**rf-knots**](https://github.com/avorozhtsov/rf-knots) | Knot representations, invariants, legal moves, instance generators, and Pgx-compatible braid environments. |
-| **pgx-mcts-bench** | Game adapters, AlphaZero/MuZero training, MCTS variants, braid curricula, evaluations, and experiment artifacts. |
+| **pgx-mcts-bench** | Game adapters, AlphaZero/MuZero and braid-policy training, MCTS variants, curricula, evaluations, and experiment artifacts. |
 | [**unknotdb**](https://github.com/avorozhtsov/unknotdb) | The replayable proof graph. It consumes pinned RF Knots policies for preprocessing and can export verified routes and labels for later training here. |
 
 ## Braid distance objectives: L10 and L1000
@@ -71,6 +73,30 @@ uv run pgx-mcts-bench braid-ladder-leaderboard
 Search-generated trajectories are candidates until their semantic actions and
 endpoints have been replayed. UnknotDB is the durable evidence layer for routes
 that pass that boundary.
+
+## Conservative proof-graph guidance
+
+UnknotDB witnesses are complete paths, not unique next-action labels. Two
+different first moves may commute or reach different nodes while preserving the
+same best observed crossing-change count. Ordinary behavioural cloning would
+incorrectly punish those alternatives.
+
+[`proof_guidance.py`](src/pgx_mcts_bench/proof_guidance.py) therefore implements
+set-valued supervision with three action states:
+
+- `accepted`: a bounded search completed and replayed a continuation on the
+  current best observed frontier;
+- `compared`: a completed and replayed continuation was worse under the same
+  protocol;
+- `unknown`: no comparable replayed conclusion exists, so the graph batch gives
+  the action exactly zero gradient.
+
+The conservative loss transfers probability only from replayed worse actions
+to the accepted set. Its first integration target is a zero-initialized adapter
+on a frozen admitted policy; publication still requires an equal-budget MCTS
+bake-off, independent trace replay, and no protected-corpus regression. The
+full contract is in
+[`docs/proof-context-adapter.md`](docs/proof-context-adapter.md).
 
 ## Fixed-compute Go benchmark
 
