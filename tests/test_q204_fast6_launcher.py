@@ -31,8 +31,8 @@ def test_q204_gate_binds_new_runtime_without_mutating_active_q154_sources() -> N
     prepare = load_script("prepare_local_q204_fast6")
     assert prepare.RUNTIME not in prepare.SOURCE_FILES
     assert prepare.SV2_SOURCE in prepare.SOURCE_FILES
-    assert ROOT / "scripts/run_local_q204_fast6.py" in prepare.SOURCE_FILES
-    assert ROOT / "scripts/run_local_q204_fast6_branch.py" in prepare.SOURCE_FILES
+    assert prepare.REPO / "scripts/run_local_q204_fast6.py" in prepare.SOURCE_FILES
+    assert prepare.REPO / "scripts/run_local_q204_fast6_branch.py" in prepare.SOURCE_FILES
 
 
 def test_q204_fast_launcher_preserves_exact_primary8_seed_indices_and_dose() -> None:
