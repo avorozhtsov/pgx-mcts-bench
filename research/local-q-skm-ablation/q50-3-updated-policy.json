@@ -1,0 +1,63 @@
+{
+  "schema": "q50-3-updated-policy-v1-cohort-scoped",
+  "status": "PREPARED",
+  "purpose": "Q254 successor bank prepared while Q204 remains active; all files are isolated from the active Q204 gate",
+  "source_pool": {
+    "bank": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/local-q-skm-ablation-20260817/inputs/q4000-v1/q200-1.json",
+    "byte_sha256": "1c1fc18aeb7717f7a1bb036eca014d2896a7ebbdadeda624d0913d3959cf903d",
+    "immutable": true,
+    "rotation_rule": "if fewer than 40 eligible unused low-strand rows remain, select the next registered immutable q200-k source and freeze its byte hash before dispatch"
+  },
+  "predecessor": {
+    "bank": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/local-q-skm-ablation-20260817/continuation/q4000-v1-population-20260818/q204-fast6-20260822/protocol/q50-2-updated.json",
+    "bank_byte_sha256": "73257b7817495f11ddc3667503b6f483090f2a51e61e11be13beee80590a00db",
+    "prior_bank": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/local-q-skm-ablation-20260817/continuation/q4000-v1-population-20260818/q204-fast6-20260822/protocol/prior-q154-for-q50-2-updated.json",
+    "prior_bank_byte_sha256": "24053a7305ac06fdfcad4fb1ce1167167059aae1bad6aa5970af5ca8c03fd478"
+  },
+  "cohort_triggers": {
+    "fast-6": "q204-fast6-20260822/ALL_FAST_6_LINEAGES_Q204_COMPLETE",
+    "slow-4": "the slow cohort's lineage-local Q204 terminal marker",
+    "rule": "each cohort transitions independently and carries only its own terminal state"
+  },
+  "output": {
+    "name": "q50-3-updated",
+    "size": 50,
+    "cumulative_representations": 254,
+    "execution_arm": "scheduled-no-sharing",
+    "low_strand_rows": 40,
+    "simple_bridge_rows": 10,
+    "bridge_fraction": 0.2
+  },
+  "low_strand_selection": {
+    "definition": "unused source identities and representations with strands <= 7 after the full Q204 predecessor, excluding DKT72",
+    "easy_rows": {"strands": [2, 3, 4], "take": 32},
+    "medium_rows": {"strands": [5, 6, 7], "take": 8},
+    "ordering": ["acs10", "strands", "presentation_crossings", "id"]
+  },
+  "bridge_schedule": {
+    "representation_variant": "deterministic-simple-markov-stabilization-v1",
+    "target_order": [11, 12, 9, 10, 11, 12, 9, 10, 11, 12],
+    "counts": {"9": 2, "10": 2, "11": 3, "12": 3},
+    "two_batch_balance": {"9": 5, "10": 5, "11": 5, "12": 5}
+  },
+  "exact_schedule": {
+    "microblocks": 10,
+    "rows_per_microblock": 5,
+    "pattern": "four low-strand rows followed by one simple high-strand bridge",
+    "bridge_positions_one_based": [5, 10, 15, 20, 25, 30, 35, 40, 45, 50],
+    "medium_low_microblocks_one_based": [2, 3, 4, 5, 6, 7, 8, 9],
+    "medium_low_position_within_microblock_one_based": 4
+  },
+  "safety": {
+    "active_q204_files_are_immutable": true,
+    "strict_no_sharing": true,
+    "checkpoint_max_strands_required": 12,
+    "dkt72_training_or_selection": false,
+    "predecessor_identity_reuse": false,
+    "predecessor_representation_reuse": false,
+    "replayable_markov_certificates_required": true,
+    "alexander_jones_component_audit_required": true,
+    "exact_row_order_required": true,
+    "separate_artifact_root_per_lineage": true
+  }
+}

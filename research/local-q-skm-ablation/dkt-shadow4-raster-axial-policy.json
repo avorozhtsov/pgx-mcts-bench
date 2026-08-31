@@ -1,0 +1,75 @@
+{
+  "schema": "dkt-disjoint-shadow4-raster-axial-policy-v1",
+  "status": "PREPARED",
+  "purpose": "A low-cost, evaluation-only DKT readiness proxy represented by q-grown-raster-axial-12; it never trains, selects, or evaluates on a DKT72 identity or exact representation.",
+  "representative": {
+    "lineage": "q-grown-raster-axial-12",
+    "scientist": "raster-axial-12",
+    "checkpoint_stage": "Q204"
+  },
+  "sources": {
+    "dkt_panel": {
+      "path": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/nebius-main32-final-20260817/artifacts/dkt72-pd-v1-l1000-eval-20260814/dataset/dkt2026-table1-authors-pd-braids-v1.json",
+      "byte_sha256": "83c591d4b8ea002e5082ede424766fe7eb05c87958defe70413f679495a289fb"
+    },
+    "dkt_upper_bounds": {
+      "path": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/nebius-main32-final-20260817/artifacts/dkt72-pd-v1-l1000-eval-20260814/dataset/dkt2026-table1-upper-bounds-v1.json",
+      "byte_sha256": "bfcd8747aa9e2a5e2351f73d70c39dbee30af509166e3d85d7bdb1a49c2fb010"
+    },
+    "shadow_source_pool": {
+      "path": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/local-q-skm-ablation-20260817/inputs/q4000-v1/q200-3.json",
+      "byte_sha256": "5e74278d63b766df1f009ca6032cb875cc8bc2ef66bbcf92a0ea438ac9b9685e"
+    },
+    "q254_prior": {
+      "path": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/local-q-skm-ablation-20260817/continuation/q4000-v1-population-20260818/q254-fast6-20260823/protocol/prior-q204-for-q50-3-updated.json",
+      "byte_sha256": "a142501b5eb11bf1292b1d3860eaf7ef116f63d2e80941fb4b9dcc92970903d4"
+    },
+    "q254_bank": {
+      "path": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/local-q-skm-ablation-20260817/continuation/q4000-v1-population-20260818/q254-fast6-20260823/protocol/q50-3-updated.json",
+      "byte_sha256": "f503cc09a62cdcd3f62a49579ca6437c3e542de9dd70be9d36714c0ab9dffd44"
+    }
+  },
+  "selection": {
+    "count": 4,
+    "score": "acs10 = 10 * strands + 5 * registered_upper_bound + presentation_word_length",
+    "target_score": "minimum acs10 over the frozen DKT72 panel",
+    "ordering": [
+      "acs10",
+      "strands",
+      "presentation_crossings",
+      "id"
+    ],
+    "required_source_minimal_crossings": [
+      11,
+      12,
+      13
+    ],
+    "required_dkt_strand_support": true,
+    "required_dkt_upper_bound_support": true,
+    "required_dkt_word_length_support": true,
+    "exclude_q_training_through": 254,
+    "exclude_dkt_knot_identities": true,
+    "exclude_dkt_exact_representations": true,
+    "reserve_from_future_training": true
+  },
+  "evaluation": {
+    "learning": false,
+    "sharing": false,
+    "objective_ratio": 10.0,
+    "attempts_per_example": 4,
+    "simulations": 256,
+    "action_horizon": 128,
+    "root_noise": true,
+    "temperature": 0.0,
+    "base_seed": 2026082304
+  },
+  "pass_rule": {
+    "all_four_examples_evaluated": true,
+    "all_sixteen_attempts_accounted": true,
+    "capacity_exceptions": 0,
+    "invalid_verified_results": 0,
+    "network_must_remain_unchanged": true,
+    "minimum_repeat_or_improve_examples": 1,
+    "repeat_or_improve_definition": "best replay-verified crossing_changes <= registered certified_unknotting_upper_bound"
+  }
+}

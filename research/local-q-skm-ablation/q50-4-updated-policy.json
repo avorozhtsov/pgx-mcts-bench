@@ -1,0 +1,39 @@
+{
+  "schema": "q50-4-updated-policy-v1-cohort-scoped",
+  "status": "PREPARED",
+  "purpose": "Q304 successor bank prepared in isolated files while Q254 is active",
+  "source_pool": {
+    "bank": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/local-q-skm-ablation-20260817/inputs/q4000-v1/q200-2.json",
+    "byte_sha256": "80105d93b4bdf639ea38b5a8b52ee7805d28f739ed2e0cd11bd7730f67598b58",
+    "immutable": true,
+    "rotation_reason": "q200-1 has fewer than 40 eligible unused low-strand rows after Q254"
+  },
+  "predecessor": {
+    "bank": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/local-q-skm-ablation-20260817/continuation/q4000-v1-population-20260818/q254-fast6-20260823/protocol/q50-3-updated.json",
+    "bank_byte_sha256": "f503cc09a62cdcd3f62a49579ca6437c3e542de9dd70be9d36714c0ab9dffd44",
+    "prior_bank": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/local-q-skm-ablation-20260817/continuation/q4000-v1-population-20260818/q254-fast6-20260823/protocol/prior-q204-for-q50-3-updated.json",
+    "prior_bank_byte_sha256": "a142501b5eb11bf1292b1d3860eaf7ef116f63d2e80941fb4b9dcc92970903d4"
+  },
+  "output": {
+    "name": "q50-4-updated",
+    "size": 50,
+    "cumulative_representations": 304,
+    "execution_arm": "scheduled-no-sharing",
+    "low_strand_rows": 40,
+    "simple_bridge_rows": 10
+  },
+  "bridge_schedule": {
+    "target_order": [9, 10, 9, 11, 10, 12, 9, 11, 10, 12],
+    "counts": {"9": 3, "10": 3, "11": 2, "12": 2},
+    "q50_3_plus_q50_4_counts": {"9": 5, "10": 5, "11": 5, "12": 5}
+  },
+  "safety": {
+    "active_q254_files_are_immutable": true,
+    "strict_no_sharing": true,
+    "dkt72_training_or_selection": false,
+    "predecessor_identity_reuse": false,
+    "predecessor_representation_reuse": false,
+    "replayable_markov_certificates_required": true,
+    "exact_row_order_required": true
+  }
+}
