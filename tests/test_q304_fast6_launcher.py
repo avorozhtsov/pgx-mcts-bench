@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).parents[1]
 
@@ -26,3 +29,31 @@ def test_q304_launcher_preserves_seed_and_repair_v2_boundary() -> None:
     assert command[command.index("--seed") + 1] == str(202608240500 + launcher.base.q154.PRIMARY_8_SEED_INDEX[label])
     assert launcher.Q254_STAGE.endswith("repair-v2")
     assert launcher.base.STAGE == "q50-4-updated-scheduled-no-sharing-bounded"
+
+
+def test_legacy_q304_is_fail_closed_by_focused_policy() -> None:
+    policy = load("focused_successor_policy")
+    payload = json.loads(policy.POLICY.read_text())
+    assert payload["schema"] == "focused-successor-v1-policy"
+    assert payload["legacy_q304"]["disposition"] == "superseded-historical-only"
+    assert payload["legacy_q304"]["launch_authorized"] is False
+    with pytest.raises(RuntimeError, match="superseded"):
+        policy.assert_legacy_q304_launch_authorized()
+
+
+def test_all_legacy_q304_entrypoints_call_authorization_guard() -> None:
+    prepare = (ROOT / "scripts/prepare_local_q304_fast6.py").read_text()
+    launcher = (ROOT / "scripts/run_local_q304_fast6.py").read_text()
+    branch = (ROOT / "scripts/run_local_q304_fast6_branch.py").read_text()
+    assert "def main() -> None:\n    assert_legacy_q304_launch_authorized()" in prepare
+    assert "def verify_gate():\n    assert_legacy_q304_launch_authorized()" in launcher
+    assert "def main() -> None:\n    assert_legacy_q304_launch_authorized()" in branch
+
+
+def test_focused_readiness_is_queued_without_terminal_embedding_binding() -> None:
+    readiness = load("audit_focused_successor_readiness")
+    result = readiness.audit()
+    assert result["status"] == "QUEUED"
+    assert result["launch_permitted"] is False
+    assert result["legacy_q304_launch_authorized"] is False
+    assert result["embedding"]["status"] == "QUEUED"

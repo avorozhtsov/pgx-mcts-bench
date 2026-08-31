@@ -7,6 +7,10 @@ import argparse, hashlib, importlib.util, json, sys
 from pathlib import Path
 from typing import Any
 
+REPO = Path("/Users/artemvorozhtsov/projects/pgx-mcts-bench-local-ablation")
+sys.path.insert(0, str(REPO / "scripts"))
+from focused_successor_policy import assert_legacy_q304_launch_authorized  # noqa: E402
+
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -25,6 +29,7 @@ def load_runtime(path: Path, expected: str) -> Any:
 
 
 def main() -> None:
+    assert_legacy_q304_launch_authorized()
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("output", "bank", "prior-bank", "checkpoint", "initial-state", "gate"):
         parser.add_argument(f"--{name}", type=Path, required=True)

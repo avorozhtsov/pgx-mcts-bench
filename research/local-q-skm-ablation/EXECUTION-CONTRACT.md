@@ -181,3 +181,44 @@ explicit maximum of seven one-thread experiment workers.  Results may be
 compared only on exact-common prefixes within a cohort; slow-4 joins a combined
 leaderboard only when an equal prefix exists.  No partial prefix may be ranked
 against a longer prefix, and no result may be ranked by iteration count alone.
+
+## Focused successor after Q254/Q154
+
+The historical six-lineage Q304 program is superseded. Its prepared bank and
+audits remain immutable evidence, but its preparation, cohort launcher, and
+branch launcher are not authorized to execute. They must fail closed against
+`focused-successor-v1-policy.json`; the absence or modification of that policy
+is not permission to fall back to the old program.
+
+Finish the active Fast Q254 and Slow Q154 cohorts under their existing frozen
+hash gates. The focused successor remains `QUEUED` until the Fast terminal
+marker exists. Slow Q154 must also reach its terminal audit before the diverse
+Slow parent is selected, but this does not prevent the four already specified
+Fast-parent descendants from being prepared after Fast completion. Do not
+automatically continue the former Slow-4 Q204 or Fast-6 Q304 cohorts.
+
+The focused successor has exactly five registered lines: three descendants of
+the terminal `q-grown-strand-graph-12` state, one terminal
+`q-grown-raster-axial-12` continuation, and one diverse Slow parent selected
+from the exact-common terminal audit. The three strand-graph children are an
+RL-only seed control, a replay-validated set-valued NodeDB proof-distilled
+child, and a proof-distilled child with whole-word embedding conditioning.
+Every fork binds the same parent state hash and receives a distinct registered
+random seed. Sharing is permitted only for this initial parent copy; after the
+fork, network, optimizer, replay, controller, exposure, trajectory, and outcome
+state are isolated.
+
+NodeDB supervision treats replayed currently-best actions as a set of accepted
+targets, worse completed routes only as comparisons, and absent graph actions
+as unknown rather than negative. Every training row and every generated
+witness must replay exactly. The embedding child remains `QUEUED` until an
+external terminal selection manifest binds the checkpoint and source hashes.
+Its initial bridge is zero-initialized; parent and embedding weights remain
+frozen while only bridge and calibration parameters train.
+
+Promotion uses a frozen exact-common set and reports L10 and L1000 solved
+counts, replayed crossing changes, capped iteration means, complementary solved
+identities, neural evaluations, optimizer steps, wall time, and historical
+retention. Training loss, unequal prefixes, and unreplayed proposals are not
+promotion evidence. A replayed path establishes an upper bound only; equality
+with the unknotting number requires an independent lower bound.

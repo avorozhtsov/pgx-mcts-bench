@@ -23,6 +23,7 @@ Q254_STAGE = "q50-3-updated-scheduled-no-sharing-bounded-repair-v2"
 sys.path.insert(0, str(REPO / "scripts"))
 import build_q50_4_updated as builder  # noqa: E402
 import run_local_q154_updated_continuation as q154  # noqa: E402
+from focused_successor_policy import assert_legacy_q304_launch_authorized  # noqa: E402
 from pgx_mcts_bench.collaborative_scientists import _json_hash  # noqa: E402
 
 SOURCE_FILES = (
@@ -32,6 +33,8 @@ SOURCE_FILES = (
     REPO / "research/local-q-skm-ablation/q50-4-updated-policy.json",
     REPO / "src/pgx_mcts_bench/sv2_curriculum.py", REPO / "src/pgx_mcts_bench/data.py",
     REPO / "src/pgx_mcts_bench/training.py",
+    REPO / "scripts/focused_successor_policy.py",
+    REPO / "research/local-q-skm-ablation/focused-successor-v1-policy.json",
 )
 
 
@@ -89,6 +92,7 @@ def terminal_bindings() -> dict[str, Any]:
 
 
 def main() -> None:
+    assert_legacy_q304_launch_authorized()
     parser = argparse.ArgumentParser(description=__doc__); parser.add_argument("--test-count", type=int, required=True); args = parser.parse_args()
     audit = build_bank()
     if audit.get("status") != "passed": raise RuntimeError("Q50-4 bank audit did not pass")

@@ -12,6 +12,7 @@ import torch
 REPO = Path("/Users/artemvorozhtsov/projects/pgx-mcts-bench-local-ablation")
 sys.path.insert(0, str(REPO / "scripts"))
 import run_local_q254_fast6 as base  # noqa: E402
+from focused_successor_policy import assert_legacy_q304_launch_authorized  # noqa: E402
 
 POPULATION = base.POPULATION; Q254_ROOT = POPULATION / "q254-fast6-20260823"; ROOT = POPULATION / "q304-fast6-20260824"
 GATE = ROOT / "FAST6_Q304_FIRST_BLOCK_SEEDED_VERIFIED.json"; STATUS = ROOT / "launcher-status.json"
@@ -27,6 +28,7 @@ base._status = {"schema": "q304-fast-6-population-launcher-v1", "cohort": "fast-
 
 
 def verify_gate():
+    assert_legacy_q304_launch_authorized()
     gate = json.loads(GATE.read_text())
     if gate.get("schema") != "semantic-v2-q304-first-block-seeded-order-v1" or not gate.get("passed") or gate.get("fast_cohort") != list(base.q154.FAST_6_LABELS) or gate.get("boundary_completed_rungs") != 0 or not gate.get("first_rehearsal_block_seeded") or gate.get("sharing") != "strict-none":
         raise RuntimeError("authoritative Q304 fast-6 gate did not pass")

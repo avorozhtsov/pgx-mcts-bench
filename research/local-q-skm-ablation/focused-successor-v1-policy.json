@@ -1,0 +1,89 @@
+{
+  "schema": "focused-successor-v1-policy",
+  "authorized_at": "2026-08-29",
+  "scientific_objective": "Generate replayable low-CC witnesses directly, then extend to goal-conditioned source-to-target transformation.",
+  "legacy_q304": {
+    "disposition": "superseded-historical-only",
+    "launch_authorized": false,
+    "root": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/local-q-skm-ablation-20260817/continuation/q4000-v1-population-20260818/q304-fast6-20260824"
+  },
+  "transition_prerequisites": {
+    "fast_parent_marker": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/local-q-skm-ablation-20260817/continuation/q4000-v1-population-20260818/q254-fast6-20260823/ALL_FAST_6_LINEAGES_Q254_COMPLETE",
+    "slow_selection_marker": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/local-q-skm-ablation-20260817/continuation/q4000-v1-population-20260818/q154-slow4-20260822/ALL_SLOW_4_LINEAGES_Q154_COMPLETE",
+    "require_exact_common_slow_audit": true,
+    "require_hash_bound_parent_states": true,
+    "require_replay_validated_proof_supervision": true,
+    "require_terminal_hash_bound_embedding_selection": true
+  },
+  "focused_cohort": [
+    {
+      "id": "strand-graph-12-rl-control",
+      "parent": "q-grown-strand-graph-12",
+      "initialization": "exact-terminal-parent-copy",
+      "training": "rl-only",
+      "role": "seed-matched control"
+    },
+    {
+      "id": "strand-graph-12-proof-distilled",
+      "parent": "q-grown-strand-graph-12",
+      "initialization": "exact-terminal-parent-copy",
+      "training": "replay-validated-set-valued-proof-distillation-then-rl",
+      "role": "NodeDB proof student"
+    },
+    {
+      "id": "strand-graph-12-proof-embedding",
+      "parent": "q-grown-strand-graph-12",
+      "initialization": "exact-terminal-parent-copy",
+      "training": "proof-distillation-plus-whole-word-embedding-then-rl",
+      "role": "global-context child"
+    },
+    {
+      "id": "raster-axial-12-control",
+      "parent": "q-grown-raster-axial-12",
+      "initialization": "exact-terminal-parent-copy",
+      "training": "rl-only",
+      "role": "local-expert control"
+    },
+    {
+      "id": "diverse-slow-selection",
+      "parent_candidates": [
+        "q-grown-raster-invariant-combined-dual-12",
+        "cyclic-graph-dual-v3"
+      ],
+      "selection": "post-terminal exact-common L10/L1000 audit with complementarity and compute accounting",
+      "role": "architecturally diverse control"
+    }
+  ],
+  "fork_contract": {
+    "shared_parent_state_allowed_only_at_initialization": true,
+    "distinct_registered_rng_seeds": true,
+    "no_optimizer_replay_controller_or_outcome_sharing_after_fork": true,
+    "common_task_order_and_evaluation_accounting": true,
+    "exact_replay_required_for_every_reported_witness": true
+  },
+  "proof_supervision": {
+    "dataset": "/Users/artemvorozhtsov/projects/unknotdb/outputs/unknotdb-dgkt-cc-frontier-supervision-v0.sqlite",
+    "dataset_sha256": "5e61482f365c2aa8860b354ac076fb9778b3758bf427fa8e13bf25a35a269018",
+    "reference_manifest": "/Users/artemvorozhtsov/projects/unknotdb/outputs/q254-cc-frontier-adapter-v0/manifest.json",
+    "accepted_actions": "set-valued currently-best replayed actions",
+    "absent_actions": "unknown-not-negative",
+    "worse_completed_routes": "comparisons-only",
+    "promotion": "frozen exact-common witness evaluation after exact replay"
+  },
+  "embedding": {
+    "selection": "terminal selected checkpoint from rf-knots embedding continuation",
+    "status_until_terminal_binding": "QUEUED",
+    "injection": "zero-initialized residual conditioning",
+    "initial_training": "freeze parent and embedding; train only bridge and calibration"
+  },
+  "future_stack": {
+    "status": "PLANNED",
+    "components": [
+      "shared raster local expert",
+      "strand-graph global router",
+      "whole-word embedding"
+    ],
+    "migration": "function-preserving router-only first",
+    "length_curriculum": [48, 64, 96, 128]
+  }
+}
