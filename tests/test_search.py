@@ -3,7 +3,7 @@ import torch
 
 from pgx_mcts_bench.config import GameConfig, ModelConfig, SearchConfig
 from pgx_mcts_bench.game import Go6x6
-from pgx_mcts_bench.networks import AlphaZeroNet, MuZeroNet
+from pgx_mcts_bench.networks import AlphaZeroNet, MuZeroNet, PolicyValueNet
 from pgx_mcts_bench.search import NeuralMCTS, Node, _masked_softmax
 
 
@@ -87,9 +87,7 @@ def test_batched_search_returns_one_result_per_root() -> None:
 def test_alphazero_inference_cache_deduplicates_and_invalidates() -> None:
     game = Go6x6(GameConfig())
     root = game.reset(0)
-    network = AlphaZeroNet(
-        GameConfig(), ModelConfig(channels=4, residual_blocks=1)
-    )
+    network = AlphaZeroNet(GameConfig(), ModelConfig(channels=4, residual_blocks=1))
     search = NeuralMCTS(game, network, SearchConfig(simulations=1))
     original = network.forward
     inferred_batch_sizes = []
@@ -118,6 +116,41 @@ def test_alphazero_inference_cache_deduplicates_and_invalidates() -> None:
         [root.legal_actions],
     )
     assert inferred_batch_sizes == [1, 1]
+
+
+def test_state_conditioned_cache_does_not_merge_identical_local_observations() -> None:
+    game = Go6x6(GameConfig())
+    root = game.reset(0)
+
+    class StateAware(PolicyValueNet):
+        def __init__(self):
+            super().__init__()
+            self.anchor = torch.nn.Parameter(torch.zeros(()))
+            self.forwarded_states = []
+
+        def inference_context_key(self, state, _game):
+            return bytes([int(state._step_count)])
+
+        def forward_with_states(self, observation, states, _game):
+            self.forwarded_states.extend(states)
+            return (
+                observation.new_zeros((len(states), 37)) + self.anchor,
+                observation.new_zeros((len(states),)) + self.anchor,
+            )
+
+        def forward(self, observation):
+            raise AssertionError("search must use state-conditioned inference")
+
+    network = StateAware()
+    search = NeuralMCTS(game, network, SearchConfig(simulations=1))
+    alternate = root.state.replace(_step_count=root.state._step_count + 1)
+    search._expand_alphazero_batch(
+        [Node(1.0, state=root.state), Node(1.0, state=alternate)],
+        [root.observation, root.observation],
+        [root.legal_actions, root.legal_actions],
+    )
+    assert len(network.forwarded_states) == 2
+    assert search.inference_cache_stats["misses"] == 2
 
 
 def test_masked_softmax_does_not_exponentiate_illegal_logits() -> None:

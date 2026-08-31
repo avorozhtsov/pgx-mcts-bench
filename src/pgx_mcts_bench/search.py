@@ -102,6 +102,24 @@ class NeuralMCTS:
         contiguous = np.ascontiguousarray(observation)
         return hashlib.blake2b(contiguous.view(np.uint8), digest_size=16).digest()
 
+    def _inference_key(self, observation: np.ndarray, state: Any) -> bytes:
+        """Key an inference by every input the network is allowed to inspect.
+
+        Ordinary policy/value networks only see the observation. Experimental
+        state-conditioned adapters may additionally inspect the complete braid
+        and the serial head position; using the old observation-only key for
+        those networks can silently reuse a value from a different knot whose
+        local window happens to be identical.
+        """
+        observation_key = self._observation_key(observation)
+        context_key = getattr(self.network, "inference_context_key", None)
+        if context_key is None:
+            return observation_key
+        extra = context_key(state, self.game)
+        if not isinstance(extra, bytes):
+            raise TypeError("inference_context_key must return bytes")
+        return hashlib.blake2b(observation_key + extra, digest_size=16).digest()
+
     def edge_reward(self, parent_state: Any, actor: int, transition: Any) -> float:
         """Reward used by search and replay for one exact transition."""
         reward = float(transition.reward)
@@ -300,11 +318,15 @@ class NeuralMCTS:
         legal_actions: list[np.ndarray],
     ) -> list[float]:
         assert isinstance(self.network, PolicyValueNet)
-        keys = [self._observation_key(observation) for observation in observations]
+        keys = [
+            self._inference_key(observation, node.state)
+            for node, observation in zip(nodes, observations, strict=True)
+        ]
         resolved: dict[bytes, tuple[np.ndarray, float]] = {}
         missing_keys: list[bytes] = []
         missing_observations: list[np.ndarray] = []
-        for key, observation in zip(keys, observations, strict=True):
+        missing_states: list[Any] = []
+        for key, observation, node in zip(keys, observations, nodes, strict=True):
             if key in resolved:
                 self.inference_cache_stats["hits"] += 1
                 continue
@@ -317,11 +339,19 @@ class NeuralMCTS:
             resolved[key] = None  # type: ignore[assignment]
             missing_keys.append(key)
             missing_observations.append(observation)
+            missing_states.append(node.state)
             self.inference_cache_stats["misses"] += 1
         if missing_observations:
-            logits, values = self.network(
-                _observation_batch(missing_observations, self.device)
-            )
+            observation_batch = _observation_batch(missing_observations, self.device)
+            state_forward = getattr(self.network, "forward_with_states", None)
+            if state_forward is None:
+                logits, values = self.network(observation_batch)
+            else:
+                logits, values = state_forward(
+                    observation_batch,
+                    missing_states,
+                    self.game,
+                )
             for key, logits_row, value in zip(
                 missing_keys,
                 logits.detach().cpu().numpy(),
