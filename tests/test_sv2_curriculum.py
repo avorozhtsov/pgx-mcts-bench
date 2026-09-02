@@ -1298,6 +1298,15 @@ def test_rehearsal_dose_only_rises_after_unhealthy_block() -> None:
     assert next_rehearsal_dose(1, retention_solve_rate=0.79, capped_cost_worsened=False) == 2
     assert next_rehearsal_dose(2, retention_solve_rate=1.0, capped_cost_worsened=True) == 4
     assert next_rehearsal_dose(8, retention_solve_rate=0.0, capped_cost_worsened=True) == 8
+    assert (
+        next_rehearsal_dose(
+            6,
+            retention_solve_rate=0.0,
+            capped_cost_worsened=True,
+            repair_chunk=True,
+        )
+        == 6
+    )
     assert F_OLD_LEVELS == (1, 2, 4, 8)
 
 

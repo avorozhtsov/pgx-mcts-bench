@@ -408,8 +408,13 @@ def next_rehearsal_dose(
     retention_solve_rate: float,
     capped_cost_worsened: bool,
     target: float = 0.80,
+    repair_chunk: bool = False,
 ) -> int:
     """Raise only F_old; the R24 native and search doses stay fixed."""
+    if repair_chunk:
+        if current <= 0:
+            raise ValueError("repair chunk must be positive")
+        return current
     if current not in F_OLD_LEVELS:
         raise ValueError(f"F_old must be one of {F_OLD_LEVELS}")
     if retention_solve_rate >= target and not capped_cost_worsened:
@@ -1748,6 +1753,7 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
             retention_solve_rate=float(after["solve_rate"]),
             capped_cost_worsened=worsened,
             target=float(payload["retention_target"]),
+            repair_chunk=round_index < 0,
         )
         return {
             "next_F_old": next_f_old,
