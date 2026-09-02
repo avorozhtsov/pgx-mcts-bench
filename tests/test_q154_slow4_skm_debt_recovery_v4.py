@@ -33,3 +33,11 @@ def test_recovery_uses_one_worker_and_existing_root() -> None:
     assert module.LOCK.name == "slow4-orchestrator.lock"
     assert module.STATUS.name == "slow4-skm-debt-recovery-v4-status.json"
     assert module.GATE.name == "SLOW4_Q154_SKM_DEBT_RECOVERY_V4_VERIFIED.json"
+
+
+def test_gate_builder_binds_main_and_frozen_curriculum_sources() -> None:
+    path = Path("scripts/prepare_local_q154_slow4_skm_debt_recovery_v4.py")
+    source = path.read_text()
+    assert 'curriculum = REPO / "src/pgx_mcts_bench/sv2_curriculum.py"' in source
+    assert 'frozen_curriculum = OLD_REPO / "src/pgx_mcts_bench/sv2_curriculum.py"' in source
+    assert '"runtime_compatibility_change"' in source

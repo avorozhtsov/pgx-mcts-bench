@@ -43,13 +43,12 @@ def main() -> None:
     if branch != "main" or head != origin:
         raise RuntimeError("main is not aligned with origin/main")
 
-    parity_files = (
-        "src/pgx_mcts_bench/cli.py",
-        "src/pgx_mcts_bench/sv2_curriculum.py",
-    )
+    parity_files = ("src/pgx_mcts_bench/cli.py",)
     for relative in parity_files:
         if sha256(REPO / relative) != sha256(OLD_REPO / relative):
             raise RuntimeError(f"runtime source parity differs: {relative}")
+    curriculum = REPO / "src/pgx_mcts_bench/sv2_curriculum.py"
+    frozen_curriculum = OLD_REPO / "src/pgx_mcts_bench/sv2_curriculum.py"
 
     qgrown = ROOT / (
         "branches/q-grown-raster-invariant-combined-dual-12/"
@@ -64,6 +63,7 @@ def main() -> None:
         PREPARER,
         TEST,
         REPO / "research/local-q-skm-ablation/EXECUTION-CONTRACT.md",
+        curriculum,
         *(REPO / relative for relative in parity_files),
     ]
     input_paths = [
@@ -72,6 +72,7 @@ def main() -> None:
         ROOT / "protocol/q50-1-updated-audit.json",
         ROOT / "protocol/q104-rehearsal-debt.json",
         ROOT / "SLOW4_Q154_CONTRACT_TRANSITION_RECOVERY_V3_VERIFIED.json",
+        frozen_curriculum,
         qgrown / "state.pt.gz",
         qgrown / "phase-checkpoint.pt.gz",
         skm / "state.pt.gz",
@@ -99,7 +100,11 @@ def main() -> None:
         "blocked_peer": "q-grown-raster-invariant-combined-dual-12",
         "blocked_peer_reason": "rehearsal debt repair exhausted its cumulative cap",
         "recovery_lineage": "skm-v2-high-combined-dual",
-        "scientific_change": "none; reorder independent lineage work only",
+        "scientific_change": "none; repair bookkeeping accepts a final partial debt chunk",
+        "runtime_compatibility_change": (
+            "negative repair rounds keep their exact positive chunk size and do not feed "
+            "that size into the adaptive F_old level controller"
+        ),
         "source_hashes": {str(path): sha256(path) for path in source_paths},
         "input_hashes": {str(path): sha256(path) for path in input_paths},
         "verified_at": datetime.now(UTC).isoformat(),
