@@ -19,9 +19,14 @@ ROOT = (
     / "q4000-v1-population-20260818/focused-successor-v1"
 )
 OUTPUT = ROOT / "branches/strand-graph-12-proof-embedding/bridge-v1"
-GATE = ROOT / "FOCUSED_PROOF_EMBEDDING_CHILD_RECOVERY_V2_VERIFIED.json"
-STATUS = ROOT / "proof-embedding-child-launcher-status-recovery-v2.json"
-LOCK = ROOT / "proof-embedding-child-launcher-recovery-v2.lock"
+V3_GATE = ROOT / "FOCUSED_PROOF_EMBEDDING_CHILD_RECOVERY_V3_VERIFIED.json"
+GATE = (
+    V3_GATE
+    if V3_GATE.exists()
+    else ROOT / "FOCUSED_PROOF_EMBEDDING_CHILD_RECOVERY_V2_VERIFIED.json"
+)
+STATUS = ROOT / "proof-embedding-child-launcher-status-recovery-v3.json"
+LOCK = ROOT / "proof-embedding-child-launcher-recovery-v3.lock"
 
 
 def sha256(path: Path) -> str:
@@ -67,7 +72,11 @@ def main() -> None:
         try:
             gate = json.loads(GATE.read_text())
             if (
-                gate.get("schema") != "focused-proof-embedding-child-recovery-gate-v2"
+                gate.get("schema")
+                not in {
+                    "focused-proof-embedding-child-recovery-gate-v2",
+                    "focused-proof-embedding-child-recovery-gate-v3",
+                }
                 or gate.get("status") != "PREPARED"
             ):
                 raise RuntimeError("embedding recovery gate did not pass")
