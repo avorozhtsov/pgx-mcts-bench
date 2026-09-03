@@ -16,6 +16,7 @@ import multiprocessing
 import os
 import tempfile
 import time
+from collections.abc import Callable
 from concurrent.futures import (
     FIRST_COMPLETED,
     Future,
@@ -26,9 +27,9 @@ from concurrent.futures import (
     TimeoutError as FutureTimeoutError,
 )
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
 import numpy as np
 import torch
@@ -53,6 +54,10 @@ from pgx_mcts_bench.game import make_game
 from pgx_mcts_bench.ladder import _config, foundation_arms
 from pgx_mcts_bench.search import NeuralMCTS
 from pgx_mcts_bench.training import play_selfplay_games, train_alphazero_step
+from pgx_mcts_bench.trajectory_tournament import (
+    apply_tournament_advantages,
+    split_trajectory_tournament,
+)
 
 SV2_PREFIX_PHASES: tuple[tuple[int, tuple[str, ...]], ...] = (
     (
@@ -637,6 +642,8 @@ def _iteration(
     representation_id: str | None = None,
     use_own_budget_caps: bool = False,
     balanced_rehearsal_replay: bool = False,
+    trajectory_tournament_size: int = 0,
+    relative_trajectory_weight: float = 0.0,
     resume_progress: dict[str, Any] | None = None,
     progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
@@ -648,6 +655,12 @@ def _iteration(
     optimizer, replay, and RNG state is saved by the enclosing atomic scientist
     checkpoint.
     """
+    if trajectory_tournament_size not in (0, 10):
+        raise ValueError("trajectory tournament size must be zero or ten")
+    if relative_trajectory_weight < 0.0:
+        raise ValueError("relative trajectory weight must be non-negative")
+    if trajectory_tournament_size and selfplay_games != trajectory_tournament_size:
+        raise ValueError("tournament selfplay_games must equal trajectory tournament size")
     identity = representation_id or knot.name
     scientist.replay.set_representation_embedding(identity, _replay_representation_embedding(knot))
     immutable = {
@@ -660,12 +673,19 @@ def _iteration(
         "strict_own_budget_rehearsal": bool(use_own_budget_caps),
         "balanced_rehearsal_replay": bool(balanced_rehearsal_replay),
     }
+    if trajectory_tournament_size:
+        immutable.update(
+            {
+                "trajectory_tournament_size": trajectory_tournament_size,
+                "relative_trajectory_weight": float(relative_trajectory_weight),
+            }
+        )
     if resume_progress is None:
         plans: list[dict[str, Any]] = []
         per_ratio = selfplay_games // len(ratios)
         remainder = selfplay_games % len(ratios)
         for ratio_index, ratio in enumerate(ratios):
-            games = per_ratio + int(ratio_index < remainder)
+            games = 1 if trajectory_tournament_size else per_ratio + int(ratio_index < remainder)
             if not games:
                 continue
             own: float | None = None
@@ -748,13 +768,26 @@ def _iteration(
         )
         game_seed = seed + int(plan["ratio_index"]) * 10_000 + int(plan["game_index"])
         game_started = time.monotonic()
+        tournament_seeds = (
+            [game_seed + 100_003 * offset for offset in range(trajectory_tournament_size)]
+            if trajectory_tournament_size
+            else [game_seed]
+        )
         batch = play_selfplay_games(
             fixed,
             search,
-            [np.random.default_rng(game_seed + 7)],
-            [game_seed],
+            [np.random.default_rng(value + 7) for value in tournament_seeds],
+            tournament_seeds,
             12,
         )
+        tournament = None
+        if trajectory_tournament_size:
+            tournament = split_trajectory_tournament(
+                batch,
+                expected_size=trajectory_tournament_size,
+            )
+            if tournament is not None:
+                apply_tournament_advantages(batch, tournament)
         for record in batch:
             scientist.replay.add(record, representation_id=identity, objective_ratio=ratio)
         completed_games.append(
@@ -768,6 +801,7 @@ def _iteration(
                 "scheduled_network_evaluations": sum(
                     len(record) * (simulations + 1) for record in batch
                 ),
+                "trajectory_tournament": asdict(tournament) if tournament else None,
             }
         )
         iteration_progress["completed_games"] = completed_games
@@ -795,6 +829,7 @@ def _iteration(
                 replay_ratio_outcome_balance=(
                     (10.0, 1000.0) if balanced_rehearsal_replay else None
                 ),
+                relative_trajectory_weight=relative_trajectory_weight,
             )
             iteration_progress["completed_optimizer_steps"] += 1
             iteration_progress["last_loss"] = loss

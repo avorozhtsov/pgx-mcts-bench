@@ -300,6 +300,7 @@ def train_alphazero_step(
     replay_rehearsal_representations: set[str] | None = None,
     replay_rehearsal_fraction: float = 0.25,
     replay_ratio_outcome_balance: tuple[float, float] | None = None,
+    relative_trajectory_weight: float = 0.0,
 ) -> dict[str, float]:
     network.train()
     optimized_parameters = _optimizer_parameters(optimizer)
@@ -370,6 +371,21 @@ def train_alphazero_step(
         policy_losses[native_targets].mean()
         if bool(native_targets.any())
         else policy_losses.sum() * 0.0
+    )
+    advantages = torch.tensor(
+        [float(getattr(position, "relative_trajectory_advantage", 0.0)) for position in batch],
+        dtype=torch.float32,
+        device=device,
+    )
+    relative_mask = advantages != 0.0
+    chosen_log_probability = F.log_softmax(logits, dim=-1).gather(
+        1,
+        torch.tensor([position.action for position in batch], device=device)[:, None],
+    ).squeeze(1)
+    relative_policy_loss = (
+        -(advantages[relative_mask] * chosen_log_probability[relative_mask]).mean()
+        if bool(relative_mask.any())
+        else chosen_log_probability.sum() * 0.0
     )
     v_loss = (
         value_losses[native_targets].mean()
@@ -508,6 +524,7 @@ def train_alphazero_step(
     loss = (
         p_loss
         + v_loss
+        + float(relative_trajectory_weight) * relative_policy_loss
         + auxiliary_weight * auxiliary_loss
         + preservation_weight * (preservation_policy + preservation_value)
         + 0.1 * relation
@@ -528,6 +545,8 @@ def train_alphazero_step(
     return {
         "loss": float(loss.item()),
         "policy": float(p_loss.item()),
+        "relative_policy": float(relative_policy_loss.item()),
+        "relative_policy_targets": float(relative_mask.sum().item()),
         "value": float(v_loss.item()),
         "auxiliary": float(auxiliary_loss.item()),
         "solve": float(solve_loss.item()),

@@ -64,6 +64,13 @@ class Position:
     # resumed run continues the same anti-oversampling schedule.
     replay_episode_uses: int = 0
     replay_position_uses: int = 0
+    # Optional same-root tournament signal. Positive and negative trajectory
+    # groups carry equal total mass, so relative policy updates are per-root
+    # zero-sum. Zero keeps all historical checkpoints behaviorally unchanged.
+    relative_trajectory_advantage: float = 0.0
+    # Self-play transitions are replay-valid by construction. Imported routes
+    # must set this false until an exact replay validator accepts them.
+    trajectory_replay_valid: bool = True
 
 
 GameRecord = list[Position]
