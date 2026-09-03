@@ -851,6 +851,14 @@ def _iteration(
         "selfplay_games_by_budget_source": games_by_budget,
         "budget_source_deficits": budget_deficits,
         "selfplay_solved": sum(int(row["solved"]) for row in completed_games),
+        "trajectory_tournaments": [
+            {
+                "ratio": float(row["ratio"]),
+                **row["trajectory_tournament"],
+            }
+            for row in completed_games
+            if row["trajectory_tournament"] is not None
+        ],
         "train_steps": int(iteration_progress["completed_optimizer_steps"]),
         "scheduled_network_evaluations": sum(
             int(row["scheduled_network_evaluations"]) for row in completed_games
