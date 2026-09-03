@@ -185,6 +185,14 @@ def braid_sv2_coordinated(
             ),
         ),
     ] = None,
+    resume_timeout_transition: Annotated[
+        Path | None,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Verified transition allowing only a longer resume wall-time limit",
+        ),
+    ] = None,
     resumable_rehearsal_segments: Annotated[
         bool,
         typer.Option(
@@ -295,6 +303,7 @@ def braid_sv2_coordinated(
         torch_threads=torch_threads,
         parallel_scientists=parallel_scientists,
         scientist_task_timeout_seconds=scientist_task_timeout_seconds,
+        resume_timeout_transition=resume_timeout_transition,
         resumable_rehearsal_segments=resumable_rehearsal_segments,
         rehearsal_training_seconds_per_iteration_at_reference=(
             rehearsal_training_seconds_per_iteration_at_reference

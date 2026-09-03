@@ -1,3 +1,4 @@
+import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -518,6 +519,49 @@ def test_legacy_resume_protocol_accepts_only_neutral_default_spellings() -> None
     assert curriculum._legacy_resume_protocol_is_equivalent(frozen, current)
     frozen["simulations"] = 80
     assert not curriculum._legacy_resume_protocol_is_equivalent(frozen, current)
+
+
+def test_verified_timeout_resume_accepts_only_gated_wall_time_increase(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "run"
+    output.mkdir()
+    frozen = {
+        "protocol_sha256": "frozen-hash",
+        "scientist_task_timeout_seconds": 7200,
+        "rehearsal_segment_timeout_seconds": 7200,
+        "seed": 17,
+    }
+    current = {
+        "protocol_sha256": "current-hash",
+        "scientist_task_timeout_seconds": 21600,
+        "rehearsal_segment_timeout_seconds": 21600,
+        "seed": 17,
+    }
+    transition = tmp_path / "transition.json"
+    transition.write_text(
+        json.dumps(
+            {
+                "schema": "semantic-v2-timeout-extension-v1",
+                "passed": True,
+                "output": str(output),
+                "frozen_protocol_sha256": "frozen-hash",
+                "old_timeout_seconds": 7200,
+                "new_timeout_seconds": 21600,
+                "allowed_protocol_fields": [
+                    "scientist_task_timeout_seconds",
+                    "rehearsal_segment_timeout_seconds",
+                ],
+            }
+        )
+    )
+    assert curriculum._verified_timeout_resume_protocol_is_equivalent(
+        frozen, current, transition, output
+    )
+    current["seed"] = 18
+    assert not curriculum._verified_timeout_resume_protocol_is_equivalent(
+        frozen, current, transition, output
+    )
 
 
 def test_rehearsal_segment_timeout_resumes_same_phase_until_complete(

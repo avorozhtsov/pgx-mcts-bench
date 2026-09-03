@@ -14,6 +14,7 @@ REPO = base.REPO
 ROOT = base.ROOT
 OUTPUT = base.OUTPUT
 GATE = ROOT / "SLOW4_Q154_SKM_ATOMIC_CELL_RECOVERY_V5_VERIFIED.json"
+TRANSITION = ROOT / "SLOW4_Q154_SKM_TIMEOUT_EXTENSION_V5.json"
 LAUNCHER = REPO / "scripts/run_local_q154_slow4_skm_atomic_cell_recovery_v5.py"
 PREPARER = REPO / "scripts/prepare_local_q154_slow4_skm_atomic_cell_recovery_v5.py"
 TEST = REPO / "tests/test_q154_slow4_skm_atomic_cell_recovery_v5.py"
@@ -37,6 +38,29 @@ def main() -> None:
     if len(events) != 29 or len(native_events) != 30:
         raise RuntimeError("unexpected Q134 boundary event counts")
 
+    manifest_path = OUTPUT / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    if float(manifest.get("scientist_task_timeout_seconds", -1)) != 7200:
+        raise RuntimeError("frozen Q134 timeout is not 7200 seconds")
+    transition = {
+        "schema": "semantic-v2-timeout-extension-v1",
+        "passed": True,
+        "output": str(OUTPUT.resolve()),
+        "frozen_protocol_sha256": manifest.get("protocol_sha256"),
+        "old_timeout_seconds": 7200,
+        "new_timeout_seconds": 21600,
+        "allowed_protocol_fields": [
+            "scientist_task_timeout_seconds",
+            "rehearsal_segment_timeout_seconds",
+        ],
+        "reason": "one atomic retention cell exceeded two consecutive segments",
+        "commit": head,
+        "verified_at": datetime.now(UTC).isoformat(),
+    }
+    transition_temporary = TRANSITION.with_suffix(TRANSITION.suffix + ".tmp")
+    transition_temporary.write_text(json.dumps(transition, indent=2, sort_keys=True) + "\n")
+    os.replace(transition_temporary, TRANSITION)
+
     source_paths = [
         LAUNCHER,
         PREPARER,
@@ -48,6 +72,8 @@ def main() -> None:
     ]
     input_paths = [
         ROOT / "SLOW4_Q154_SKM_DEBT_RECOVERY_V4_VERIFIED.json",
+        TRANSITION,
+        manifest_path,
         ROOT / "protocol/q50-1-updated.json",
         ROOT / "protocol/prior-q104-for-q50-1-updated.json",
         OUTPUT / "state.pt.gz",
@@ -75,6 +101,7 @@ def main() -> None:
         "durable_events": len(events),
         "durable_native_events": len(native_events),
         "scientist_task_timeout_seconds": 21600,
+        "timeout_transition_sha256": base._sha256(TRANSITION),
         "scientific_change": "none; wall-time repair for one atomic retention cell only",
         "preserved": [
             "bank order",

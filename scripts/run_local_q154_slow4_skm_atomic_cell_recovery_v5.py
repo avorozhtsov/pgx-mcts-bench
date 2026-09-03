@@ -14,6 +14,7 @@ import run_local_q154_slow4_skm_debt_recovery_v4 as base
 GATE = base.ROOT / "SLOW4_Q154_SKM_ATOMIC_CELL_RECOVERY_V5_VERIFIED.json"
 STATUS = base.ROOT / "slow4-skm-atomic-cell-recovery-v5-status.json"
 LOG = base.ROOT / "logs/skm-v2-high-combined-dual-atomic-cell-recovery-v5.log"
+TRANSITION = base.ROOT / "SLOW4_Q154_SKM_TIMEOUT_EXTENSION_V5.json"
 TIMEOUT_SECONDS = "21600"
 ORIGINAL_COMMAND = base._command
 
@@ -38,6 +39,7 @@ def _command() -> list[str]:
     command = ORIGINAL_COMMAND()
     index = command.index("--scientist-task-timeout-seconds")
     command[index + 1] = TIMEOUT_SECONDS
+    command[-1:-1] = ["--resume-timeout-transition", str(TRANSITION)]
     return command
 
 

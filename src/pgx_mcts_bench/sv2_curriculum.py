@@ -2638,6 +2638,48 @@ def _legacy_resume_protocol_is_equivalent(
     return normalized == candidate
 
 
+def _verified_timeout_resume_protocol_is_equivalent(
+    frozen: dict[str, Any],
+    current: dict[str, Any],
+    transition_path: Path | None,
+    output: Path,
+) -> bool:
+    """Accept an explicitly gated increase of wall-time limits and nothing else."""
+    if transition_path is None or not transition_path.is_file():
+        return False
+    transition = json.loads(transition_path.read_text())
+    if transition.get("schema") != "semantic-v2-timeout-extension-v1":
+        return False
+    if not transition.get("passed"):
+        return False
+    if Path(transition.get("output", "")).resolve() != output.resolve():
+        return False
+    if transition.get("frozen_protocol_sha256") != frozen.get("protocol_sha256"):
+        return False
+    old_timeout = frozen.get("scientist_task_timeout_seconds")
+    new_timeout = current.get("scientist_task_timeout_seconds")
+    if old_timeout is None or new_timeout is None or float(new_timeout) <= float(old_timeout):
+        return False
+    if float(transition.get("old_timeout_seconds", -1)) != float(old_timeout):
+        return False
+    if float(transition.get("new_timeout_seconds", -1)) != float(new_timeout):
+        return False
+    if transition.get("allowed_protocol_fields") != [
+        "scientist_task_timeout_seconds",
+        "rehearsal_segment_timeout_seconds",
+    ]:
+        return False
+    normalized = deepcopy(current)
+    normalized.pop("protocol_sha256", None)
+    normalized["scientist_task_timeout_seconds"] = old_timeout
+    normalized["rehearsal_segment_timeout_seconds"] = frozen.get(
+        "rehearsal_segment_timeout_seconds"
+    )
+    baseline = deepcopy(frozen)
+    baseline.pop("protocol_sha256", None)
+    return normalized == baseline
+
+
 def run_coordinated_arm(
     checkpoints: dict[str, Path],
     bank: Path,
@@ -2666,6 +2708,7 @@ def run_coordinated_arm(
     torch_threads: int = 2,
     parallel_scientists: bool = True,
     scientist_task_timeout_seconds: float | None = None,
+    resume_timeout_transition: Path | None = None,
     resumable_rehearsal_segments: bool = False,
     rehearsal_training_seconds_per_iteration_at_reference: float = (
         REHEARSAL_TRAINING_SECONDS_PER_ITERATION_AT_REFERENCE
@@ -2981,7 +3024,14 @@ def run_coordinated_arm(
         previous = previous or json.loads(manifest_path.read_text())
         legacy_protocol_normalized = False
         if previous.get("protocol_sha256") != protocol["protocol_sha256"]:
-            if not _legacy_resume_protocol_is_equivalent(previous, protocol):
+            legacy_equivalent = _legacy_resume_protocol_is_equivalent(previous, protocol)
+            timeout_equivalent = _verified_timeout_resume_protocol_is_equivalent(
+                previous,
+                protocol,
+                resume_timeout_transition,
+                output,
+            )
+            if not legacy_equivalent and not timeout_equivalent:
                 raise ValueError("SV2 resume protocol differs from frozen manifest")
             legacy_protocol_normalized = True
         if invocation_source_provenance != previous["source_provenance"]:
@@ -2990,6 +3040,14 @@ def run_coordinated_arm(
                 "protocol_sha256": protocol["protocol_sha256"],
                 "frozen_protocol_sha256": previous.get("protocol_sha256"),
                 "legacy_protocol_defaults_normalized": legacy_protocol_normalized,
+                "resume_timeout_transition": (
+                    {
+                        "path": str(resume_timeout_transition),
+                        "sha256": _sha256(resume_timeout_transition),
+                    }
+                    if resume_timeout_transition is not None
+                    else None
+                ),
                 "frozen_source_provenance": previous["source_provenance"],
                 "resume_source_provenance": invocation_source_provenance,
             }

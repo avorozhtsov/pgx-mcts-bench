@@ -27,7 +27,8 @@ def test_atomic_cell_recovery_changes_only_timeout() -> None:
     assert old[old_index + 1] == "7200"
     assert new[new_index + 1] == "21600"
     assert old[: old_index + 1] == new[: new_index + 1]
-    assert old[old_index + 2 :] == new[new_index + 2 :]
+    assert new[-3:] == ["--resume-timeout-transition", str(module.TRANSITION), "--resume"]
+    assert old[old_index + 2 : -1] == new[new_index + 2 : -3]
 
 
 def test_atomic_cell_recovery_uses_main_and_same_lock() -> None:
