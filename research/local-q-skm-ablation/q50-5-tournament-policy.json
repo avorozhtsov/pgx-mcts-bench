@@ -1,0 +1,45 @@
+{
+  "schema": "q50-5-tournament-policy-v1-cohort-scoped",
+  "status": "PREPARED",
+  "purpose": "Q305-Q354 focused same-root trajectory-tournament successor",
+  "source_pool": {
+    "bank": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/local-q-skm-ablation-20260817/inputs/q4000-v1/q200-2.json",
+    "byte_sha256": "80105d93b4bdf639ea38b5a8b52ee7805d28f739ed2e0cd11bd7730f67598b58",
+    "immutable": true
+  },
+  "predecessor": {
+    "bank": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/local-q-skm-ablation-20260817/continuation/q4000-v1-population-20260818/focused-successor-v1/protocol/q50-4-updated.json",
+    "bank_byte_sha256": "0c3b45ee40d93aec57612474f561391cac2637ddc8996d92ba33d932fc6d8773",
+    "prior_bank": "/Users/artemvorozhtsov/projects/pgx-mcts-bench/artifacts/local-q-skm-ablation-20260817/continuation/q4000-v1-population-20260818/focused-successor-v1/protocol/prior-q254-for-q50-4-updated.json",
+    "prior_bank_byte_sha256": "12c741e0829f3dcf92ae42f4ed0d81ccecca499ca39947d15ae79016a7ff59ff"
+  },
+  "output": {
+    "name": "q50-5-tournament",
+    "size": 50,
+    "first_cumulative_index": 305,
+    "cumulative_representations": 354,
+    "low_strand_rows": 40,
+    "simple_bridge_rows": 10
+  },
+  "training": {
+    "arm": "same-root-trajectory-tournament-v1",
+    "trajectories_per_root_and_ratio": 10,
+    "relative_mass": "positive +c/P; negative -c/N",
+    "invalid_or_absent": "ignored-not-negative",
+    "equal_budget_required": true,
+    "exact_replay_required": true
+  },
+  "bridge_schedule": {
+    "target_order": [12, 11, 12, 10, 12, 11, 12, 11, 12, 12],
+    "counts": {"9": 0, "10": 1, "11": 3, "12": 6},
+    "cumulative_q354_counts": {"9": 13, "10": 12, "11": 12, "12": 13}
+  },
+  "safety": {
+    "strict_no_cross_lineage_sharing": true,
+    "dkt72_training_or_selection": false,
+    "predecessor_identity_reuse": false,
+    "predecessor_representation_reuse": false,
+    "replayable_markov_certificates_required": true,
+    "exact_row_order_required": true
+  }
+}
