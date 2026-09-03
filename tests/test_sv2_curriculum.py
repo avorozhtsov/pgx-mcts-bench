@@ -564,6 +564,22 @@ def test_verified_timeout_resume_accepts_only_gated_wall_time_increase(
     )
 
 
+def test_completed_rehearsal_repair_report_prevents_replaying_debt(tmp_path: Path) -> None:
+    report = tmp_path / "report.json"
+    debt = {"scientist": 38}
+    report.write_text(
+        json.dumps(
+            {
+                "schema": "semantic-v2-q104-rehearsal-repair-report-v1",
+                "source_debt": debt,
+                "completed_iterations": 38,
+            }
+        )
+    )
+    assert curriculum._completed_rehearsal_repair_matches(report, debt)
+    assert not curriculum._completed_rehearsal_repair_matches(report, {"scientist": 39})
+
+
 def test_rehearsal_segment_timeout_resumes_same_phase_until_complete(
     tmp_path: Path,
     monkeypatch,

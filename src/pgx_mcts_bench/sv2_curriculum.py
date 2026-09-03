@@ -2680,6 +2680,21 @@ def _verified_timeout_resume_protocol_is_equivalent(
     return normalized == baseline
 
 
+def _completed_rehearsal_repair_matches(
+    report_path: Path,
+    requested_debt: dict[str, int],
+) -> bool:
+    """Verify that durable repair work predates a resumable curriculum state."""
+    if not report_path.is_file():
+        return False
+    report = json.loads(report_path.read_text())
+    return (
+        report.get("schema") == "semantic-v2-q104-rehearsal-repair-report-v1"
+        and report.get("source_debt") == requested_debt
+        and int(report.get("completed_iterations", -1)) == sum(requested_debt.values())
+    )
+
+
 def run_coordinated_arm(
     checkpoints: dict[str, Path],
     bank: Path,
@@ -3168,6 +3183,7 @@ def run_coordinated_arm(
 
     repair_root = output / "q104-rehearsal-repair-v1"
     repair_state_path = repair_root / "state.pt.gz"
+    repair_report_path = repair_root / "report.json"
     repair_events: list[dict[str, Any]] = []
     if not state_path.exists() and repair_state_path.exists():
         repair_state = _load_state(repair_state_path)
@@ -3194,7 +3210,24 @@ def run_coordinated_arm(
     )
 
     started = time.perf_counter()
-    if rehearsal_repair_debt is not None and any(rehearsal_repair_debt.values()):
+    repair_requested = bool(
+        rehearsal_repair_debt is not None and any(rehearsal_repair_debt.values())
+    )
+    repair_already_complete = bool(
+        state_path.exists()
+        and repair_requested
+        and rehearsal_repair_debt is not None
+        and _completed_rehearsal_repair_matches(repair_report_path, rehearsal_repair_debt)
+    )
+    if state_path.exists() and repair_requested and not repair_already_complete:
+        raise RuntimeError(
+            "resumable curriculum state exists without a matching completed repair report"
+        )
+    if (
+        rehearsal_repair_debt is not None
+        and repair_requested
+        and not repair_already_complete
+    ):
         if len(coordinator.names) != 1:
             raise ValueError("rehearsal debt repair runs one lineage per private root")
         if not prior_items:
@@ -3284,7 +3317,7 @@ def run_coordinated_arm(
                 },
             )
         _atomic_json(
-            repair_root / "report.json",
+            repair_report_path,
             {
                 "schema": "semantic-v2-q104-rehearsal-repair-report-v1",
                 "source_debt": rehearsal_repair_debt,
