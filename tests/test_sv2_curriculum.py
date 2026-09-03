@@ -1145,6 +1145,41 @@ def test_pipelined_execution_rejects_adaptive_or_sharing_arms(tmp_path: Path) ->
             )
 
 
+def test_trajectory_tournament_requires_exact_scheduled_configuration(tmp_path: Path) -> None:
+    import pytest
+
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    bank = tmp_path / "bank.json"
+    bank.write_text("[]")
+    with pytest.raises(ValueError, match="must equal"):
+        curriculum.run_coordinated_arm(
+            {"s": checkpoint},
+            bank,
+            tmp_path / "wrong-size",
+            arm="scheduled-no-sharing",
+            trajectory_tournament_size=10,
+            selfplay_games=8,
+        )
+    with pytest.raises(ValueError, match="scheduled-no-sharing"):
+        curriculum.run_coordinated_arm(
+            {"s": checkpoint},
+            bank,
+            tmp_path / "wrong-arm",
+            arm="static-no-sharing",
+            trajectory_tournament_size=10,
+            selfplay_games=10,
+        )
+    with pytest.raises(ValueError, match="requires a trajectory tournament"):
+        curriculum.run_coordinated_arm(
+            {"s": checkpoint},
+            bank,
+            tmp_path / "weight-only",
+            arm="scheduled-no-sharing",
+            relative_trajectory_weight=1.0,
+        )
+
+
 def test_group_continuation_restores_adaptive_controller_values() -> None:
     payloads = {
         "a": {

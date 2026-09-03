@@ -529,11 +529,7 @@ def deterministic_rehearsal_task_order(
     strata_seen: set[str] = set()
     tiers: list[dict[str, Any]] = []
     for exposure_count in sorted({int(exposure.get(item.id, 0)) for item in representations}):
-        tier = [
-            item
-            for item in representations
-            if int(exposure.get(item.id, 0)) == exposure_count
-        ]
+        tier = [item for item in representations if int(exposure.get(item.id, 0)) == exposure_count]
         buckets: dict[str, list[_RetentionRepresentation]] = {}
         for item in tier:
             cells = retention["cells"][item.id]
@@ -795,9 +791,7 @@ def _iteration(
                 "ratio": ratio,
                 "cap_type": str(plan["cap_type"]),
                 "records": len(batch),
-                "solved": sum(
-                    bool(record and float(record[0].solved) > 0.5) for record in batch
-                ),
+                "solved": sum(bool(record and float(record[0].solved) > 0.5) for record in batch),
                 "scheduled_network_evaluations": sum(
                     len(record) * (simulations + 1) for record in batch
                 ),
@@ -1467,6 +1461,10 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
                     + int(payload["static_index"]) * 10_000_000
                     + iteration * 100_000,
                     representation_id=selected.id,
+                    trajectory_tournament_size=int(payload.get("trajectory_tournament_size", 0)),
+                    relative_trajectory_weight=float(
+                        payload.get("relative_trajectory_weight", 0.0)
+                    ),
                 )
             )
         evaluation = _evaluate(
@@ -1552,9 +1550,7 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
     if operation == "rehearse":
         processed_items = payload["processed_items"]
         panel_metadata = payload.get("rehearsal_panel_metadata")
-        task_order_policy = str(
-            payload.get("rehearsal_task_order_policy", "priority-exposure-v1")
-        )
+        task_order_policy = str(payload.get("rehearsal_task_order_policy", "priority-exposure-v1"))
         task_order_seed = int(payload.get("rehearsal_task_order_seed", payload["seed"]))
         evaluation_ratios = tuple(payload["ratios"])
         training_ratios = tuple(payload.get("training_ratios", evaluation_ratios))
@@ -1909,9 +1905,10 @@ def _load_rehearsal_checkpoint(payload: dict[str, Any], *, scientist: str) -> di
                 raise RuntimeError(f"invalid rehearsal sub-iteration cursor: {path}")
             selected_order = checkpoint.get("selected_order", [])
             completed = int(checkpoint.get("completed_iterations", 0))
-            if completed >= len(selected_order) or partial.get("representation") != selected_order[
-                completed
-            ]:
+            if (
+                completed >= len(selected_order)
+                or partial.get("representation") != selected_order[completed]
+            ):
                 raise RuntimeError(f"rehearsal sub-iteration order mismatch: {path}")
     return checkpoint
 
@@ -2637,9 +2634,7 @@ def _initial_controller_values(
     )
 
 
-def _legacy_resume_protocol_is_equivalent(
-    frozen: dict[str, Any], current: dict[str, Any]
-) -> bool:
+def _legacy_resume_protocol_is_equivalent(frozen: dict[str, Any], current: dict[str, Any]) -> bool:
     """Accept only historical spellings of protocol-neutral default fields."""
     normalized = deepcopy(frozen)
     normalized.pop("protocol_sha256", None)
@@ -2746,6 +2741,8 @@ def run_coordinated_arm(
     qualification_attempts: int = 1,
     f_native: int = 10,
     selfplay_games: int = 8,
+    trajectory_tournament_size: int = 0,
+    relative_trajectory_weight: float = 0.0,
     train_steps: int = 96,
     batch_size: int = 64,
     evaluation_attempts: int = 4,
@@ -2790,6 +2787,17 @@ def run_coordinated_arm(
     training_ratios = ratios if training_ratios is None else training_ratios
     if not training_ratios or any(ratio <= 0 for ratio in training_ratios):
         raise ValueError("training objective ratios must be positive")
+    if trajectory_tournament_size not in (0, 10):
+        raise ValueError("trajectory tournament size must be zero or ten")
+    if relative_trajectory_weight < 0.0:
+        raise ValueError("relative trajectory weight must be non-negative")
+    if trajectory_tournament_size:
+        if selfplay_games != trajectory_tournament_size:
+            raise ValueError("tournament selfplay_games must equal trajectory tournament size")
+        if arm != "scheduled-no-sharing":
+            raise ValueError("trajectory tournaments require scheduled-no-sharing")
+    elif relative_trajectory_weight:
+        raise ValueError("relative trajectory weight requires a trajectory tournament")
     if rungs < 0:
         raise ValueError("rungs must be non-negative")
     if scientist_task_timeout_seconds is not None:
@@ -2958,6 +2966,13 @@ def run_coordinated_arm(
         "qualification_attempts": qualification_attempts,
         "F_native": f_native,
         "selfplay_games_per_iteration": selfplay_games,
+        "native_trajectory_tournament_size_per_objective": trajectory_tournament_size,
+        "native_relative_trajectory_weight": relative_trajectory_weight,
+        "native_trajectory_tournament_scope": (
+            "same-representation-same-objective-equal-budget"
+            if trajectory_tournament_size
+            else None
+        ),
         "optimizer_steps_per_iteration": train_steps,
         "batch_size": batch_size,
         "evaluation_attempts_per_objective": evaluation_attempts,
@@ -3137,8 +3152,7 @@ def run_coordinated_arm(
         }:
             raise RuntimeError("unknown rehearsal task-order transition gate schema")
         if (
-            task_order_transition.get("schema")
-            == "semantic-v2-rehearsal-task-order-transition-v1"
+            task_order_transition.get("schema") == "semantic-v2-rehearsal-task-order-transition-v1"
             and task_order_transition.get("cohort") != "primary-8"
         ):
             raise RuntimeError("historical rehearsal task-order gate cohort differs")
@@ -3228,8 +3242,7 @@ def run_coordinated_arm(
         f_old = {str(key): int(value) for key, value in repair_state["f_old"].items()}
         rehearsal_exposure = repair_state["rehearsal_exposure"]
         rehearsal_panel_cursor = {
-            str(key): int(value)
-            for key, value in repair_state["rehearsal_panel_cursor"].items()
+            str(key): int(value) for key, value in repair_state["rehearsal_panel_cursor"].items()
         }
         repair_events = list(repair_state.get("events", []))
 
@@ -3258,19 +3271,13 @@ def run_coordinated_arm(
         raise RuntimeError(
             "resumable curriculum state exists without a matching completed repair report"
         )
-    if (
-        rehearsal_repair_debt is not None
-        and repair_requested
-        and not repair_already_complete
-    ):
+    if rehearsal_repair_debt is not None and repair_requested and not repair_already_complete:
         if len(coordinator.names) != 1:
             raise ValueError("rehearsal debt repair runs one lineage per private root")
         if not prior_items:
             raise ValueError("rehearsal debt repair requires the complete Q104 prior bank")
         scientist_name = coordinator.names[0]
-        completed_debt = sum(
-            len(event.get("iterations", [])) for event in repair_events
-        )
+        completed_debt = sum(len(event.get("iterations", [])) for event in repair_events)
         remaining_debt = max(0, rehearsal_repair_debt[scientist_name] - completed_debt)
         while remaining_debt:
             chunk = min(REHEARSAL_REPAIR_CHUNK_SIZE, remaining_debt)
@@ -3319,8 +3326,7 @@ def run_coordinated_arm(
                             ),
                         )
                     }
-                    if resumable_rehearsal_segments
-                    and scientist_task_timeout_seconds is not None
+                    if resumable_rehearsal_segments and scientist_task_timeout_seconds is not None
                     else None
                 ),
             )[scientist_name]
@@ -3375,6 +3381,8 @@ def run_coordinated_arm(
                 "f_native": current_f_native[name],
                 "simulations": current_simulations[name],
                 "selfplay_games": selfplay_games,
+                "trajectory_tournament_size": trajectory_tournament_size,
+                "relative_trajectory_weight": relative_trajectory_weight,
                 "train_steps": train_steps,
                 "batch_size": batch_size,
                 "evaluation_attempts": evaluation_attempts,
@@ -3600,8 +3608,7 @@ def run_coordinated_arm(
                     "rehearsal_task_order_policy": (
                         str(task_order_transition["to_policy"])
                         if task_order_transition is not None
-                        and len(processed)
-                        > int(task_order_transition["boundary_completed_rungs"])
+                        and len(processed) > int(task_order_transition["boundary_completed_rungs"])
                         else "priority-exposure-v1"
                     ),
                     "rehearsal_task_order_seed": (
@@ -3896,9 +3903,7 @@ def run_coordinated_arm(
             {
                 "path": str(rehearsal_task_order_transition),
                 "sha256": _sha256(rehearsal_task_order_transition),
-                "boundary_completed_rungs": task_order_transition[
-                    "boundary_completed_rungs"
-                ],
+                "boundary_completed_rungs": task_order_transition["boundary_completed_rungs"],
                 "to_policy": task_order_transition["to_policy"],
             }
             if task_order_transition is not None
