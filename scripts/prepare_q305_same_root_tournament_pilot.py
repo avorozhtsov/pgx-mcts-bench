@@ -27,6 +27,7 @@ CHECKPOINT = ROOT / "proof-distillation/strand-graph-q254-model/checkpoint.pt"
 STATE = PARENT_ROOT / "state.pt.gz"
 CARRY = ROOT / "q305-tournament-v1/initial-state/strand-graph-12/state.pt.gz"
 PARENT_MANIFEST = PARENT_ROOT / "manifest.json"
+PARENT_REPORT = PARENT_ROOT / "report.json"
 BANK = PROTOCOL / "q50-5-tournament.json"
 PRIOR = PROTOCOL / "prior-q304-for-q50-5-tournament.json"
 AUDIT = PROTOCOL / "q50-5-tournament-audit.json"
@@ -52,7 +53,7 @@ def main() -> None:
     audit = json.loads(AUDIT.read_text())
     if audit.get("status") != "passed":
         raise RuntimeError("Q305 bank audit did not pass")
-    parent = json.loads(PARENT_MANIFEST.read_text())
+    parent = json.loads(PARENT_REPORT.read_text())
     if int(parent.get("completed_rungs", -1)) != 50:
         raise RuntimeError("proof-distilled Q304 parent is not terminal")
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip()
@@ -113,6 +114,8 @@ def main() -> None:
         "source_parent_state_sha256": source_state_sha256,
         "parent_manifest": str(PARENT_MANIFEST),
         "parent_manifest_sha256": sha256(PARENT_MANIFEST),
+        "parent_report": str(PARENT_REPORT),
+        "parent_report_sha256": sha256(PARENT_REPORT),
         "bank": str(BANK),
         "bank_sha256": sha256(BANK),
         "prior_bank": str(PRIOR),

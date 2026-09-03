@@ -61,6 +61,7 @@ def verify() -> dict:
         "parent_state",
         "source_parent_state",
         "parent_manifest",
+        "parent_report",
         "bank",
         "prior_bank",
         "bank_audit",
