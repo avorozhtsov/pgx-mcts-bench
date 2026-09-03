@@ -21,7 +21,10 @@ For a positive group of size `P` and negative group of size `N`, each positive
 trajectory receives advantage `+c/P` and each negative receives `-c/N`, where
 `c` is the boundary confidence. Thus each root contributes zero total relative
 mass. Sampling remains equal per episode; trajectory length does not multiply
-its influence. Negative trajectories are relative losers for this root and
+its influence. The stable contrastive loss imitates the chosen action on a
+positive trajectory and minimizes the chosen-action probability on a negative
+trajectory. It never minimizes a signed log-probability, which would be
+unbounded below. Negative trajectories are relative losers for this root and
 budget only, not globally bad or unsolvable examples.
 
 Promotion remains an equal-budget exact-common MCTS comparison against the

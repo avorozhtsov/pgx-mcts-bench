@@ -112,9 +112,7 @@ def test_checkpoint_migration_ignores_one_new_input_feature(
 
 
 def test_budget_prototype_migration_is_function_preserving_before_training() -> None:
-    old_game = BraidGameConfig(
-        max_len=16, max_strands=3, simplify_budget=12, serial_window=7
-    )
+    old_game = BraidGameConfig(max_len=16, max_strands=3, simplify_budget=12, serial_window=7)
     new_game = BraidGameConfig(
         max_len=16,
         max_strands=3,
@@ -218,6 +216,46 @@ def test_auxiliary_losses_use_solve_labels_and_mask_unsolved_costs() -> None:
     assert metrics["solve"] > 0.0
     assert metrics["crossings"] >= 0.0
     assert metrics["moves"] >= 0.0
+
+
+def test_relative_trajectory_loss_is_nonnegative_contrastive_classification() -> None:
+    game = BraidGameConfig(max_len=16, max_strands=3, simplify_budget=12)
+    network = make_braid_network(
+        game, ModelConfig(channels=8, latent_channels=8, residual_blocks=1)
+    )
+    optimizer = torch.optim.AdamW(network.parameters(), lr=1e-3)
+    replay = ReplayBuffer(100, np.random.default_rng(41))
+    observation = _observation(game, batch=1)[0].permute(1, 2, 0).numpy()
+    for index, advantage in enumerate((1.0, -1.0)):
+        replay.add(
+            [
+                Position(
+                    observation=observation.copy(),
+                    legal_actions=np.ones(game.action_size, dtype=bool),
+                    policy=np.full(game.action_size, 1.0 / game.action_size, dtype=np.float32),
+                    action=index,
+                    player=1,
+                    role=1,
+                    outcome=1.0,
+                    solved=1.0,
+                    episode_seed=42 + index,
+                    relative_trajectory_advantage=advantage,
+                )
+            ]
+        )
+
+    metrics = train_alphazero_step(
+        network,
+        optimizer,
+        replay,
+        8,
+        torch.device("cpu"),
+        relative_trajectory_weight=1.0,
+    )
+
+    assert math.isfinite(metrics["relative_policy"])
+    assert metrics["relative_policy"] >= 0.0
+    assert metrics["loss"] >= 0.0
 
 
 def test_success_only_controller_masks_failed_policy_and_value_but_trains_solve() -> None:
@@ -356,9 +394,7 @@ def test_native_update_bypasses_and_clears_separately_optimized_option_controlle
     train_alphazero_step(network, native_optimizer, replay, 4, torch.device("cpu"))
 
     native_ids = {
-        id(parameter)
-        for group in native_optimizer.param_groups
-        for parameter in group["params"]
+        id(parameter) for group in native_optimizer.param_groups for parameter in group["params"]
     }
     sharing_ids = {id(parameter) for parameter in sharing_parameters}
     assert clipped_ids == native_ids
@@ -633,7 +669,5 @@ def test_solve_conditioning_receives_budget_costs_and_manual_objective() -> None
         network.forward_with_auxiliary(observation)
     hook.remove()
 
-    expected = torch.tensor(
-        [0.4, 2.0 / 12.0, 3.0 / 12.0, (10.0 * 2.0 + 3.0) / (11.0 * 12.0)]
-    )
+    expected = torch.tensor([0.4, 2.0 / 12.0, 3.0 / 12.0, (10.0 * 2.0 + 3.0) / (11.0 * 12.0)])
     torch.testing.assert_close(captured[0][0, -4:], expected)
