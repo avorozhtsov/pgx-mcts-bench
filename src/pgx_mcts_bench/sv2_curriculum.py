@@ -55,8 +55,10 @@ from pgx_mcts_bench.ladder import _config, foundation_arms
 from pgx_mcts_bench.search import NeuralMCTS
 from pgx_mcts_bench.training import play_selfplay_games, train_alphazero_step
 from pgx_mcts_bench.trajectory_tournament import (
+    apply_divergence_tournament_advantages,
     apply_tournament_advantages,
     split_trajectory_tournament,
+    split_trajectory_tournament_trimmed,
 )
 
 SV2_PREFIX_PHASES: tuple[tuple[int, tuple[str, ...]], ...] = (
@@ -639,7 +641,9 @@ def _iteration(
     use_own_budget_caps: bool = False,
     balanced_rehearsal_replay: bool = False,
     trajectory_tournament_size: int = 0,
+    trajectory_tournament_strategy: str = "largest-gap-v1",
     relative_trajectory_weight: float = 0.0,
+    relative_trajectory_sample_fraction: float = 0.0,
     resume_progress: dict[str, Any] | None = None,
     progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
@@ -653,8 +657,12 @@ def _iteration(
     """
     if trajectory_tournament_size not in (0, 10):
         raise ValueError("trajectory tournament size must be zero or ten")
+    if trajectory_tournament_strategy not in ("largest-gap-v1", "trimmed-divergence-v3"):
+        raise ValueError("unsupported trajectory tournament strategy")
     if relative_trajectory_weight < 0.0:
         raise ValueError("relative trajectory weight must be non-negative")
+    if not 0.0 <= relative_trajectory_sample_fraction <= 1.0:
+        raise ValueError("relative trajectory sample fraction must be between zero and one")
     if trajectory_tournament_size and selfplay_games != trajectory_tournament_size:
         raise ValueError("tournament selfplay_games must equal trajectory tournament size")
     identity = representation_id or knot.name
@@ -673,7 +681,9 @@ def _iteration(
         immutable.update(
             {
                 "trajectory_tournament_size": trajectory_tournament_size,
+                "trajectory_tournament_strategy": trajectory_tournament_strategy,
                 "relative_trajectory_weight": float(relative_trajectory_weight),
+                "relative_trajectory_sample_fraction": float(relative_trajectory_sample_fraction),
             }
         )
     if resume_progress is None:
@@ -778,12 +788,22 @@ def _iteration(
         )
         tournament = None
         if trajectory_tournament_size:
-            tournament = split_trajectory_tournament(
-                batch,
-                expected_size=trajectory_tournament_size,
+            tournament = (
+                split_trajectory_tournament_trimmed(
+                    batch,
+                    expected_size=trajectory_tournament_size,
+                )
+                if trajectory_tournament_strategy == "trimmed-divergence-v3"
+                else split_trajectory_tournament(
+                    batch,
+                    expected_size=trajectory_tournament_size,
+                )
             )
             if tournament is not None:
-                apply_tournament_advantages(batch, tournament)
+                if trajectory_tournament_strategy == "trimmed-divergence-v3":
+                    apply_divergence_tournament_advantages(batch, tournament)
+                else:
+                    apply_tournament_advantages(batch, tournament)
         for record in batch:
             scientist.replay.add(record, representation_id=identity, objective_ratio=ratio)
         completed_games.append(
@@ -824,6 +844,7 @@ def _iteration(
                     (10.0, 1000.0) if balanced_rehearsal_replay else None
                 ),
                 relative_trajectory_weight=relative_trajectory_weight,
+                relative_trajectory_sample_fraction=relative_trajectory_sample_fraction,
             )
             iteration_progress["completed_optimizer_steps"] += 1
             iteration_progress["last_loss"] = loss
@@ -1470,8 +1491,14 @@ def _sv2_phase_operation(scientist: Any, operation: str, payload: dict[str, Any]
                     + iteration * 100_000,
                     representation_id=selected.id,
                     trajectory_tournament_size=int(payload.get("trajectory_tournament_size", 0)),
+                    trajectory_tournament_strategy=str(
+                        payload.get("trajectory_tournament_strategy", "largest-gap-v1")
+                    ),
                     relative_trajectory_weight=float(
                         payload.get("relative_trajectory_weight", 0.0)
+                    ),
+                    relative_trajectory_sample_fraction=float(
+                        payload.get("relative_trajectory_sample_fraction", 0.0)
                     ),
                 )
             )
@@ -2750,7 +2777,9 @@ def run_coordinated_arm(
     f_native: int = 10,
     selfplay_games: int = 8,
     trajectory_tournament_size: int = 0,
+    trajectory_tournament_strategy: str = "largest-gap-v1",
     relative_trajectory_weight: float = 0.0,
+    relative_trajectory_sample_fraction: float = 0.0,
     train_steps: int = 96,
     batch_size: int = 64,
     evaluation_attempts: int = 4,
@@ -2797,8 +2826,12 @@ def run_coordinated_arm(
         raise ValueError("training objective ratios must be positive")
     if trajectory_tournament_size not in (0, 10):
         raise ValueError("trajectory tournament size must be zero or ten")
+    if trajectory_tournament_strategy not in ("largest-gap-v1", "trimmed-divergence-v3"):
+        raise ValueError("unsupported trajectory tournament strategy")
     if relative_trajectory_weight < 0.0:
         raise ValueError("relative trajectory weight must be non-negative")
+    if not 0.0 <= relative_trajectory_sample_fraction <= 1.0:
+        raise ValueError("relative trajectory sample fraction must be between zero and one")
     if trajectory_tournament_size:
         if selfplay_games != trajectory_tournament_size:
             raise ValueError("tournament selfplay_games must equal trajectory tournament size")
@@ -2975,7 +3008,9 @@ def run_coordinated_arm(
         "F_native": f_native,
         "selfplay_games_per_iteration": selfplay_games,
         "native_trajectory_tournament_size_per_objective": trajectory_tournament_size,
+        "native_trajectory_tournament_strategy": trajectory_tournament_strategy,
         "native_relative_trajectory_weight": relative_trajectory_weight,
+        "native_relative_trajectory_sample_fraction": relative_trajectory_sample_fraction,
         "native_trajectory_tournament_scope": (
             "same-representation-same-objective-equal-budget"
             if trajectory_tournament_size
@@ -3390,7 +3425,9 @@ def run_coordinated_arm(
                 "simulations": current_simulations[name],
                 "selfplay_games": selfplay_games,
                 "trajectory_tournament_size": trajectory_tournament_size,
+                "trajectory_tournament_strategy": trajectory_tournament_strategy,
                 "relative_trajectory_weight": relative_trajectory_weight,
+                "relative_trajectory_sample_fraction": relative_trajectory_sample_fraction,
                 "train_steps": train_steps,
                 "batch_size": batch_size,
                 "evaluation_attempts": evaluation_attempts,

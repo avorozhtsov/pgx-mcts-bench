@@ -96,7 +96,13 @@ def main() -> None:
                 f_native=1,
                 selfplay_games=10,
                 trajectory_tournament_size=10,
-                relative_trajectory_weight=1.0,
+                trajectory_tournament_strategy=str(
+                    gate.get("trajectory_tournament_strategy", "largest-gap-v1")
+                ),
+                relative_trajectory_weight=float(gate.get("relative_trajectory_weight", 1.0)),
+                relative_trajectory_sample_fraction=float(
+                    gate.get("relative_trajectory_sample_fraction", 0.0)
+                ),
                 train_steps=24,
                 batch_size=64,
                 evaluation_attempts=2,
@@ -105,7 +111,7 @@ def main() -> None:
                 retention_target=0.80,
                 action_horizon=128,
                 rungs=10,
-                seed=202609030305,
+                seed=int(gate.get("seed", 202609030305)),
                 torch_threads=2,
                 parallel_scientists=True,
                 rehearsal_panel_size=10,

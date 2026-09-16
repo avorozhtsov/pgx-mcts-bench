@@ -4,8 +4,10 @@ import pytest
 from pgx_mcts_bench.data import Position
 from pgx_mcts_bench.sv2_curriculum import _iteration
 from pgx_mcts_bench.trajectory_tournament import (
+    apply_divergence_tournament_advantages,
     apply_tournament_advantages,
     split_trajectory_tournament,
+    split_trajectory_tournament_trimmed,
 )
 
 
@@ -68,6 +70,33 @@ def test_invalid_trajectory_is_ignored_not_negative() -> None:
     assert split.ignored_indexes == (9,)
     apply_tournament_advantages(records, split)
     assert records[-1][0].relative_trajectory_advantage == 0.0
+
+
+def test_trimmed_split_uses_extremes_and_ignores_ambiguous_middle() -> None:
+    records = [record(solved=True, cc=value) for value in (1, 1, 2, 2, 3, 3, 5, 5, 6, 6)]
+    split = split_trajectory_tournament_trimmed(records)
+    assert split is not None
+    assert split.boundary == "trimmed-crossing-change-margin"
+    assert split.positive_indexes == (0, 1, 2)
+    assert split.negative_indexes == (7, 8, 9)
+    assert split.ignored_indexes == (3, 4, 5, 6)
+
+
+def test_divergence_credit_does_not_label_post_divergence_states() -> None:
+    records = [record(solved=index < 3, cc=1) for index in range(10)]
+    for index, game in enumerate(records):
+        game[0].action = 0 if index < 3 else 1
+        tail = record(solved=index < 3, cc=1)[0]
+        tail.observation = np.full((1, 1, 1), index + 1, dtype=np.float32)
+        tail.action = index % 2
+        game.append(tail)
+    split = split_trajectory_tournament_trimmed(records)
+    assert split is not None
+    annotated = apply_divergence_tournament_advantages(records, split)
+    assert annotated == 6
+    assert all(records[index][0].relative_trajectory_advantage > 0 for index in range(3))
+    assert all(records[index][0].relative_trajectory_advantage < 0 for index in range(7, 10))
+    assert all(game[1].relative_trajectory_advantage == 0.0 for game in records)
 
 
 def test_tournament_rejects_mixed_roots() -> None:

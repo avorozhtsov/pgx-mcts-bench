@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from dataclasses import dataclass
 
 import numpy as np
 
-from pgx_mcts_bench.data import GameRecord
+from pgx_mcts_bench.data import GameRecord, Position
 
 
 @dataclass(frozen=True)
@@ -167,6 +168,88 @@ def split_trajectory_tournament(
     )
 
 
+def _trimmed_extremes(
+    ordered: list[int], width: int = 3
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Return disjoint best/worst anchors while leaving the ambiguous middle unused."""
+
+    count = min(width, len(ordered) // 2)
+    if count < 1:
+        return (), ()
+    return tuple(ordered[:count]), tuple(ordered[-count:])
+
+
+def split_trajectory_tournament_trimmed(
+    records: list[GameRecord],
+    *,
+    expected_size: int = 10,
+) -> TournamentSplit | None:
+    """Select only clearly separated high- and low-quality trajectory anchors.
+
+    Unlike the original largest-gap split, this rule deliberately drops the
+    middle of the tournament.  Mixed outcomes use the categorical
+    solved/unsolved boundary.  Homogeneous outcomes require a robust gap
+    between the best and worst thirds; otherwise the update is skipped.
+    """
+
+    valid = _validate_same_root(records, expected_size)
+    ignored_invalid = {index for index in range(len(records)) if index not in valid}
+    if len(valid) < 2:
+        return None
+    solved = [index for index in valid if float(getattr(_first(records[index]), "solved", 0)) > 0.5]
+    unsolved = [index for index in valid if index not in solved]
+
+    def solved_key(index: int) -> tuple[float, float, int]:
+        return (
+            _finite(getattr(_first(records[index]), "final_crossing_changes", math.inf)),
+            _finite(getattr(_first(records[index]), "final_moves", math.inf)),
+            index,
+        )
+
+    def unsolved_key(index: int) -> tuple[float, float, float, int]:
+        return (
+            _finite(getattr(_first(records[index]), "best_residual_word_length", math.inf)),
+            _finite(getattr(_first(records[index]), "residual_word_length", math.inf)),
+            _finite(getattr(_first(records[index]), "final_moves", math.inf)),
+            index,
+        )
+
+    if solved and unsolved:
+        positive = tuple(sorted(solved, key=solved_key)[: min(3, len(solved))])
+        negative = tuple(sorted(unsolved, key=unsolved_key)[-min(3, len(unsolved)) :])
+        ignored = tuple(sorted(set(range(len(records))) - set(positive) - set(negative)))
+        return TournamentSplit(positive, negative, ignored, "trimmed-solved-vs-unsolved", 1.0)
+
+    ordered = sorted(valid, key=solved_key if solved else unsolved_key)
+    positive, negative = _trimmed_extremes(ordered)
+    if not positive or not negative:
+        return None
+    if solved:
+        positive_worst = solved_key(positive[-1])
+        negative_best = solved_key(negative[0])
+        crossing_gap = negative_best[0] - positive_worst[0]
+        move_gap = negative_best[1] - positive_worst[1]
+        finite_moves = [
+            solved_key(index)[1] for index in valid if math.isfinite(solved_key(index)[1])
+        ]
+        move_threshold = (
+            max(4.0, 0.1 * float(np.median(finite_moves))) if finite_moves else math.inf
+        )
+        if crossing_gap >= 1.0:
+            boundary, confidence = "trimmed-crossing-change-margin", 1.0
+        elif crossing_gap == 0.0 and move_gap >= move_threshold:
+            boundary, confidence = "trimmed-semantic-move-margin", 0.75
+        else:
+            return None
+    else:
+        residual_gap = unsolved_key(negative[0])[0] - unsolved_key(positive[-1])[0]
+        if residual_gap < 2.0:
+            return None
+        boundary, confidence = "trimmed-residual-length-margin", 0.5
+    ignored = tuple(sorted(ignored_invalid | (set(valid) - set(positive) - set(negative))))
+    return TournamentSplit(positive, negative, ignored, boundary, confidence)
+
+
 def apply_tournament_advantages(
     records: list[GameRecord],
     split: TournamentSplit,
@@ -185,3 +268,61 @@ def apply_tournament_advantages(
         )
         for position in record:
             position.relative_trajectory_advantage = advantage
+
+
+def _state_fingerprint(position: Position) -> bytes:
+    observation = np.ascontiguousarray(position.observation, dtype=np.float32)
+    legal = np.ascontiguousarray(position.legal_actions, dtype=np.uint8)
+    digest = hashlib.blake2b(digest_size=20)
+    digest.update(str(observation.shape).encode())
+    digest.update(observation.tobytes())
+    digest.update(legal.tobytes())
+    return digest.digest()
+
+
+def apply_divergence_tournament_advantages(
+    records: list[GameRecord],
+    split: TournamentSplit,
+) -> int:
+    """Apply zero-sum credit only where positive and negative paths diverge.
+
+    Actions on a common prefix are not globally bad merely because one later
+    continuation lost the tournament.  We therefore supervise only shared
+    states at which the selected positive and negative groups chose different,
+    group-exclusive actions.  Returns the number of annotated positions.
+    """
+
+    for record in records:
+        for position in record:
+            position.relative_trajectory_advantage = 0.0
+    groups: dict[bytes, dict[str, list[Position]]] = {}
+    for label, indexes in (
+        ("positive", split.positive_indexes),
+        ("negative", split.negative_indexes),
+    ):
+        for index in indexes:
+            for position in records[index]:
+                groups.setdefault(_state_fingerprint(position), {"positive": [], "negative": []})[
+                    label
+                ].append(position)
+
+    annotated = 0
+    for rows in groups.values():
+        positive_rows = rows["positive"]
+        negative_rows = rows["negative"]
+        if not positive_rows or not negative_rows:
+            continue
+        positive_actions = {int(row.action) for row in positive_rows}
+        negative_actions = {int(row.action) for row in negative_rows}
+        positive_targets = [row for row in positive_rows if int(row.action) not in negative_actions]
+        negative_targets = [row for row in negative_rows if int(row.action) not in positive_actions]
+        if not positive_targets or not negative_targets:
+            continue
+        positive_mass = split.confidence / len(positive_targets)
+        negative_mass = -split.confidence / len(negative_targets)
+        for row in positive_targets:
+            row.relative_trajectory_advantage = positive_mass
+        for row in negative_targets:
+            row.relative_trajectory_advantage = negative_mass
+        annotated += len(positive_targets) + len(negative_targets)
+    return annotated

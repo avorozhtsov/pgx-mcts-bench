@@ -29,3 +29,19 @@ budget only, not globally bad or unsolvable examples.
 
 Promotion remains an equal-budget exact-common MCTS comparison against the
 Q304 parent. Training loss alone is not evidence of progress.
+
+## Fourth descendant: trimmed divergence-local credit
+
+After the original and stable-loss pilots regressed, the next isolated fork
+keeps ten equal-budget trajectories but uses only the best and worst thirds.
+The ambiguous middle is ignored.  Mixed solved/unsolved outcomes retain that
+categorical boundary; homogeneous outcomes require a robust crossing-change,
+semantic-move, or residual-length margin.
+
+Relative policy credit is assigned only at replay-identical states where the
+selected positive and negative groups chose different group-exclusive actions.
+Shared prefix actions and states reached only after divergence receive no
+relative label.  A quarter of each optimizer batch is reserved for these sparse
+relative targets, and their loss weight is 0.5.  The fork starts from the same
+frozen Q304 parent with its own seed and must pass a Q305--Q314 exact-common
+promotion gate before any Q315--Q354 continuation.

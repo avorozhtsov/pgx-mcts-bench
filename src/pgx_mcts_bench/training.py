@@ -299,7 +299,10 @@ def train_alphazero_step(
     replay_rehearsal_fraction: float = 0.25,
     replay_ratio_outcome_balance: tuple[float, float] | None = None,
     relative_trajectory_weight: float = 0.0,
+    relative_trajectory_sample_fraction: float = 0.0,
 ) -> dict[str, float]:
+    if not 0.0 <= relative_trajectory_sample_fraction <= 1.0:
+        raise ValueError("relative trajectory sample fraction must be between zero and one")
     network.train()
     optimized_parameters = _optimizer_parameters(optimizer)
     optimized_parameter_ids = {id(parameter) for parameter in optimized_parameters}
@@ -337,6 +340,20 @@ def train_alphazero_step(
         if collaboration_replay
         else replay.sample_positions(batch_size)
     )
+    if relative_trajectory_sample_fraction > 0.0:
+        relative_pool = [
+            position
+            for game in replay.games
+            for position in game
+            if float(getattr(position, "relative_trajectory_advantage", 0.0)) != 0.0
+        ]
+        if relative_pool:
+            count = min(
+                batch_size,
+                max(1, int(round(batch_size * relative_trajectory_sample_fraction))),
+            )
+            picks = replay.rng.integers(0, len(relative_pool), size=count)
+            batch[-count:] = [relative_pool[int(pick)] for pick in picks]
     observations = _observations(batch, device)
     logits, values, auxiliary = _native_forward_with_auxiliary(
         network, observations, optimized_parameter_ids
