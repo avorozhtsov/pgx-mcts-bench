@@ -12,6 +12,7 @@ import prepare_q305_trimmed_divergence_pilot_v3 as v3
 
 FAILED_GATE = v3.GATE
 FAILED_STATUS = base.ROOT / "q305-tournament-v1/q305-pilot-launcher-status-v3.json"
+FAILED_MANIFEST = v3.OUTPUT / "manifest.json"
 GATE = base.ROOT / "Q305_TRIMMED_DIVERGENCE_RECOVERY_V4_VERIFIED.json"
 OUTPUT = (
     base.ROOT
@@ -25,9 +26,10 @@ def main() -> None:
         raise RuntimeError("trimmed-divergence recovery output already exists")
     failed_gate = json.loads(FAILED_GATE.read_text())
     failed_status = json.loads(FAILED_STATUS.read_text())
-    if failed_status.get("state") != "BLOCKED" or "not a ladder candidate" not in str(
-        failed_status.get("detail")
-    ):
+    failed_manifest = json.loads(FAILED_MANIFEST.read_text())
+    if failed_status.get("state") != "BLOCKED" or set(failed_manifest.get("checkpoints", {})) != {
+        "strand-graph-12-proof-distilled-trimmed-divergence-v3"
+    }:
         raise RuntimeError("recovery requires the roster-name-only v3 failure")
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=base.REPO, text=True).strip()
     remote = subprocess.check_output(
@@ -57,6 +59,8 @@ def main() -> None:
         "failed_gate_sha256": base.sha256(FAILED_GATE),
         "failed_status": str(FAILED_STATUS),
         "failed_status_sha256": base.sha256(FAILED_STATUS),
+        "failed_manifest": str(FAILED_MANIFEST),
+        "failed_manifest_sha256": base.sha256(FAILED_MANIFEST),
         "sources": {str(path): base.sha256(path) for path in sources},
     }
     temporary = GATE.with_name(f".{GATE.name}.part")
