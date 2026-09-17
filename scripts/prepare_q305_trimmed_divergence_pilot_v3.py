@@ -48,7 +48,7 @@ def main() -> None:
         "status": "PREPARED",
         "commit": head,
         "verified_at": datetime.now(UTC).isoformat(),
-        "scientist": "strand-graph-12-proof-distilled-trimmed-divergence-v3",
+        "scientist": "strand-graph-12",
         "lineage_variant": "fourth-fast-descendant-trimmed-divergence-v3",
         "output": str(OUTPUT),
         "predecessor_gate": str(PREVIOUS),
